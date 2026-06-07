@@ -1,50 +1,24 @@
+<div align="center">
+
+<img src="docs/icon.png" width="128" alt="Notch icon" />
+
 # Notch — Liquid Glass
 
-A native macOS app that turns the Mac's notch into a Liquid-Glass AI input. The
-black notch **itself grows downward**, melting through one continuous vertical
-gradient into dark, translucent "obsidian" glass — no separate floating popover.
-Hover the notch to grow the glass, type a question, get an answer, and it
-retracts when you leave.
+A native macOS app that turns the Mac's notch into a Liquid-Glass AI input.
 
-This is the SwiftUI implementation of the `Mac Notch.html` design prototype
-(see `design_bundle/`). It recreates the design's final, agreed-upon look — the
-one the user landed on after iterating in the design tool.
+</div>
+
+Hover the notch and it grows downward, melting through one continuous gradient
+into dark, translucent "obsidian" glass. Type a question, get an answer, and it
+retracts when you leave — no separate floating popover.
 
 ## What it does
 
-- **Resting**: a clean black notch with a camera dot, pinned to the top-center of
-  the screen that has the menu bar (the notched display, with a fallback).
-- **Hover** → the notch springs open into a glass panel (`Ask anything`).
-- **Enter / send** → calls the AI, shows a calm three-dot "thinking" wave, then an
-  answer (with `**bold**` markdown). Ask a follow-up inline.
-- **Recent** → a collapsed entry under the input reveals recent questions
-  (persisted across launches); click one to revisit the answer.
-- **Auto-retract** on mouse-leave — but only when nothing has been asked and
-  nothing is on screen. It stays open while loading, while an answer is showing,
-  or while you're mid-question. `Esc` or a click outside closes it.
-
-### Design decisions carried over from the prototype
-
-These were explicit calls the user made while iterating — preserved here:
-
-- The notch is **one continuous black→glass body**, not a popover. The top is
-  **pure black** (one body with the hardware notch / bezel) and melts over a
-  short band into the glass; **no bright "light band" or glowing lip** (the user
-  rejected those for breaking the black blend).
-- The glass uses the **native** Liquid Glass material — SwiftUI's
-  `.glassEffect(.regular, in: NotchShape)` on macOS 26+ (genuine
-  refraction/adaptivity, not a hand-rolled blur), with an `NSVisualEffectView`
-  fallback on older systems. The black→glass darkening is **not** baked into the
-  glass tint; it's a separate full-height obsidian gradient that eases from
-  opaque black at the notch to a faint tint at the bottom, so the transition is
-  smooth across the whole panel rather than a hard band. See
-  `GlassBackground.swift`.
-- **No light/cursor effects.**
-- **Minimal**: no sparkle icon, no example prompts, no emoji hints. Send button
-  appears only when there's text.
-- **English copy**, unified SF font, and a single 4-level label color scale
-  (`text-1…4`) — no ad-hoc rgba values (`DesignSystem.swift`).
-- Springy expand, snappier (non-springy) collapse.
+- **Resting** → a clean black notch with a camera dot, pinned to the notched display.
+- **Hover** → springs open into a glass panel (`Ask anything`).
+- **Send** → calls the AI, shows a "thinking" wave, then the answer. Ask follow-ups inline.
+- **Recent** → revisit recent questions, persisted across launches.
+- **Auto-retract** on mouse-leave (only when idle); `Esc` or a click outside closes it.
 
 ## Build & run
 
@@ -56,56 +30,41 @@ open build/Build/Products/Release/NotchGlass.app
 
 Or open `NotchGlass.xcodeproj` in Xcode and run. Requires macOS 14+ / Xcode 16+.
 
-It runs as an agent app (`LSUIElement`) — no Dock icon, no menu bar item. It's a
-floating panel that lives in the notch and follows you across Spaces and
-full-screen apps. To quit, use Activity Monitor or `pkill -f NotchGlass`.
+It runs as an agent app (`LSUIElement`) — no Dock icon, no menu bar item. To quit,
+use Activity Monitor or `pkill -f NotchGlass`.
 
-### Debug aid
+> **Debug:** launch with `NOTCH_OPEN=1` to open at startup, `NOTCH_DEMO=1` to seed a
+> sample answer.
 
-Launch with `NOTCH_OPEN=1` to open the panel at startup, and add `NOTCH_DEMO=1`
-to seed a sample answer — handy for inspecting the expanded glass without a live
-hover. No effect in normal use.
+## AI backend
 
-## The AI backend
+The seam is `AIService`. Without an API key it falls back to a stub. With a key, live
+answers come from `OpenAICompatAIService` — one thin `URLSession` client for any
+**OpenAI-compatible** `/v1/chat/completions` vendor. Two are wired up:
 
-The seam is `AIService` (`AIService.swift`). Without an API key the app falls back
-to `StubAIService`, which returns a placeholder after a short delay so the loading
-state is exercised exactly as it will be live.
+- **MiMo (Xiaomi)** — `mimo-v2.5-pro` · platform.xiaomimimo.com
+- **DeepSeek** — `deepseek-chat` · platform.deepseek.com
 
-With a key, live answers come from `OpenAICompatAIService` — a single thin
-`URLSession` client for any **OpenAI-compatible** `/v1/chat/completions` vendor.
-Two are wired up out of the box (the `Provider` enum):
+Pick a provider and paste its key in Settings (⌘,). Keys are stored in the Keychain.
+Adding another vendor is a one-line `case` in `Provider`.
 
-- **MiMo (Xiaomi)** — `mimo-v2.5-pro` · key at platform.xiaomimimo.com
-- **DeepSeek** — `deepseek-chat` · key at platform.deepseek.com
-
-Pick the provider and paste its key in Settings (⌘,). Each provider keeps its own
-key in the Keychain, and the choice persists. For local dev you can also force a
-key via the `MIMO_API_KEY` / `DEEPSEEK_API_KEY` environment variables (these
-override whatever is stored).
-
-Adding another OpenAI-compatible vendor is a one-line `case` in `Provider`
-(endpoint + default model + signup host) — no new networking code. The persona
-lives in `notchSystemPrompt`.
-
-> ⚠️ These are client-side keys (see `APIKeyStore`). Fine for personal use; before
-> distributing, move the key behind a small backend so it never ships in the app.
+> ⚠️ These are client-side keys. Fine for personal use; move them behind a backend
+> before distributing.
 
 ## Project layout
 
 ```
 NotchGlass/Sources/
-  NotchGlassApp.swift   App entry (agent app, no standard window)
-  AppDelegate.swift     Creates & pins the notch panel; tracks screen changes
-  NotchPanel.swift      Borderless, transparent, all-Spaces floating NSPanel
-  ContentView.swift     Transparent canvas + the spring-animated island + Esc
-  GlassBackground.swift  NotchShape + the black→obsidian-glass material + grain
-  NotchBody.swift       idle / load / result content + Recent history list
-  Components.swift      PromptField, SendButton, ThinkingDots, inline markdown
-  NotchModel.swift      State machine, history persistence, AI calls
-  DesignSystem.swift    Color scale, font, dimensions, environment metrics
-  AIService.swift       AI seam + offline stub
-NotchGlass/Resources/Info.plist   LSUIElement agent-app config
+  NotchGlassApp.swift    App entry (agent app)
+  AppDelegate.swift      Pins the notch panel; tracks screen changes
+  NotchPanel.swift       Borderless, transparent, all-Spaces NSPanel
+  ContentView.swift      Canvas + spring-animated island + Esc
+  GlassBackground.swift  NotchShape + black→obsidian-glass material
+  NotchBody.swift        idle / load / result content + Recent list
+  Components.swift       PromptField, SendButton, ThinkingDots, markdown
+  NotchModel.swift       State machine, history, AI calls
+  DesignSystem.swift     Color scale, font, dimensions
+  AIService.swift        AI seam + offline stub
 
-design_bundle/          The original Claude Design handoff (HTML prototype + chat)
+design_bundle/           Original design handoff (HTML prototype + chat)
 ```
