@@ -20,6 +20,20 @@ retracts when you leave — no separate floating popover.
 - **Recent** → revisit recent questions, persisted across launches.
 - **Auto-retract** on mouse-leave (only when idle); `Esc` or a click outside closes it.
 
+## Install
+
+One line — downloads the latest release and installs it into `/Applications`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cyrus-cai/notch/master/install.sh | bash
+```
+
+> The app isn't notarized, so the installer clears macOS's quarantine flag for
+> you. Prefer to do it by hand? Grab the `.zip` from the
+> [latest release](https://github.com/cyrus-cai/notch/releases/latest), unzip,
+> drag **NotchGlass.app** to Applications, then run
+> `xattr -dr com.apple.quarantine /Applications/NotchGlass.app`.
+
 ## Build & run
 
 ```bash
