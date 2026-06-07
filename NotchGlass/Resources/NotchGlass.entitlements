@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Required under the hardened runtime to send Apple Events to other apps.
+	     The record mode drives Notes.app via AppleScript (see NotesService); the
+	     app is not sandboxed, so this single entitlement is all that's needed.
+	     macOS still gates the first send behind a one-time TCC Automation prompt
+	     (text from NSAppleEventsUsageDescription in Info.plist). -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

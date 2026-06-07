@@ -1,0 +1,296 @@
+import SwiftUI
+
+/// A bottom-rounded rectangle — the island's silhouette. Top corners are square
+/// (flush with the screen edge, like the hardware notch); only the bottom
+/// corners round as the form grows.
+struct NotchShape: InsettableShape {
+    var bottomRadius: CGFloat
+    /// Inset applied by `.strokeBorder` (and `inset(by:)`) so a stroked edge
+    /// stays fully inside the fill instead of being clipped in half.
+    var inset: CGFloat = 0
+
+    var animatableData: CGFloat {
+        get { bottomRadius }
+        set { bottomRadius = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let rect = rect.insetBy(dx: inset, dy: inset)
+        let r = min(bottomRadius, min(rect.width, rect.height) / 2)
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+        p.addArc(center: CGPoint(x: rect.maxX - r, y: rect.maxY - r),
+                 radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+        p.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+        p.addArc(center: CGPoint(x: rect.minX + r, y: rect.maxY - r),
+                 radius: r, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+        p.closeSubpath()
+        return p
+    }
+
+    func inset(by amount: CGFloat) -> some InsettableShape {
+        var copy = self
+        copy.inset += amount
+        return copy
+    }
+}
+
+/// The island background — modeled on the iOS Control-Center / Now-Playing
+/// **uniform dark Liquid Glass** look: one even slab of translucent dark glass
+/// that refracts the wallpaper/app icons behind it across its *whole* surface
+/// (the top included), wrapped in a continuous soft specular rim that reads as
+/// the thickness of the glass.
+///
+/// Layers, back to front:
+///  1. High-transparency native `.glassEffect(.clear)` over the whole shape —
+///     real, strong refraction so the background bleeds through everywhere.
+///  2. A single **even** dark veil (no top-to-bottom gradient) that tints the
+///     whole slab so it reads as dark smoked glass and keeps text legible —
+///     plus a faint top-edge sheen for a touch of depth, like the reference.
+///  3. A thin camera-zone darkening at the very top so the hardware notch /
+///     lens area stays discreet without going to a hard black band.
+///  4. A continuous, soft **edge rim** all the way around — the signature look:
+///     a bright fine line that wraps the entire perimeter, strongest at top and
+///     bottom, fading on the straight sides.
+struct GlassMaterial: View {
+    var bottomRadius: CGFloat
+    /// Whether the island is expanded. Resting (false) blends with the physical
+    /// black bezel → near-opaque dark; expanded (true) becomes the translucent
+    /// Control-Center glass that refracts the background.
+    var expanded: Bool = false
+    /// When true, wash the glass body in a whisper of champagne gold so the record
+    /// (note) surface reads warm against the cold black chat glass. Only the glass
+    /// region below the notch cap is tinted — the black hardware zone stays true
+    /// black. Off (chat) leaves the original cold obsidian untouched.
+    var warm: Bool = false
+    /// Height of the camera/lens zone at the very top that gets extra darkening
+    /// so the hardware notch stays discreet over a transparent slab.
+    var cameraZone: CGFloat = Tokens.notchTopHeight
+
+    /// Drives the one-shot light sweep that plays as the panel expands. Flipped
+    /// by `.onChange(of: expanded)` so the shimmer travels exactly once per open.
+    @State private var sweep = false
+
+    var body: some View {
+        let shape = NotchShape(bottomRadius: bottomRadius)
+
+        // Build the whole material — glass + tint + cap + rim — then HARD-CUT it
+        // to the shape as the final step. Masking the composited group (rather
+        // than letting the system glass draw its own soft luminous edge) removes
+        // the "outer ring of glass": no refraction or glow bleeds past the
+        // rounded corners, so the edge is crisp and the corner reads as solid.
+        ZStack {
+            shape.fill(.clear).nativeGlass(in: shape)
+            darkVeil
+            // Champagne wash for the record surface, painted over the dark veil but
+            // UNDER the black cap — so it warms the glass body while the notch zone
+            // stays true black. Gated on `warm && expanded`: a resting notch is the
+            // shared black bezel and must never carry a tint.
+            if warm && expanded { champagneWash(shape) }
+            blackCap(shape)
+            if expanded { expandShimmer(shape) }
+            edgeRim(shape)
+        }
+        .compositingGroup()
+        .clipShape(shape)
+        .mask(shape)
+        // A tight, downward-only drop shadow for separation — small radius so it
+        // doesn't smear into a halo around the corners on a bright wallpaper.
+        .background(
+            shape
+                .fill(.black.opacity(0.30))
+                .blur(radius: 9)
+                .offset(y: 5)
+                .allowsHitTesting(false)
+        )
+        .onChange(of: expanded) { _, isOpen in
+            if isOpen {
+                // Reset to the top instantly, then drive the sweep down on the
+                // next runloop tick so the animation always plays from the start.
+                sweep = false
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.7)) { sweep = true }
+                }
+            } else {
+                sweep = false
+            }
+        }
+    }
+
+    /// A one-shot specular highlight that glides down the glass as it opens — a
+    /// soft diagonal band of light, brightest mid-panel, that travels from the
+    /// black lip to the bottom edge once and settles. Purely cosmetic; ignores
+    /// hits. Clipped to the shape by the parent's mask.
+    private func expandShimmer(_ shape: NotchShape) -> some View {
+        GeometryReader { geo in
+            let h = max(geo.size.height, 1)
+            // Travel from just above the panel to just below it.
+            let travel = h + 80
+            LinearGradient(
+                stops: [
+                    .init(color: .white.opacity(0.0),  location: 0.0),
+                    .init(color: .white.opacity(0.10), location: 0.45),
+                    .init(color: .white.opacity(0.18), location: 0.5),
+                    .init(color: .white.opacity(0.10), location: 0.55),
+                    .init(color: .white.opacity(0.0),  location: 1.0),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: 110)
+            .blur(radius: 6)
+            .offset(y: sweep ? travel - 55 : -110)
+            .blendMode(.plusLighter)
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// A hard, **true #000** cap painted over the camera/notch zone, sitting
+    /// ABOVE the glass and the veil. The system glass adds a faint frosted blue
+    /// cast that kept the top from matching the pure-black hardware bezel; an
+    /// explicit opaque black here guarantees the top fuses seamlessly with the
+    /// physical notch. It fades out over the melt band so the seam into the glass
+    /// below stays smooth.
+    private func blackCap(_ shape: NotchShape) -> some View {
+        GeometryReader { geo in
+            let h = max(geo.size.height, cameraZone + 1)
+            let solidEnd = min(cameraZone / h, 0.985)
+            let fadeEnd = min(solidEnd + 46 / h, 0.999)
+            LinearGradient(
+                stops: [
+                    .init(color: .black,               location: 0.0),
+                    .init(color: .black,               location: solidEnd),
+                    .init(color: .black.opacity(0.0),  location: fadeEnd),
+                    .init(color: .black.opacity(0.0),  location: 1.0),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+        }
+        .clipShape(shape)
+        .allowsHitTesting(false)
+    }
+
+    /// The veil that tints the slab. Two behaviours:
+    ///
+    ///  · **Resting** — nearly opaque everywhere so the small notch blends into
+    ///    the physical black bezel.
+    ///  · **Expanded** — a *solid black top that melts into uniform glass*:
+    ///    fully-opaque black across the camera/notch zone (so it fuses with the
+    ///    hardware notch — no wallpaper showing through up there), then easing
+    ///    over a soft band into the even ~0.55 smoked-glass tint that holds for
+    ///    the rest of the panel. The black zone is anchored in *absolute points*
+    ///    via the rendered height so it stays a constant size as the panel grows.
+    private var darkVeil: some View {
+        GeometryReader { geo in
+            let h = max(geo.size.height, cameraZone + 1)
+            // Opaque-black through the notch zone, then a melt band down to the
+            // uniform glass tint.
+            let solidEnd = min(cameraZone / h, 0.985)
+            let meltEnd = min(solidEnd + 60 / h, 0.999)   // ~60pt melt band
+            let glass = 0.55
+
+            ZStack {
+                if expanded {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black,                    location: 0.0),
+                            .init(color: .black,                    location: solidEnd),
+                            .init(color: .black.opacity(glass),     location: meltEnd),
+                            .init(color: .black.opacity(glass),     location: 1.0),
+                        ],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                } else {
+                    Color.black.opacity(0.92)
+                }
+
+                // Subtle brighter sheen just under the black lip — depth.
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0.05), location: solidEnd),
+                        .init(color: .white.opacity(0.0),  location: min(solidEnd + 40 / h, 1.0)),
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .blendMode(.plusLighter)
+            }
+        }
+    }
+
+    /// The record surface's warmth: a *whisper* of champagne gold over the glass
+    /// body, following the same notch-zone → glass melt the dark veil uses, so the
+    /// tint fades in exactly where the black cap fades out. Kept extremely low
+    /// (≈0.10 peak) and softened with `.plusLighter` so it reads as a warm cast on
+    /// the obsidian, never a yellow panel — the "极淡的香槟金" the user asked for.
+    private func champagneWash(_ shape: NotchShape) -> some View {
+        GeometryReader { geo in
+            let h = max(geo.size.height, cameraZone + 1)
+            let solidEnd = min(cameraZone / h, 0.985)
+            let meltEnd = min(solidEnd + 60 / h, 0.999)   // match the veil's melt band
+            LinearGradient(
+                stops: [
+                    .init(color: Tokens.champagne.opacity(0.0),  location: 0.0),
+                    .init(color: Tokens.champagne.opacity(0.0),  location: solidEnd),
+                    .init(color: Tokens.champagne.opacity(0.10), location: meltEnd),
+                    .init(color: Tokens.champagne.opacity(0.10), location: 1.0),
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+            .blendMode(.plusLighter)
+        }
+        .clipShape(shape)
+        .allowsHitTesting(false)
+    }
+
+    /// A *whisper* of an edge — just enough to define where the glass meets the
+    /// background, not a glowing white border. Real Liquid Glass barely shows a
+    /// rim: a faint highlight along the bottom curve (where it catches light) and
+    /// an almost-invisible hairline elsewhere. Kept to the lower half so the top,
+    /// which fuses with the black notch, shows no border at all.
+    private func edgeRim(_ shape: NotchShape) -> some View {
+        shape
+            .strokeBorder(
+                LinearGradient(
+                    stops: [
+                        .init(color: .white.opacity(0.0),  location: 0.0),
+                        .init(color: .white.opacity(0.04), location: 0.55),
+                        .init(color: .white.opacity(0.16), location: 1.0),
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                ),
+                lineWidth: 0.75
+            )
+            .allowsHitTesting(false)
+    }
+}
+
+private extension View {
+    /// Apply genuine system Liquid Glass on macOS 26+, with a graceful blurred
+    /// fallback on older systems. We use the **high-transparency** `.clear`
+    /// variant so the wallpaper / app icons refract strongly through the whole
+    /// slab (the iOS Control-Center look); our own even dark veil supplies the
+    /// smoked tint and keeps text legible.
+    @ViewBuilder
+    func nativeGlass<S: Shape>(in shape: S) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.clear, in: shape)
+        } else {
+            self.background(LegacyGlassBackdrop().clipShape(shape))
+        }
+    }
+}
+
+/// Pre-macOS 26 fallback: an `NSVisualEffectView` dark blur (best we can do
+/// without the native Liquid Glass material).
+struct LegacyGlassBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = .hudWindow
+        v.blendingMode = .behindWindow
+        v.state = .active
+        v.appearance = NSAppearance(named: .vibrantDark)
+        return v
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
