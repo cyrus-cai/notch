@@ -11,10 +11,15 @@ struct NotchBody: View {
     /// Natural (intrinsic) height of the answer text, reported by a preference
     /// reader. Drives the scroll area's height so short answers stay short.
     @State private var measuredAnswerHeight: CGFloat = 120
-    /// Flips true for a beat after the handoff button copies the conversation, so
-    /// the labelled feedback line under the field (handoffFeedback) can confirm
-    /// the copy ("Copied — paste into ChatGPT or Claude") before settling back.
-    /// Mirrors the note view's "Saved to Notes" cue rather than a bare check.
+    /// Phase (0→1) of the light that sweeps *across the confirmation text* after a
+    /// copy. The follow-up field's placeholder momentarily becomes "Copied to
+    /// clipboard", and a soft highlight glides over those glyphs once — the shimmer
+    /// decorates the words rather than scanning a band across the whole box. Animated
+    /// 0→1 to run a single pass.
+    @State private var handoffSweep = false
+    /// Whether the copy confirmation is currently showing. While true, the input's
+    /// placeholder reads "Copied to clipboard" (shimmered) instead of "Ask a
+    /// follow-up…", and the trailing icon shows a check. Flips back after ~2s.
     @State private var handoffCopied = false
     /// Whether the record mode's "what does this do?" explainer is expanded. Toggled
     /// by the info button at the trailing edge of the record field; when on, a short
@@ -398,36 +403,11 @@ struct NotchBody: View {
             Group {
                 if model.isConfigured {
                     followUpRow
-                    handoffFeedback
                 } else {
                     setupModelRow
                 }
             }
             .padding(.top, 24)
-            .animation(.easeInOut(duration: 0.2), value: handoffCopied)
-        }
-    }
-
-    /// The line under the follow-up field, mirroring the note view's "Saved to
-    /// Notes" cue: for a beat after the handoff button copies the conversation it
-    /// reads "Copied — paste into ChatGPT or Claude", so the user knows what the
-    /// button just did instead of guessing at a bare green check. Holds a fixed
-    /// height even when empty so showing/hiding it doesn't nudge the field above.
-    @ViewBuilder
-    private var handoffFeedback: some View {
-        // Only present when the copy just happened. When idle it takes ZERO height —
-        // no reserved blank row — so the result view ends right under the follow-up
-        // field instead of trailing a dead band. The copy line unfurls for its beat
-        // (it pushes nothing important, the field above is pinned) and folds away.
-        if handoffCopied {
-            Label("Copied — paste into ChatGPT or Claude", systemImage: "checkmark.circle.fill")
-                .font(.sf(12))
-                .foregroundStyle(Tokens.success)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 8)
-                .transition(.opacity.combined(with: .move(edge: .top)))
         }
     }
 
@@ -669,18 +649,35 @@ struct NotchBody: View {
 
     private var followUpRow: some View {
         HStack(spacing: 6) {
-            PromptField(
-                text: $model.text,
-                placeholder: "Ask a follow-up…",
-                fontSize: 14.5,
-                focusTrigger: focused,
-                onSubmit: { model.submit() },
-                onBack: {
-                    withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
-                        model.newChat()
+            ZStack(alignment: .leading) {
+                PromptField(
+                    // While the copy confirmation is up the field's own placeholder
+                    // is blanked, so "Copied to clipboard" owns the slot cleanly with
+                    // no "Ask a follow-up…" bleeding through underneath.
+                    text: $model.text,
+                    placeholder: (handoffCopied && !model.hasText) ? "" : "Ask a follow-up…",
+                    fontSize: 14.5,
+                    focusTrigger: focused,
+                    onSubmit: { model.submit() },
+                    onBack: {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                            model.newChat()
+                        }
                     }
+                )
+                // On copy, the placeholder slot momentarily reads "Copied to
+                // clipboard" with a light gliding across the glyphs, then fades back
+                // to the real field. Only shown while the field is empty (the
+                // placeholder's own territory), so it never covers typed text.
+                if handoffCopied && !model.hasText {
+                    copiedShimmerLabel
+                        // Nudge to sit on the NSTextField cell's own ~2pt left inset
+                        // so the label lands where the placeholder was, not 2pt left.
+                        .padding(.leading, 2)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                 }
-            )
+            }
 
             // Light "take this elsewhere" affordance — copies the whole thread as
             // portable context so it can be pasted into ChatGPT/Claude. Kept faint
@@ -704,6 +701,7 @@ struct NotchBody: View {
             RoundedRectangle(cornerRadius: 12)
                 .fill(.white.opacity(focused ? 0.08 : 0.05))
         )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(.white.opacity(focused ? 0.20 : 0.10), lineWidth: 0.5)
@@ -712,31 +710,77 @@ struct NotchBody: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: model.hasText)
     }
 
+    /// The copy confirmation that lives in the placeholder slot: the words "Copied
+    /// to clipboard" sitting exactly where "Ask a follow-up…" sits, with a soft
+    /// highlight gliding once across the glyphs. The base text reads at the same
+    /// quiet placeholder weight; over it, a narrow brighter band is *masked to the
+    /// text itself* (not the box) and swept left→right by `handoffSweep`, so the
+    /// light catches the letters rather than scanning the field. One pass, then it
+    /// settles, then the whole label fades back out (see `runHandoffCopy`).
+    private var copiedShimmerLabel: some View {
+        let label = "Copied to clipboard"
+        return Text(label)
+            .font(.sf(14.5))
+            .foregroundStyle(Tokens.placeholder)
+            // The travelling highlight, drawn only where the glyphs are.
+            .overlay(
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let band = max(w * 0.5, 70)
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white.opacity(0),    location: 0),
+                            .init(color: .white.opacity(0.85), location: 0.5),
+                            .init(color: .white.opacity(0),    location: 1),
+                        ],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                    .frame(width: band)
+                    .offset(x: handoffSweep ? w + band : -band)
+                    .blendMode(.screen)
+                }
+                .mask(Text(label).font(.sf(14.5)))
+                .allowsHitTesting(false)
+            )
+    }
+
     /// A small, faint icon button that copies the conversation to the clipboard so
     /// the user can continue it in a full chat (ChatGPT / Claude). No hard round
     /// limit — this is always available as an escape hatch, sitting quietly at the
     /// trailing edge of the follow-up field. Flips to a check for a beat on copy.
     private var continueElsewhereButton: some View {
-        Button {
-            model.copyHandoffContext()
-            withAnimation(.easeOut(duration: 0.18)) { handoffCopied = true }
-            Task {
-                try? await Task.sleep(nanoseconds: 1_600_000_000)
-                withAnimation(.easeOut(duration: 0.3)) { handoffCopied = false }
-            }
-        } label: {
-            // The icon stays put — the copy confirmation now lives in the labelled
-            // feedback line under the field (handoffFeedback), so the button no
-            // longer flips to a bare, unexplained green check. A brief brightening
-            // is the only on-button acknowledgement.
-            Image(systemName: "square.on.square.dashed")
+        Button { runHandoffCopy() } label: {
+            // The icon briefly snaps to a check; the "Copied to clipboard" label in
+            // the field is the real confirmation, so the button itself stays quiet.
+            Image(systemName: handoffCopied ? "checkmark" : "square.on.square.dashed")
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundStyle(handoffCopied ? Tokens.text2 : Tokens.text3)
                 .frame(width: 27, height: 27)
                 .contentShape(Rectangle())
         }
         .buttonStyle(RecentEntryStyle())
-        .help(handoffCopied ? "Copied — paste into ChatGPT or Claude" : "Copy chat to continue in ChatGPT or Claude")
+        .help("Copy chat to continue in ChatGPT or Claude")
+    }
+
+    /// Copy the conversation and play the in-field confirmation: the placeholder
+    /// becomes "Copied to clipboard", a light sweeps once across those glyphs, the
+    /// message holds for a beat, then the whole label fades back to "Ask a
+    /// follow-up…". The trailing icon shows a check for the same window. Sequence:
+    /// reveal → one ~0.9s sweep → hold → ~2s after the start, fade out.
+    private func runHandoffCopy() {
+        model.copyHandoffContext()
+        handoffSweep = false                       // park the highlight off the left
+        withAnimation(.easeOut(duration: 0.18)) { handoffCopied = true }
+        // Kick the sweep on the next runloop so the reveal and the highlight don't
+        // collide into one frame.
+        Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            withAnimation(.easeInOut(duration: 0.9)) { handoffSweep = true }
+            try? await Task.sleep(nanoseconds: 1_880_000_000)
+            withAnimation(.easeOut(duration: 0.35)) { handoffCopied = false }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            handoffSweep = false                   // reset for the next copy
+        }
     }
 }
 

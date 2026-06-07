@@ -428,7 +428,15 @@ final class NotchModel: ObservableObject {
         noteCueTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_700_000_000)
             guard !Task.isCancelled else { return }
-            self?.lastSavedNote = nil
+            // Clear the cue on the SAME spring the record view and the island both
+            // use for this state (response 0.42, damping 0.82). Driving it explicitly
+            // — rather than leaning on the implicit `.animation(value:)` modifiers —
+            // puts the inner line's fade and the outer island's height collapse on
+            // one shared transaction, so they can't be scheduled apart and the panel
+            // draws up as a single smooth motion instead of a two-step settle.
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                self?.lastSavedNote = nil
+            }
         }
     }
 

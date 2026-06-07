@@ -170,6 +170,17 @@ struct NotchIsland: View {
         )
         .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.openWidth)
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: model.mode)
+        // The record-mode feedback line (Saving… → Added to Notes → gone) changes
+        // the body's intrinsic height. Without these, only the inner noteView spring
+        // governed that change — it animates the line's own fade/scale but does NOT
+        // propagate up to this island's frame, glass background, or clip shape, so
+        // the outer form resized on a mismatched (or no) transaction while the inner
+        // text eased out. Keying the island's grow/shrink on the same note states,
+        // with the SAME spring noteView uses (response 0.42, damping 0.82), makes the
+        // whole island — content and glass shell — settle as one smooth motion.
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteSaving)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.lastSavedNote)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteError)
         // Cross-fade the glass tint (cold black ⇄ warm champagne) when Tab flips
         // the surface, so switching modes feels like a smooth temperature change
         // rather than a hard recolour.
