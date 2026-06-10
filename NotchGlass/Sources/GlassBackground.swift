@@ -60,11 +60,6 @@ struct GlassMaterial: View {
     /// black bezel → near-opaque dark; expanded (true) becomes the translucent
     /// Control-Center glass that refracts the background.
     var expanded: Bool = false
-    /// When true, wash the glass body in a whisper of champagne gold so the record
-    /// (note) surface reads warm against the cold black chat glass. Only the glass
-    /// region below the notch cap is tinted — the black hardware zone stays true
-    /// black. Off (chat) leaves the original cold obsidian untouched.
-    var warm: Bool = false
     /// Height of the camera/lens zone at the very top that gets extra darkening
     /// so the hardware notch stays discreet over a transparent slab.
     var cameraZone: CGFloat = Tokens.notchTopHeight
@@ -84,14 +79,15 @@ struct GlassMaterial: View {
         ZStack {
             shape.fill(.clear).nativeGlass(in: shape)
             darkVeil
-            // Champagne wash for the record surface, painted over the dark veil but
-            // UNDER the black cap — so it warms the glass body while the notch zone
-            // stays true black. Gated on `warm && expanded`: a resting notch is the
-            // shared black bezel and must never carry a tint.
-            if warm && expanded { champagneWash(shape) }
+            // The raking diagonal gloss over the lower body — only when open.
+            if expanded { diagonalGloss(shape) }
             blackCap(shape)
             if expanded { expandShimmer(shape) }
-            edgeRim(shape)
+            // NOTE: the edge rim is intentionally NOT drawn here. It's stamped over
+            // the island as a separate overlay *after* the bottom/left/right edge
+            // fade (see `NotchIsland`), so the specular highlight keeps tracing the
+            // edges crisply while the dark glass + content dissolve into them. If it
+            // lived inside this masked group it would dissolve along with the fill.
         }
         .compositingGroup()
         .clipShape(shape)
@@ -146,6 +142,37 @@ struct GlassMaterial: View {
         .allowsHitTesting(false)
     }
 
+    /// A soft diagonal **specular gloss** raking across the lower body — the bright
+    /// streak of light reflecting off a thick glass slab in the reference. A wide,
+    /// blurred bright band angled across the panel and pushed toward the lower-right,
+    /// kept low and `.plusLighter` so it reads as a gloss on the obsidian rather than
+    /// a white wedge. Clipped to the shape by the parent's mask; purely cosmetic.
+    private func diagonalGloss(_ shape: NotchShape) -> some View {
+        GeometryReader { geo in
+            let w = max(geo.size.width, 1)
+            let h = max(geo.size.height, 1)
+            LinearGradient(
+                stops: [
+                    .init(color: .white.opacity(0.0),  location: 0.0),
+                    .init(color: .white.opacity(0.0),  location: 0.42),
+                    .init(color: .white.opacity(0.06), location: 0.5),
+                    .init(color: .white.opacity(0.10), location: 0.56),
+                    .init(color: .white.opacity(0.0),  location: 0.66),
+                    .init(color: .white.opacity(0.0),  location: 1.0),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            // Oversize + rotate so the band sweeps the lower-right corner area at a
+            // shallow diagonal, like raking light, then blur it to a soft gloss.
+            .frame(width: w * 1.8, height: h * 1.8)
+            .rotationEffect(.degrees(-18))
+            .offset(x: w * 0.12, y: h * 0.30)
+            .blur(radius: 14)
+            .blendMode(.plusLighter)
+        }
+        .allowsHitTesting(false)
+    }
+
     /// A hard, **true #000** cap painted over the camera/notch zone, sitting
     /// ABOVE the glass and the veil. The system glass adds a faint frosted blue
     /// cast that kept the top from matching the pure-black hardware bezel; an
@@ -185,19 +212,27 @@ struct GlassMaterial: View {
         GeometryReader { geo in
             let h = max(geo.size.height, cameraZone + 1)
             // Opaque-black through the notch zone, then a melt band down to the
-            // uniform glass tint.
+            // glass tint.
             let solidEnd = min(cameraZone / h, 0.985)
             let meltEnd = min(solidEnd + 60 / h, 0.999)   // ~60pt melt band
-            let glass = 0.55
+            // The glass is darkest just under the black notch lip and eases more
+            // translucent toward the bottom — matching real dark Liquid Glass, where
+            // the top reads near-solid and the lower body lets more of the
+            // background warmth bleed through. Two values: the tint right after the
+            // melt (`glassTop`) and the lighter tint at the very bottom edge
+            // (`glassBottom`), ramped between so the panel grows clearer downward
+            // without ever going fully clear (text keeps a dark backing throughout).
+            let glassTop = 0.62
+            let glassBottom = 0.34
 
             ZStack {
                 if expanded {
                     LinearGradient(
                         stops: [
-                            .init(color: .black,                    location: 0.0),
-                            .init(color: .black,                    location: solidEnd),
-                            .init(color: .black.opacity(glass),     location: meltEnd),
-                            .init(color: .black.opacity(glass),     location: 1.0),
+                            .init(color: .black,                       location: 0.0),
+                            .init(color: .black,                       location: solidEnd),
+                            .init(color: .black.opacity(glassTop),     location: meltEnd),
+                            .init(color: .black.opacity(glassBottom),  location: 1.0),
                         ],
                         startPoint: .top, endPoint: .bottom
                     )
@@ -218,50 +253,64 @@ struct GlassMaterial: View {
         }
     }
 
-    /// The record surface's warmth: a *whisper* of champagne gold over the glass
-    /// body, following the same notch-zone → glass melt the dark veil uses, so the
-    /// tint fades in exactly where the black cap fades out. Kept extremely low
-    /// (≈0.10 peak) and softened with `.plusLighter` so it reads as a warm cast on
-    /// the obsidian, never a yellow panel — the "极淡的香槟金" the user asked for.
-    private func champagneWash(_ shape: NotchShape) -> some View {
-        GeometryReader { geo in
-            let h = max(geo.size.height, cameraZone + 1)
-            let solidEnd = min(cameraZone / h, 0.985)
-            let meltEnd = min(solidEnd + 60 / h, 0.999)   // match the veil's melt band
-            LinearGradient(
-                stops: [
-                    .init(color: Tokens.champagne.opacity(0.0),  location: 0.0),
-                    .init(color: Tokens.champagne.opacity(0.0),  location: solidEnd),
-                    .init(color: Tokens.champagne.opacity(0.10), location: meltEnd),
-                    .init(color: Tokens.champagne.opacity(0.10), location: 1.0),
-                ],
-                startPoint: .top, endPoint: .bottom
-            )
-            .blendMode(.plusLighter)
-        }
-        .clipShape(shape)
-        .allowsHitTesting(false)
-    }
+}
 
-    /// A *whisper* of an edge — just enough to define where the glass meets the
-    /// background, not a glowing white border. Real Liquid Glass barely shows a
-    /// rim: a faint highlight along the bottom curve (where it catches light) and
-    /// an almost-invisible hairline elsewhere. Kept to the lower half so the top,
-    /// which fuses with the black notch, shows no border at all.
-    private func edgeRim(_ shape: NotchShape) -> some View {
-        shape
-            .strokeBorder(
-                LinearGradient(
-                    stops: [
-                        .init(color: .white.opacity(0.0),  location: 0.0),
-                        .init(color: .white.opacity(0.04), location: 0.55),
-                        .init(color: .white.opacity(0.16), location: 1.0),
-                    ],
-                    startPoint: .top, endPoint: .bottom
-                ),
-                lineWidth: 0.75
-            )
-            .allowsHitTesting(false)
+/// The island's specular edge — a **lit, beveled rim** that wraps the bottom and
+/// both sides, brightest where the glass is thickest at the rounded corners. This
+/// is what gives the form its "slab of glass" depth in place of fading the fill to
+/// nothing: the dark body holds (text stays legible) and the *edge* catches light.
+/// The top shows no rim at all — it fuses with the black hardware notch.
+///
+/// Two passes make the bevel read as thickness, not a drawn outline:
+///  • a crisp bright **outer hairline** right on the perimeter, and
+///  • a soft **inner glow** just inside it (a blurred, inset stroke) so the light
+///    falls off into the glass rather than stopping at a hard line.
+/// Both ride a top→bottom gradient (dark at top, bright along the bottom curve),
+/// so the corners — where bottom meets side — read brightest, like the reference.
+///
+/// Lives as its own view (not a layer inside `GlassMaterial`'s masked group) so it
+/// can be stamped over the island after the body is composited — the highlight
+/// traces the edge crisply instead of being masked away with the fill.
+struct IslandRim: View {
+    var shape: NotchShape
+
+    var body: some View {
+        ZStack {
+            // Soft inner glow — a blurred stroke set in from the edge, giving the
+            // bevel its luminous thickness so the light eases into the glass.
+            shape
+                .inset(by: 1.0)
+                .stroke(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white.opacity(0.0),  location: 0.0),
+                            .init(color: .white.opacity(0.04), location: 0.5),
+                            .init(color: .white.opacity(0.13), location: 1.0),
+                        ],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    lineWidth: 2.5
+                )
+                .blur(radius: 2.5)
+                .blendMode(.plusLighter)
+
+            // Crisp outer hairline right on the perimeter — the bright edge of the
+            // glass catching light. Brightest along the bottom; absent at the top.
+            shape
+                .strokeBorder(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .white.opacity(0.0),  location: 0.0),
+                            .init(color: .white.opacity(0.08), location: 0.5),
+                            .init(color: .white.opacity(0.26), location: 1.0),
+                        ],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    lineWidth: 0.9
+                )
+                .blendMode(.plusLighter)
+        }
+        .allowsHitTesting(false)
     }
 }
 

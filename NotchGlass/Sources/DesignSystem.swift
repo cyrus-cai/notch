@@ -32,13 +32,6 @@ enum Tokens {
     /// Kept low on the scale so "Ask anything" whispers instead of shouting.
     static let placeholder = ink.opacity(0.38)
 
-    /// The warm "champagne gold" the record (note) surface tints its glass with, so
-    /// it reads apart from the cold black chat glass at a glance. Very low chroma —
-    /// a warm white, not yellow — so layered faintly over the dark veil it reads as
-    /// a whisper of warmth rather than a coloured panel. The opacity it's applied at
-    /// (see `GlassMaterial`) is what keeps it "极淡".
-    static let champagne = Color(red: 1.00, green: 0.90, blue: 0.62)
-
     // Resting notch dimensions — matched to the real MacBook hardware notch
     // (≈185pt wide × 32pt tall, ~9pt bottom corner radius) so the resting form
     // sits exactly over the bezel cutout rather than looking like a fat pill.
@@ -94,7 +87,7 @@ struct ScrollEdgeFade: ViewModifier {
     var bottom: Bool
     /// Height of each taper, in points. Generous on purpose so the fade is a long
     /// gradient, not a thin line that still reads as a cut.
-    var fade: CGFloat = 30
+    var fade: CGFloat = 64
 
     func body(content: Content) -> some View {
         content.mask(
@@ -120,7 +113,7 @@ extension View {
     /// Apply the shared scroll edge fade (see `ScrollEdgeFade`). Pass `top` /
     /// `bottom` to choose which edges taper; usually gated on whether the content
     /// actually overflows, so a short list/thread stays crisp.
-    func scrollEdgeFade(top: Bool, bottom: Bool, fade: CGFloat = 30) -> some View {
+    func scrollEdgeFade(top: Bool, bottom: Bool, fade: CGFloat = 64) -> some View {
         modifier(ScrollEdgeFade(top: top, bottom: bottom, fade: fade))
     }
 }

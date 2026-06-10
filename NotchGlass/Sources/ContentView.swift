@@ -17,12 +17,13 @@ struct ContentView: View {
                     .onTapGesture {
                         // A tap outside the island while the Clear confirmation is
                         // armed cancels just the dialog — it shouldn't also blow the
-                        // whole panel shut.
+                        // whole panel shut. Closing mid-request is fine: the answer
+                        // keeps streaming detached and lands in Recent.
                         if model.confirmingClear {
                             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                                 model.confirmingClear = false
                             }
-                        } else if model.mode != .load {
+                        } else {
                             model.fullClose()
                         }
                     }
@@ -33,21 +34,11 @@ struct ContentView: View {
         .frame(width: metrics.canvasWidth, alignment: .top)
         .ignoresSafeArea()
         .background(KeyEventCatcher { event in
-            // Tab flips between the chat and record surfaces while the panel is
-            // open. Only a bare Tab — let ⌘⇥ (app switch) and ⌥⇥ etc. pass through
-            // untouched. Caught before everything else so it works from either field.
-            if event.keyCode == 48,
-               event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
-               model.open {
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
-                    model.togglePanel()
-                }
-                return true
-            }
             // Esc: if the recent list is open, fold just that back to the input
             // first (one step "out"); only a second Esc closes the whole panel.
-            // Mid-request is still guarded so Esc can't close while loading.
-            if event.keyCode == 53, model.mode != .load {
+            // Works mid-request too — closing detaches the in-flight answer, which
+            // finishes in the background and lands in Recent (see NotchModel).
+            if event.keyCode == 53 {
                 // Clear confirmation armed → first Esc dismisses just the dialog,
                 // before any panel-level step-out / close.
                 if model.confirmingClear {
@@ -73,10 +64,12 @@ struct ContentView: View {
                 model.fullClose()
                 return true
             }
-            // ← goes "back" to a fresh conversation from a result detail view —
-            // but only when the follow-up field is empty, so a left-arrow while
-            // editing still just moves the caret instead of nuking the answer.
-            if event.keyCode == 123, model.mode == .result, !model.hasText {
+            // ← goes "back" to a fresh conversation from the thread view — also
+            // while the answer is still loading/streaming (the back chevron is
+            // visible then, and the round finishes detached into Recent). Only
+            // when the follow-up field is empty, so a left-arrow while editing
+            // still just moves the caret instead of leaving the thread.
+            if event.keyCode == 123, model.mode != .idle, !model.hasText {
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                     model.newChat()
                 }
@@ -136,7 +129,7 @@ struct NotchIsland: View {
         }
         .frame(width: width)
         .padding(.top, -topBleed)   // pull the form up so it bleeds off the top
-        .background(GlassMaterial(bottomRadius: bottomRadius, expanded: model.open, warm: model.panel == .note))
+        .background(GlassMaterial(bottomRadius: bottomRadius, expanded: model.open))
         // The destructive "Clear recent history?" confirmation floats centered over
         // the whole island (scrim + card), instead of a popover anchored under the
         // Clear pill that landed it near the bottom of the panel. Mounted here so it
@@ -150,9 +143,18 @@ struct NotchIsland: View {
                         }
                     },
                     onConfirm: {
-                        model.clearHistory()
+                        // Two beats, not one: the card fades out first while the
+                        // island holds its height, THEN the emptied recent list
+                        // collapses on the panel's standard module spring. Clearing
+                        // immediately (and outside the transaction) yanked the
+                        // island short mid-dismiss, re-centering and clipping the
+                        // still-fading card — a visible jump.
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                             model.confirmingClear = false
+                        } completion: {
+                            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                                model.clearHistory()
+                            }
                         }
                     }
                 )
@@ -160,6 +162,13 @@ struct NotchIsland: View {
             }
         }
         .clipShape(NotchShape(bottomRadius: bottomRadius))
+        // The "slab of glass" look (per the reference): the dark body holds and
+        // stays readable, the top reads near-solid and the lower body eases more
+        // translucent (that vertical gradient lives in GlassMaterial's veil), and
+        // the EDGES are defined by a lit beveled rim — bright along the bottom and
+        // sides, brightest at the rounded corners. Stamped on top of the composited
+        // island so the highlight traces the edge crisply instead of being clipped.
+        .overlay(IslandRim(shape: NotchShape(bottomRadius: bottomRadius)))
         .contentShape(NotchShape(bottomRadius: bottomRadius))
         // Spring expand; snappier, non-springy collapse — distinct in/out feel.
         .animation(
@@ -170,21 +179,17 @@ struct NotchIsland: View {
         )
         .animation(.spring(response: 0.42, dampingFraction: 0.72), value: model.openWidth)
         .animation(.spring(response: 0.42, dampingFraction: 0.78), value: model.mode)
-        // The record-mode feedback line (Saving… → Added to Notes → gone) changes
-        // the body's intrinsic height. Without these, only the inner noteView spring
+        // The note-save feedback line (Saving… → Added to Notes → gone) changes the
+        // body's intrinsic height. Without these, only the inner idleView spring
         // governed that change — it animates the line's own fade/scale but does NOT
         // propagate up to this island's frame, glass background, or clip shape, so
         // the outer form resized on a mismatched (or no) transaction while the inner
         // text eased out. Keying the island's grow/shrink on the same note states,
-        // with the SAME spring noteView uses (response 0.42, damping 0.82), makes the
+        // with the SAME spring idleView uses (response 0.42, damping 0.82), makes the
         // whole island — content and glass shell — settle as one smooth motion.
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteSaving)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.lastSavedNote)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteError)
-        // Cross-fade the glass tint (cold black ⇄ warm champagne) when Tab flips
-        // the surface, so switching modes feels like a smooth temperature change
-        // rather than a hard recolour.
-        .animation(.easeInOut(duration: 0.32), value: model.panel)
         .onHover { inside in
             if inside { model.openPanel() } else { model.collapseOnLeave() }
         }

@@ -33,6 +33,17 @@ struct PromptField: NSViewRepresentable {
     /// keyboard-highlighted recent row instead of submitting. Returns `true` when
     /// it handled the key (a row was open); `false` falls through to `onSubmit`.
     var onSubmitNav: () -> Bool = { false }
+    /// Invoked on Tab (and Shift-Tab) — the idle prompt binds it to "flip the
+    /// destination" (Ask ⇄ Note), overriding the classifier for the current line.
+    /// Returns `true` when consumed; `false` lets Tab do its default focus move.
+    var onTab: () -> Bool = { false }
+    /// Reports the width (pt) of everything the field editor is currently *showing*,
+    /// in the field's own font — committed text PLUS any in-progress IME composition
+    /// (the pinyin/marked text that isn't yet in `text`). The inline hint uses this
+    /// to sit right after the caret, so "— Ask" trails the pinyin live and slides
+    /// right as more is typed, instead of anchoring to the stale committed text.
+    /// `0` when the field is empty. No-op by default.
+    var onCaretWidth: (CGFloat) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -61,8 +72,27 @@ struct PromptField: NSViewRepresentable {
     }
 
     func updateNSView(_ field: NSTextField, context: Context) {
-        if field.stringValue != text { field.stringValue = text }
+        // Refresh the coordinator's view of us so its callbacks (onCaretWidth, the
+        // nav hooks) run against the current closures, not the ones captured at init.
+        context.coordinator.parent = self
+        // NEVER touch the field while an IME composition (marked text) is in flight.
+        // During composition the bound `text` lags the display (pinyin isn't
+        // committed yet), so the `stringValue != text` check below would "correct"
+        // the field back to the stale committed text — wiping the user's half-typed
+        // pinyin. And re-renders DO happen mid-composition now: the caret-width
+        // updates driving the inline hint are SwiftUI state changes.
+        let composing = (field.currentEditor() as? NSTextView)?.hasMarkedText() ?? false
+        let textChanged = !composing && field.stringValue != text
+        if textChanged { field.stringValue = text }
         applyStyle(to: field)
+        // When `text` is cleared programmatically (after submit) there's no editor
+        // change notification to re-measure from, so push the new width here. Use the
+        // bound `text` (the editor mirrors it; no marked text is in flight on a reset).
+        if textChanged {
+            let font = NSFont.systemFont(ofSize: fontSize)
+            let w = text.isEmpty ? 0 : ceil((text as NSString).size(withAttributes: [.font: font]).width)
+            onCaretWidth(w)
+        }
         // Take focus exactly ONCE per rising edge of focusTrigger. SwiftUI calls
         // updateNSView on every render while the panel is open; without this latch
         // we'd enqueue a `makeFirstResponder` on each pass, piling up async blocks
@@ -72,14 +102,26 @@ struct PromptField: NSViewRepresentable {
         if focusTrigger {
             if !coord.didFocus, field.window != nil, field.currentEditor() == nil {
                 coord.didFocus = true
-                DispatchQueue.main.async { [weak field] in
+                DispatchQueue.main.async { [weak field, weak coord] in
                     guard let field, field.currentEditor() == nil else { return }
                     field.window?.makeFirstResponder(field)
                     Self.disableEditorMagic(field.currentEditor())
+                    // The editor exists from this moment — hook the caret-width
+                    // observers NOW, not at controlTextDidBeginEditing. That delegate
+                    // call only fires on the first *committed* change, so a user who
+                    // starts straight into IME composition (pinyin) would compose an
+                    // entire word before any observer existed.
+                    coord?.attachEditorObservers(field.currentEditor())
                 }
             }
         } else {
             coord.didFocus = false   // re-arm for the next open
+        }
+        // Belt-and-suspenders for click-to-focus and editor swaps: whenever this
+        // field currently owns the field editor, make sure the caret-width observers
+        // are attached (idempotent — re-attaching the same editor is a no-op).
+        if let editor = field.currentEditor() {
+            coord.attachEditorObservers(editor)
         }
     }
 
@@ -130,17 +172,36 @@ struct PromptField: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
-        private let parent: PromptField
+        /// Refreshed on every `updateNSView` so the callbacks below (notably
+        /// `onCaretWidth`) never fire through a stale closure captured at init.
+        var parent: PromptField
         /// One-shot latch: true once we've taken focus for the current rising edge
         /// of `focusTrigger`, reset when it falls. Prevents re-enqueuing focus on
         /// every render. (See updateNSView.)
         var didFocus = false
+        /// The field editor we've subscribed to, and its text storage. Held weakly —
+        /// it's the shared window field editor, not ours to retain. The STORAGE is
+        /// the one that matters: IME composition (typing pinyin before it commits)
+        /// edits the marked text directly in the storage WITHOUT posting
+        /// `NSText.didChangeNotification` or calling `controlTextDidChange` — those
+        /// only fire for committed changes. `NSTextStorage.didProcessEditingNotification`
+        /// fires for every storage edit, marked text included, so it's the only hook
+        /// that lets the inline hint trail the pinyin live.
+        private weak var observedEditor: NSText?
+        private weak var observedStorage: NSTextStorage?
         init(_ parent: PromptField) { self.parent = parent }
+        deinit { detachEditorObservers() }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
             // Editor exists now — strip its completion/prediction behaviours.
             PromptField.disableEditorMagic(field.currentEditor())
+            attachEditorObservers(field.currentEditor())
+            reportCaretWidth(for: field.currentEditor())
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            detachEditorObservers()
         }
 
         func controlTextDidChange(_ obj: Notification) {
@@ -149,6 +210,89 @@ struct PromptField: NSViewRepresentable {
             // Belt-and-suspenders: macOS can re-arm prediction on the editor as
             // you type, so keep it disabled on every change (cheap idempotent set).
             PromptField.disableEditorMagic(field.currentEditor())
+            attachEditorObservers(field.currentEditor())
+            reportCaretWidth(for: field.currentEditor())
+        }
+
+        // MARK: Caret-width tracking (for the inline hint, IME-aware)
+
+        /// Subscribe to the field editor's text storage (and, for committed-change
+        /// coverage, the editor's own didChange). Idempotent — re-attaching the same
+        /// editor/storage is a no-op — so it's safe to call from every hook that
+        /// might be the first to see the editor (focus grab, begin editing, change).
+        func attachEditorObservers(_ editor: NSText?) {
+            guard let editor else { return }
+            if editor !== observedEditor {
+                if let old = observedEditor {
+                    NotificationCenter.default.removeObserver(
+                        self, name: NSText.didChangeNotification, object: old)
+                }
+                observedEditor = editor
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(editorTextDidChange(_:)),
+                    name: NSText.didChangeNotification,
+                    object: editor
+                )
+            }
+            // The IME-aware hook: marked-text (pinyin) edits land in the storage and
+            // post didProcessEditing even though no "text did change" ever fires.
+            if let storage = (editor as? NSTextView)?.textStorage, storage !== observedStorage {
+                if let old = observedStorage {
+                    NotificationCenter.default.removeObserver(
+                        self, name: NSTextStorage.didProcessEditingNotification, object: old)
+                }
+                observedStorage = storage
+                NotificationCenter.default.addObserver(
+                    self,
+                    selector: #selector(storageDidProcessEditing(_:)),
+                    name: NSTextStorage.didProcessEditingNotification,
+                    object: storage
+                )
+            }
+        }
+
+        private func detachEditorObservers() {
+            if let editor = observedEditor {
+                NotificationCenter.default.removeObserver(
+                    self, name: NSText.didChangeNotification, object: editor)
+            }
+            observedEditor = nil
+            if let storage = observedStorage {
+                NotificationCenter.default.removeObserver(
+                    self, name: NSTextStorage.didProcessEditingNotification, object: storage)
+            }
+            observedStorage = nil
+        }
+
+        /// Committed-change path (kept as a cheap backstop alongside the storage hook).
+        @objc private func editorTextDidChange(_ note: Notification) {
+            reportCaretWidth(for: note.object as? NSText)
+        }
+
+        /// The IME path: fires on EVERY storage edit, including marked-text (pinyin)
+        /// updates mid-composition. Posted from inside `processEditing`, so defer one
+        /// runloop tick before reading the storage — measuring mid-edit would read a
+        /// half-applied state.
+        @objc private func storageDidProcessEditing(_ note: Notification) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.reportCaretWidth(for: self.observedEditor)
+            }
+        }
+
+        /// Measure everything the editor is currently showing — committed text plus
+        /// any in-progress IME composition — in the field's font, and hand it to the
+        /// inline hint so it sits right after the caret. The editor's `string`
+        /// already includes the marked (composing) text, so measuring it covers the
+        /// pinyin-in-progress case for free.
+        private func reportCaretWidth(for editor: NSText?) {
+            let shown = editor?.string ?? parent.text
+            let font = NSFont.systemFont(ofSize: parent.fontSize)
+            let width = shown.isEmpty
+                ? 0
+                : ceil((shown as NSString).size(withAttributes: [.font: font]).width)
+            parent.onCaretWidth(width)
         }
 
         /// The authoritative kill switch for the word-completion popup: the field
@@ -177,6 +321,14 @@ struct PromptField: NSViewRepresentable {
                 parent.onSubmit()
                 return true
             }
+            // Tab flips the line's destination (Ask ⇄ Note). Shift-Tab too — the
+            // toggle is binary, so "the other one" is the same either way. The
+            // caller decides whether to consume it; unconsumed, Tab falls through
+            // to its usual focus move.
+            if commandSelector == #selector(NSResponder.insertTab(_:))
+                || commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                return parent.onTab()
+            }
             // ← on an empty field means "go back" (start a new conversation) rather
             // than moving a caret that has nothing to move. With text present we let
             // it fall through so normal cursor movement still works while editing.
@@ -202,10 +354,177 @@ struct PromptField: NSViewRepresentable {
     }
 }
 
-/// The circular send button — frosted glass at rest, fills white on hover,
-/// matching the prototype's `.send-btn`.
+/// A Siri-style **inline ghost hint** that trails the typed text on the same line,
+/// spelling out where Enter will send it — "— Ask" for a question, "— Note" for a
+/// jot — the way Siri appends a faint "— Ask Siri" after what you've typed. The
+/// classifier (via `NotchModel.submitLabel` / `effectiveSubmitPanel`)
+/// already recomputes that destination on every keystroke; this just *shows* it,
+/// in place, so the routing is visible before you press Return.
+///
+/// It's an overlay, not part of the field: the backing `NSTextField` can't host a
+/// trailing accessory, so we measure the typed text's width with the field's exact
+/// `NSFont` and offset the ghost label by that much inside a leading-aligned
+/// `ZStack`. When the text grows toward the trailing edge, the hint doesn't vanish —
+/// it **docks** at the right edge of the row and holds there while the field scrolls,
+/// so the Ask/Note read is never lost on a long line. The caller reserves that
+/// docking slot in the field itself (`reservedTrailingWidth`), so scrolled text can
+/// never run underneath the docked hint.
+///
+/// Mounted by the caller *over* the same row as its `PromptField`, sharing the
+/// field's `fontSize` so the measurement lines up glyph-for-glyph. Caller passes the
+/// available width (usually the row's own width, via a `GeometryReader`) so the
+/// dock position is known.
+struct InlineSendHint: View {
+    /// "Ask" / "Note" — the destination the classifier currently reads.
+    var label: String
+    /// The field's font size, so the hint matches the body text size exactly.
+    var fontSize: CGFloat
+    /// Width (pt) of everything the field is currently showing — committed text PLUS
+    /// any in-progress IME composition (pinyin) — measured in the field's font by
+    /// `PromptField` (`onCaretWidth`). This is where the caret sits, hence where the
+    /// ghost begins; sourcing it from the editor (not from the committed `text`) is
+    /// what lets "— Ask" trail the pinyin live and slide right as you type.
+    var caretWidth: CGFloat
+    /// Width available on the row for text + hint. The hint hides rather than clip
+    /// when the content leaves it no room.
+    var availableWidth: CGFloat
+    /// Left inset of the NSTextField's text (its cell draws ~2pt in from the edge),
+    /// so the ghost lands flush after the glyphs, not 2pt early.
+    var leadingInset: CGFloat = 2
+
+    /// The faint connector + word, e.g. "— Ask". An em dash leads into it, echoing
+    /// Siri's "— Ask Siri" framing; no ⏎ glyph (it rendered as an ugly box beside the
+    /// text). Just the destination, spelled out.
+    private var hintString: String { "— \(label)" }
+
+    /// Breathing room between the last glyph and the ghost.
+    private static let gap: CGFloat = 8
+
+    /// Trailing room the caller should reserve INSIDE the field (as trailing
+    /// padding) so text can never scroll under the docked hint: the widest hint
+    /// ("— Note") plus the breathing gap. Sized to the widest label so the field's
+    /// width stays constant when the hint flips Ask⇄Note mid-line — a live text
+    /// field relaid out per keystroke is exactly the jitter we're avoiding.
+    static func reservedTrailingWidth(fontSize: CGFloat) -> CGFloat {
+        width(of: "— Note", fontSize: fontSize) + gap
+    }
+
+    /// Width of the ghost itself. Rendered at the field's own size/weight, so it
+    /// measures at the same `fontSize`.
+    private var hintWidth: CGFloat {
+        Self.width(of: hintString, fontSize: fontSize)
+    }
+
+    var body: some View {
+        // Sit the ghost just past the glyphs, with a small breathing gap — but never
+        // past the dock at the row's trailing edge. A short line reads inline
+        // (Siri-style, right after the caret); as the line grows the hint glides
+        // right until it reaches the dock and holds there, staying visible while the
+        // field scrolls underneath (the caller reserved that slot, so no overlap).
+        // Visibility keys on `caretWidth` (not the committed `text`) so the hint
+        // stays up while pinyin is still composing.
+        let dock = availableWidth - hintWidth
+        let start = min(leadingInset + caretWidth + Self.gap, dock)
+        let visible = caretWidth > 0
+
+        // Motion notes — tuned to Apple's current language for ghost text:
+        //  · FOLLOW is a critically-damped spring, not a fixed-duration ease. Typing
+        //    retargets the animation every keystroke; a spring merges those
+        //    retargets velocity-continuously (each new target inherits the current
+        //    velocity), where an ease restarts from zero each time and reads as a
+        //    mechanical stutter under fast input. No bounce — the hint is "pulled
+        //    along" behind the caret, it never overshoots past it.
+        //  · APPEAR/DISAPPEAR is a materialize (blur + fade, in place) — the same
+        //    treatment Apple Intelligence uses for ghost text (`.blurReplace` on
+        //    macOS 15; recreated below for our 14 target). Structurally inserting
+        //    the Text (`if visible`) is what keeps the appearance anchored: a freshly
+        //    inserted view is born at its final offset, so it condenses into
+        //    position rather than flying in from wherever the hint last sat.
+        //  · The WORD swap (Ask⇄Note) is a quiet in-place cross-fade
+        //    (`contentTransition`), not a scale/bounce — the meaning changes, the
+        //    object doesn't.
+        return ZStack(alignment: .leading) {
+            if visible {
+                // Match the body text exactly — same size, same (regular) weight as
+                // the field's own glyphs — so the hint reads as a quiet continuation
+                // of the line rather than a smaller label. Only the colour sets it
+                // apart (placeholder grey vs. near-white typed text).
+                Text(hintString)
+                    .font(.system(size: fontSize, weight: .regular))
+                    .foregroundStyle(Tokens.placeholder)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .contentTransition(.opacity)
+                    .animation(.smooth(duration: 0.25), value: label)
+                    .offset(x: start)
+                    .animation(.smooth(duration: 0.25), value: start)
+                    .transition(.materialize)
+            }
+        }
+        .allowsHitTesting(false)
+        // Drives the insertion/removal (materialize) transition above.
+        .animation(.smooth(duration: 0.3), value: visible)
+    }
+
+    /// Measure a string's rendered width in `NSFont.systemFont(ofSize:)` — the same
+    /// font family `PromptField` installs — so the ghost's start matches the real
+    /// caret. Uses AppKit's text sizing (not a SwiftUI `Text` measurement) because
+    /// the field itself is an `NSTextField`; same engine, same metrics.
+    private static func width(of string: String, fontSize: CGFloat) -> CGFloat {
+        guard !string.isEmpty else { return 0 }
+        let font = NSFont.systemFont(ofSize: fontSize)
+        let size = (string as NSString).size(withAttributes: [.font: font])
+        return ceil(size.width)
+    }
+}
+
+/// The two ends of the ghost-text materialize: hidden is a soft transparent haze
+/// (blurred + clear), shown is the sharp resting glyphs. Used via
+/// `AnyTransition.materialize` so insertion condenses the text into place and
+/// removal dissolves it — Apple Intelligence's ghost-text treatment (macOS 15's
+/// `.blurReplace`), recreated with a modifier transition for our macOS 14 target.
+private struct MaterializeEffect: ViewModifier {
+    var shown: Bool
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .blur(radius: shown ? 0 : 4)
+    }
+}
+
+extension AnyTransition {
+    /// Blur-and-fade in place: condense in on insertion, dissolve out on removal.
+    static let materialize = AnyTransition.modifier(
+        active: MaterializeEffect(shown: false),
+        identity: MaterializeEffect(shown: true)
+    )
+}
+
+/// The send button — a piece of the same **Liquid Glass** as the rest of the
+/// island (native `.glassEffect` on macOS 26+, blur fallback below), brightening
+/// gently on hover rather than flooding to a flat white fill.
+///
+/// Two shapes, one control:
+///   • Given a `label` ("Ask" / "Note"), it renders a **pill that spells out the
+///     destination in words** — because a glyph alone (arrow vs. pencil) doesn't
+///     read as "ask vs. note" at a glance. The classifier watches the text as it's
+///     typed and swaps the word in place; the glyph beside it is a plain ⏎, marking
+///     the key you press. So the button tells you in plain language where Enter
+///     sends the line, before you press it.
+///   • With no `label` (the mid-thread follow-up), it stays a bare arrow circle:
+///     a follow-up is always an ask, so there's nothing to disambiguate and the
+///     small inline field has no room for a word.
+///
+/// The label cross-fades when it flips, so ask⇄note reads as one control changing
+/// meaning rather than two different buttons.
 struct SendButton: View {
     var compact: Bool = false
+    /// SF Symbol for the action the current text will trigger. Defaults to the
+    /// classic send arrow; callers pass a note glyph when the input reads as a jot.
+    var icon: String = "arrow.right"
+    /// The destination spelled out ("Ask" / "Note"). When set, the button renders
+    /// as a labeled pill; when `nil`, it's the bare arrow circle (follow-up).
+    var label: String? = nil
     var action: () -> Void
     @State private var hovering = false
 
@@ -213,21 +532,51 @@ struct SendButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "arrow.right")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(hovering ? Color(white: 0.09) : Tokens.text1)
-                .frame(width: size, height: size)
-                .background(
-                    Circle().fill(hovering ? Color.white.opacity(0.95) : Color.white.opacity(0.12))
-                )
-                .overlay(
-                    Circle().strokeBorder(.white.opacity(hovering ? 0 : 0.22), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(0.28), radius: 4, y: 2)
+            if let label {
+                pill(label)
+            } else {
+                glyphCircle
+            }
         }
-        .buttonStyle(.plain)
+        // Same press-give as the island's other glass chips.
+        .buttonStyle(GlassPressStyle())
         .onHover { hovering = $0 }
-        .animation(.easeOut(duration: 0.2), value: hovering)
+        .animation(.easeOut(duration: 0.18), value: hovering)
+        // The flip rides a quick spring so ask⇄note feels like the control morphing,
+        // in step with the rest of the panel's motion language.
+        .animation(.spring(response: 0.32, dampingFraction: 0.7), value: icon)
+        .animation(.spring(response: 0.32, dampingFraction: 0.7), value: label)
+    }
+
+    /// The labeled form: a glass pill reading "Ask ⏎" / "Note ⏎", the word leading
+    /// so the destination is the first thing you read. Whole contents keyed on the
+    /// label so a change cross-fades rather than hard-cuts.
+    private func pill(_ label: String) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 13, weight: .semibold))
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .foregroundStyle(hovering ? Tokens.text1 : Tokens.text2)
+        .id(label)
+        .transition(.scale(scale: 0.7).combined(with: .opacity))
+        .padding(.horizontal, 13)
+        .frame(height: size)
+        .glassCapsule(in: Capsule(), brighter: hovering)
+        .contentShape(Capsule())
+    }
+
+    /// The bare form: just the send arrow in a glass circle (mid-thread follow-up).
+    private var glyphCircle: some View {
+        Image(systemName: icon)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(hovering ? Tokens.text1 : Tokens.text2)
+            .id(icon)
+            .transition(.scale(scale: 0.55).combined(with: .opacity))
+            .frame(width: size, height: size)
+            .glassCapsule(in: Circle(), brighter: hovering)
+            .contentShape(Circle())
     }
 }
 
@@ -503,39 +852,61 @@ struct InlineMarkdownText: View {
 // MARK: - Block-level markdown
 
 /// One parsed block of an answer. We intentionally support only the block kinds
-/// an in-notch assistant actually produces — headings and lists — plus plain
-/// paragraphs. Everything else (code fences, quotes, tables) falls through to a
-/// paragraph, so unknown syntax still reads cleanly rather than breaking. Inline
-/// `**bold**` / `*italic*` / `code` is handled per-line by `InlineMarkdownText`.
-enum MarkdownBlock: Identifiable {
+/// an in-notch assistant actually produces — headings, lists, fenced code blocks,
+/// and horizontal rules — plus plain paragraphs. Everything else (quotes, tables)
+/// falls through to a paragraph, so unknown syntax still reads cleanly rather
+/// than breaking. Inline `**bold**` / `*italic*` / `code` is handled per-line by
+/// `InlineMarkdownText`; code blocks render verbatim without inline parsing.
+enum MarkdownBlock {
     case heading(level: Int, text: String)
     case bullet(text: String)
     case ordered(number: Int, text: String)
     case paragraph(text: String)
-
-    var id: String {
-        switch self {
-        case .heading(let l, let t):  return "h\(l):\(t)"
-        case .bullet(let t):          return "b:\(t)"
-        case .ordered(let n, let t):  return "o\(n):\(t)"
-        case .paragraph(let t):       return "p:\(t)"
-        }
-    }
+    case code(language: String?, text: String)
+    case divider
 }
 
 /// A line-based markdown parser. Deliberately tiny: it walks the answer line by
 /// line and classifies each non-empty line as a heading (`#`…`######`), an
-/// unordered item (`-`, `*`, `+`), an ordered item (`1.`, `2)`), or a paragraph.
-/// No nesting, no multi-line blocks — enough for short, streamed AI answers and
-/// nothing more, in keeping with the app's minimalism (no markdown library).
+/// unordered item (`-`, `*`, `+`), an ordered item (`1.`, `2)`), a horizontal
+/// rule (`---` / `***` / `___`), or a paragraph. Fenced code blocks (``` `…` ```)
+/// span multiple lines and capture their content verbatim — including blank
+/// lines — until the closing fence. No nesting beyond that, in keeping with the
+/// app's minimalism (no markdown library).
 enum MarkdownParser {
     static func parse(_ source: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
-        for rawLine in source.components(separatedBy: "\n") {
+        let lines = source.components(separatedBy: "\n")
+        var i = 0
+        while i < lines.count {
+            let rawLine = lines[i]
             let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty { continue }
 
-            if let (level, text) = heading(line) {
+            // Fenced code block — capture everything (including blank lines)
+            // until the matching closing fence. The opening fence may carry a
+            // language hint (e.g. ```swift); we keep it but don't syntax-color.
+            if let lang = codeFence(line) {
+                var body: [String] = []
+                i += 1
+                while i < lines.count {
+                    let inner = lines[i]
+                    if codeFence(inner.trimmingCharacters(in: .whitespaces)) != nil { break }
+                    body.append(inner)
+                    i += 1
+                }
+                blocks.append(.code(language: lang.isEmpty ? nil : lang, text: body.joined(separator: "\n")))
+                i += 1
+                continue
+            }
+
+            if line.isEmpty {
+                i += 1
+                continue
+            }
+
+            if isDivider(line) {
+                blocks.append(.divider)
+            } else if let (level, text) = heading(line) {
                 blocks.append(.heading(level: level, text: text))
             } else if let text = bullet(line) {
                 blocks.append(.bullet(text: text))
@@ -544,8 +915,31 @@ enum MarkdownParser {
             } else {
                 blocks.append(.paragraph(text: line))
             }
+            i += 1
         }
         return blocks
+    }
+
+    /// `` ``` `` or `` ```swift `` → optional language tag (empty string if bare).
+    /// Returns `nil` for any line that isn't a fence opener/closer, so the caller
+    /// can use it for both opening and closing detection.
+    private static func codeFence(_ line: String) -> String? {
+        guard line.hasPrefix("```") else { return nil }
+        let after = line.dropFirst(3)
+        // Disallow extra backticks on the same line — that's an inline `code`
+        // span gone weird, not a fence.
+        if after.contains("`") { return nil }
+        return String(after).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// `---` / `***` / `___` (3+ of the same char, optional internal spaces).
+    /// Conservative: requires the line to be made up of only that marker (after
+    /// stripping spaces) so a real `***bold***` paragraph isn't swallowed.
+    private static func isDivider(_ line: String) -> Bool {
+        let stripped = line.filter { $0 != " " }
+        guard stripped.count >= 3, let first = stripped.first else { return false }
+        guard first == "-" || first == "*" || first == "_" else { return false }
+        return stripped.allSatisfy { $0 == first }
     }
 
     /// `# Title` … `###### Title` → (level, text). Requires a space after the
@@ -602,7 +996,7 @@ struct MarkdownBlocks: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(blocks) { block in
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 row(for: block)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -634,6 +1028,37 @@ struct MarkdownBlocks: View {
                 .lineSpacing(baseFont * 0.6)
                 .foregroundStyle(color)
                 .fixedSize(horizontal: false, vertical: true)
+
+        case .code(_, let text):
+            // Verbatim monospace block on a faintly inset surface so it reads as
+            // a code island against the glass without competing with the chat.
+            // We deliberately skip syntax coloring — the notch is for short
+            // answers, not an IDE — and skip inline-markdown parsing so things
+            // like `**` inside code render literally.
+            Text(text)
+                .font(.system(size: baseFont - 1, weight: .regular, design: .monospaced))
+                .foregroundStyle(color)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Tokens.hairline, lineWidth: 0.5)
+                )
+
+        case .divider:
+            // Use the same hairline the rest of the panel uses for separators
+            // so the rule reads as part of the system, not a markdown artifact.
+            Rectangle()
+                .fill(Tokens.hairline)
+                .frame(height: 0.5)
+                .padding(.vertical, 4)
         }
     }
 

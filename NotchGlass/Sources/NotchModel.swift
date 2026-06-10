@@ -11,13 +11,12 @@ final class NotchModel: ObservableObject {
         case result    // showing an answer
     }
 
-    /// Which input the panel is in. Two parallel surfaces that share the same
-    /// glass island and toggle with Tab:
-    ///   · `chat` — ask the AI a question (the original behaviour: idle/load/result)
-    ///   · `note` — type a line, press Enter, it lands in Apple Notes
-    /// The panel remembers which one you were last on, and the background tints to
-    /// match (cold black for chat, a whisper of warm champagne for note) so the two
-    /// modes read apart at a glance.
+    /// Where pressing Enter on the current line will *send* it — decided live by the
+    /// intent classifier as you type. This is a routing destination, NOT a rendered
+    /// surface: there's only ever one input on screen ("Type anything…"). It just
+    /// determines whether Enter asks the AI or files the line in Apple Notes.
+    ///   · `chat` — ask the AI a question (idle/load/result)
+    ///   · `note` — file the line as a new note in Apple Notes
     enum Panel: String, Equatable {
         case chat
         case note
@@ -58,16 +57,80 @@ final class NotchModel: ObservableObject {
     @Published var open = false
     @Published var mode: Mode = .idle
 
-    /// The active surface (chat vs. note). Tab flips it. Persisted across launches
-    /// so reopening returns to the surface you last used rather than snapping back
-    /// to chat — `didSet` writes every change (the Tab toggle, a restore) straight
-    /// through. Seeded from `loadPanel()` in `init`, which falls back to `.chat` for
-    /// a first run or anyone who never touched the new mode.
-    @Published var panel: Panel = .chat {
-        didSet { savePanel() }
+    @Published var text = "" {      // current input (idle prompt or follow-up)
+        didSet {
+            // A Tab override is scoped to the line it was pressed on. The field
+            // emptying — submit cleared it, or the user deleted everything — ends
+            // that line, so the next one starts back on auto-classification.
+            if manualPanelOverride != nil,
+               text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                manualPanelOverride = nil
+            }
+        }
     }
 
-    @Published var text = ""        // current input (idle prompt or follow-up)
+    /// Destination forced by pressing Tab — the manual escape hatch for when the
+    /// classifier reads the line wrong. `nil` means no override: route by the
+    /// classifier as usual. Wins over `suggestedPanel` while set, and is scoped to
+    /// the current line: cleared the moment the field empties (submit, delete-all,
+    /// close), so the next line is auto-classified again. See `toggleSubmitPanel`.
+    @Published var manualPanelOverride: Panel? = nil
+
+    /// Confidence the classifier must clear before we'll act on it — both to route
+    /// Enter to the other surface AND to label the send button with that destination.
+    /// One shared floor on purpose: we never switch surfaces *more* eagerly than the
+    /// button is willing to say we will. Below it, the read is treated as unsure and
+    /// the current surface (→ ask, by the resting default) handles the line. Tuned
+    /// against the classifier's scoring: a single weak signal lands ~0.27–0.33 and
+    /// stays below; a clear cue (todo phrasing, time+fragment, a question opener, or
+    /// any `?`) clears it.
+    static let intentActionFloor = 0.5
+
+    /// The classifier's read of the current `text` — recomputed on each access, so
+    /// it always reflects what's in the box right now. `submitCurrent()` uses it to
+    /// route Enter and the send button uses it to label its destination.
+    var suggestedIntent: IntentClassifier.Result {
+        IntentClassifier.classify(text)
+    }
+
+    /// Which destination the text *confidently* wants, or `nil` when there's no
+    /// clear, confident lean (ambiguous, weak, or empty). Routing and the inline hint
+    /// both read this, so they can never disagree — if it's not sure enough to name a
+    /// destination, it's not sure enough to route there either. There is only ever one
+    /// rendered surface (the chat input); this just decides where Enter *sends* the
+    /// line, not what the panel looks like. The "ambiguous → ask" default is applied
+    /// at submit time by falling back to `.chat`, not here.
+    var suggestedPanel: Panel? {
+        guard suggestedIntent.confidence >= Self.intentActionFloor else { return nil }
+        switch suggestedIntent.intent {
+        case .ask:       return .chat
+        case .note:      return .note
+        case .ambiguous: return nil
+        }
+    }
+
+    /// Where pressing Enter on the *current* text will actually land. Resolution
+    /// order: a Tab override (the user said so explicitly) beats the classifier's
+    /// confident read, which beats `.chat` (the resting "ambiguous → ask" default).
+    /// This is exactly the resolution `submitCurrent()` uses, so the inline hint can
+    /// show its destination and never lie about it.
+    var effectiveSubmitPanel: Panel { manualPanelOverride ?? suggestedPanel ?? .chat }
+
+    /// Tab in the idle prompt: flip where Enter will send the current line
+    /// (Ask ⇄ Note), overriding the classifier. Flips from whatever the *effective*
+    /// destination is right now — including a prior override — so each press reads
+    /// as "the other one", exactly what the flipped inline hint shows.
+    func toggleSubmitPanel() {
+        manualPanelOverride = effectiveSubmitPanel == .note ? .chat : .note
+    }
+
+    /// The word in the inline hint — the destination spelled out: "Note" when this
+    /// line will be saved to Apple Notes, "Ask" when it'll go to the AI. Flips live
+    /// with the classifier as the text crosses intents, so the hint beside the caret
+    /// literally says where Enter sends the line.
+    var submitLabel: String {
+        effectiveSubmitPanel == .note ? "Note" : "Ask"
+    }
 
     /// One past line written to Notes this session, kept only to flash a brief
     /// "Saved to Notes" confirmation under the record input. `nil` clears the cue.
@@ -122,26 +185,12 @@ final class NotchModel: ObservableObject {
     /// rendered rows can never drift apart.
     var recentVisible: [HistoryItem] { Array(history.prefix(8)) }
 
-    /// Briefly true right after a Tab panel switch. Flipping chat⇄note resizes the
-    /// island (e.g. a wide result/history width snapping to the narrow note width),
-    /// which can slide the glass out from under a stationary cursor and fire a
-    /// spurious `.onHover` exit. Without this guard that exit reaches
-    /// `collapseOnLeave` — and since the switch already cleared the `showHistory`
-    /// safeguard, nothing stops it from `fullClose`-ing the whole panel. The window
-    /// covers just the switch's layout settle; a genuine pointer-leave afterwards
-    /// still folds the panel normally.
-    private var suppressLeaveCollapse = false
-    private var leaveSuppressTask: Task<Void, Never>?
-
     private var ai: AIService
     private var task: Task<Void, Never>?
     /// Holds the auto-dismiss timer for the "Saved to Notes" cue so a rapid second
     /// save cancels the first one's fade rather than letting them overlap.
     private var noteCueTask: Task<Void, Never>?
     private let historyKey = "notch_history"
-    /// Persists the last-used surface (chat/note) so reopening the notch returns to
-    /// the mode the user left it in rather than defaulting to chat each launch.
-    private let panelKey = "notch_panel"
 
     /// Stable id for the conversation currently on screen, so a follow-up updates
     /// the *same* recent-list row instead of inserting a new one each turn. Reset
@@ -151,7 +200,6 @@ final class NotchModel: ObservableObject {
     init(ai: AIService = StubAIService()) {
         self.ai = ai
         history = loadHistory()
-        panel = loadPanel()
     }
 
     /// Swap the backend at runtime — used when the user saves an API key in
@@ -230,10 +278,6 @@ final class NotchModel: ObservableObject {
     ///   · keep open while the Recent list is expanded — moving the mouse away
     ///     must never fold a notch that has recent content on screen
     func collapseOnLeave() {
-        // A panel switch (Tab) just resized the island and may have flung the
-        // cursor off it; ignore that one settling exit so the whole panel doesn't
-        // fold out from under a mode change the user made by keyboard.
-        if suppressLeaveCollapse { return }
         if mode == .load || mode == .result { return }
         if hasText { return }
         // Mid-confirmation of a destructive clear — don't fold the panel out from
@@ -246,10 +290,14 @@ final class NotchModel: ObservableObject {
         fullClose()
     }
 
-    /// Hard close from Esc / click-outside — always collapses regardless of mode
-    /// (except while loading, which the caller guards).
+    /// Hard close from Esc / click-outside — always collapses regardless of mode,
+    /// including mid-request: an answer still in flight is detached, not cancelled.
+    /// The task keeps streaming on its own snapshot (see `submit`) and files the
+    /// finished round into Recent, so closing never loses a conversation.
     func fullClose() {
-        task?.cancel()
+        // Detach, don't cancel: dropping the reference leaves the Task running
+        // (deinit doesn't cancel it) and frees the slot so the next submit's
+        // supersede-cancel can't reach the detached round.
         task = nil
         open = false
         mode = .idle
@@ -258,20 +306,20 @@ final class NotchModel: ObservableObject {
         showSettings = false
         confirmingClear = false
         highlightedHistoryIndex = nil
-        // Drop note feedback but keep `panel` — reopening returns to the surface the
-        // user last used (chat or note), which is the least surprising behaviour.
+        // Drop any lingering note-save feedback so a fresh open starts clean.
         noteCueTask?.cancel()
         lastSavedNote = nil
         noteError = nil
         noteSaving = false
     }
 
-    /// "Back" / start a new conversation: drop the current Q&A and return to the
-    /// idle input — but stay OPEN, so the user lands straight on a fresh prompt
-    /// instead of the panel collapsing. Triggered by the back button in a result
-    /// view and by the ← arrow key.
+    /// "Back" / start a new conversation: drop the current Q&A from the screen and
+    /// return to the idle input — but stay OPEN, so the user lands straight on a
+    /// fresh prompt instead of the panel collapsing. Triggered by the back button
+    /// in a result view and by the ← arrow key. Like `fullClose`, an answer still
+    /// in flight is detached rather than cancelled — it finishes in the background
+    /// and lands in Recent, so backing out while waiting never loses the round.
     func newChat() {
-        task?.cancel()
         task = nil
         mode = .idle
         text = ""; turns = []
@@ -281,6 +329,22 @@ final class NotchModel: ObservableObject {
     }
 
     // MARK: - Submit
+
+    /// The single Enter entry point the input field calls. There's only one surface
+    /// — the chat input — so this never changes what the panel looks like; it just
+    /// routes the line by **intent**:
+    ///   · the classifier says note → write it to Apple Notes (feedback shows inline)
+    ///   · ask, or ambiguous        → send it to the AI
+    /// Ambiguity falls to ask (`effectiveSubmitPanel` resolves `nil` → `.chat`), so an
+    /// unsure line on a fresh prompt asks the AI — the agreed "ambiguous → ask" rule.
+    /// This matches `submitLabel` exactly, so the inline "Ask"/"Note" hint always
+    /// names where the line actually went.
+    func submitCurrent() {
+        switch effectiveSubmitPanel {
+        case .chat: submit()
+        case .note: submitNote()
+        }
+    }
 
     func submit() {
         let q = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -293,6 +357,11 @@ final class NotchModel: ObservableObject {
         // becomes its own recent row. A follow-up keeps the existing id, so the
         // whole conversation stays one row, updated in place.
         if turns.isEmpty { threadHistoryID = UUID() }
+
+        // A follow-up sent while the previous answer is still streaming supersedes
+        // it: settle any stale streaming flag now, because the superseded task is
+        // cancelled below and will never settle it itself.
+        for i in turns.indices where turns[i].streaming { turns[i].streaming = false }
 
         // Append this question and an empty assistant turn it'll stream into. On a
         // first question `turns` is empty (fresh thread); on a follow-up the prior
@@ -309,83 +378,65 @@ final class NotchModel: ObservableObject {
 
         mode = .load
 
+        // The task owns a value-type snapshot of the thread it's answering, plus
+        // the thread id captured here. Backing out (`newChat`) or closing the panel
+        // (`fullClose`) only detaches the screen — the task keeps streaming into
+        // its snapshot and persists the finished round to Recent, so an in-flight
+        // round is never lost. The snapshot is also what gets saved, so whatever
+        // `turns` shows by completion time (a new chat, a reopened history item,
+        // nothing at all) can never leak into this thread's history row.
+        let threadID = threadHistoryID
+        let seedThread = turns
+
+        // Cancelling here only ever supersedes within the SAME on-screen round (a
+        // follow-up sent while the previous answer streams): detached tasks have
+        // already cleared this slot, so they're out of reach.
         task?.cancel()
         task = Task { [weak self] in
             guard let self else { return }
+            var thread = seedThread
             do {
                 var acc = ""
                 for try await chunk in self.ai.stream(system: notchSystemPrompt, messages: context) {
                     if Task.isCancelled { return }
-                    // First chunk: flip to the result view, so the answer appears to
-                    // grow in place out of the thinking state.
-                    if acc.isEmpty { self.mode = .result }
                     acc += chunk
-                    self.updateAnswer(id: answerID, text: acc)
+                    if let i = thread.firstIndex(where: { $0.id == answerID }) {
+                        thread[i].text = acc
+                    }
+                    if self.isOnScreen(answerID: answerID) {
+                        // First chunk: flip to the result view, so the answer
+                        // appears to grow in place out of the thinking state.
+                        if self.mode == .load { self.mode = .result }
+                        self.updateAnswer(id: answerID, text: acc)
+                    }
                 }
                 if Task.isCancelled { return }
-                self.finish(answerID: answerID, answer: acc)
+                if let i = thread.firstIndex(where: { $0.id == answerID }) {
+                    thread[i].streaming = false
+                }
+                self.markFinished(id: answerID)   // no-op when detached
+                self.persistThread(thread, threadID: threadID, answer: acc)
             } catch is CancellationError {
-                // panel closed mid-flight; nothing to show
+                // superseded by a newer round on the same screen; nothing to persist
             } catch {
                 if Task.isCancelled { return }
-                self.updateAnswer(id: answerID, text: "Something went wrong. Try again.")
-                self.markFinished(id: answerID)
-                self.mode = .result
+                // The error placeholder is only worth showing on screen — a
+                // detached round that failed is dropped, not filed into Recent.
+                if self.isOnScreen(answerID: answerID) {
+                    self.updateAnswer(id: answerID, text: "Something went wrong. Try again.")
+                    self.markFinished(id: answerID)
+                    self.mode = .result
+                }
             }
-        }
-    }
-
-    // MARK: - Panel switch (chat ⇄ note)
-
-    /// Tab flips between the chat and note surfaces. The input field is shared, so
-    /// we drop whatever's half-typed and clear any chat-only scaffolding (an
-    /// in-flight request, the recent list, settings) — switching modes is a clean
-    /// context change, not something that should carry a stray draft across. The
-    /// caret re-lands in the new field automatically (the body re-arms focus on a
-    /// panel change, same as it does on a mode change).
-    func togglePanel() {
-        panel = (panel == .chat) ? .note : .chat
-        // Suppress the spurious hover-exit the island's resize throws off as it
-        // resizes to the new surface — see `suppressLeaveCollapse`. The window
-        // spans the switch's spring settle (≈0.42s); a real pointer-leave after it
-        // expires still collapses normally.
-        armLeaveSuppression(for: 0.5)
-        // Leaving chat mid-thought shouldn't strand a request or a draft.
-        task?.cancel()
-        task = nil
-        text = ""
-        mode = .idle
-        turns = []
-        showHistory = false
-        showSettings = false
-        highlightedHistoryIndex = nil
-        // Clear note-side feedback so a stale "Saved"/error doesn't greet the
-        // record view when you tab back into it later. An in-flight write keeps
-        // running (it'll finish into Notes regardless); we just drop its UI cue.
-        noteCueTask?.cancel()
-        lastSavedNote = nil
-        noteError = nil
-        noteSaving = false
-    }
-
-    /// Hold the leave-collapse guard up for `seconds`, then drop it. A second call
-    /// (rapid Tab-Tab) cancels the prior timer so the window always covers the most
-    /// recent switch rather than expiring early mid-flurry.
-    private func armLeaveSuppression(for seconds: Double) {
-        suppressLeaveCollapse = true
-        leaveSuppressTask?.cancel()
-        leaveSuppressTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            self?.suppressLeaveCollapse = false
         }
     }
 
     // MARK: - Note submit
 
-    /// Enter in the record field: write the line into Apple Notes as a new note,
-    /// then stay in record mode so the next line can go right in (the "jot one and
-    /// keep going" flow the user asked for).
+    /// Route a note-classified line into Apple Notes as a new note. The surface never
+    /// changes — the user stays on the same "Type anything…" input and can keep
+    /// jotting (or asking) right after; the only sign it went to Notes is the quiet
+    /// "Added to Notes" line that flashes below the input.
     ///
     /// The write runs **off the main thread** (see `NotesService`) so the first-run
     /// TCC permission prompt doesn't deadlock the UI. We optimistically clear the
@@ -440,6 +491,14 @@ final class NotchModel: ObservableObject {
         }
     }
 
+    /// Whether the round identified by its answer placeholder is still the one on
+    /// screen. Once `newChat`/`fullClose` (or opening another thread) detaches it,
+    /// the screen is no longer the task's to touch — only its snapshot (and, at
+    /// the end, history) hears about the stream.
+    private func isOnScreen(answerID: UUID) -> Bool {
+        turns.contains { $0.id == answerID }
+    }
+
     /// Replace the streaming assistant turn's text as chunks arrive. Looked up by
     /// id so an out-of-order or post-`newChat` chunk can't write into the wrong row.
     private func updateAnswer(id: UUID, text: String) {
@@ -454,22 +513,25 @@ final class NotchModel: ObservableObject {
         turns[i].streaming = false
     }
 
-    /// Called once the stream completes: settle the assistant turn and persist the
-    /// whole conversation to history (one recent item per thread, updated in place
-    /// as it grows). Skips empty results (e.g. a stream that errored before any
-    /// text). The recent row shows the first question + latest answer; reopening it
-    /// restores every turn.
-    private func finish(answerID: UUID, answer ans: String) {
-        markFinished(id: answerID)
+    /// Called once a stream completes: persist the task's snapshot of the thread
+    /// to history (one recent item per thread, updated in place as it grows).
+    /// Runs whether or not the thread is still on screen — a round detached by
+    /// `newChat`/`fullClose` lands here all the same, which is what makes backing
+    /// out mid-answer safe. Built from the snapshot rather than the live `turns`,
+    /// so whatever the screen shows by completion time can't cross into this
+    /// thread's row. Skips empty results (e.g. a stream that errored before any
+    /// text). The recent row shows the first question + latest answer; reopening
+    /// it restores every turn.
+    private func persistThread(_ thread: [Turn], threadID: UUID, answer ans: String) {
         let trimmed = ans.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let firstQ = turns.first(where: { $0.role == "user" })?.text ?? ""
-        // One history entry per conversation: if this thread is already at the top
-        // of the list (a follow-up), update it in place instead of inserting a
-        // duplicate, so a long chat is a single recent row, not one per turn.
-        let item = HistoryItem(id: threadHistoryID, q: firstQ, a: trimmed, t: Date(), turns: turns)
-        if let existing = history.firstIndex(where: { $0.id == threadHistoryID }) {
+        let firstQ = thread.first(where: { $0.role == "user" })?.text ?? ""
+        // One history entry per conversation: if this thread already has a row
+        // (a follow-up), update it in place instead of inserting a duplicate, so
+        // a long chat is a single recent row, not one per turn.
+        let item = HistoryItem(id: threadID, q: firstQ, a: trimmed, t: Date(), turns: thread)
+        if let existing = history.firstIndex(where: { $0.id == threadID }) {
             history.remove(at: existing)
         }
         history.insert(item, at: 0)
@@ -582,6 +644,26 @@ final class NotchModel: ObservableObject {
         saveHistory()
     }
 
+    /// Drop a single recent item by id (right-click → Delete on its row). Keeps the
+    /// keyboard highlight valid: removing a row at/above the highlighted index would
+    /// otherwise leave the caret pointing past the end or at the wrong row, so we
+    /// recompute it against the shortened visible slice — clamping to the last row,
+    /// or releasing the highlight (and folding the list) once it's empty.
+    func deleteHistory(id: UUID) {
+        guard let removedVisibleIndex = recentVisible.firstIndex(where: { $0.id == id }) else { return }
+        history.removeAll { $0.id == id }
+        saveHistory()
+
+        guard let current = highlightedHistoryIndex else { return }
+        let remaining = recentVisible.count
+        if remaining == 0 {
+            highlightedHistoryIndex = nil
+            showHistory = false
+        } else if removedVisibleIndex <= current {
+            highlightedHistoryIndex = min(current, remaining - 1)
+        }
+    }
+
     private func loadHistory() -> [HistoryItem] {
         guard let data = UserDefaults.standard.data(forKey: historyKey),
               let items = try? JSONDecoder().decode([HistoryItem].self, from: data)
@@ -595,26 +677,9 @@ final class NotchModel: ObservableObject {
         }
     }
 
-    /// The surface to open in: the last-used one if we've stored it, else `.chat`
-    /// (first run, or a stored value that no longer maps to a known case).
-    private func loadPanel() -> Panel {
-        guard let raw = UserDefaults.standard.string(forKey: panelKey),
-              let panel = Panel(rawValue: raw)
-        else { return .chat }
-        return panel
-    }
-
-    private func savePanel() {
-        UserDefaults.standard.set(panel.rawValue, forKey: panelKey)
-    }
-
     // MARK: - Open width per state (matches the prototype's s-* widths)
 
     var openWidth: CGFloat {
-        // The record surface is always one simple line — it never grows into the
-        // wider load/result widths the way a chat thread does, so it keeps the
-        // calm idle width whatever `mode` happens to hold underneath.
-        if panel == .note { return Tokens.openWidthIdle }
         // Settings needs a touch more room for the provider/model rows; it only
         // ever shows over the idle view, so it wins regardless of `mode`.
         if showSettings { return Tokens.openWidthSettings }
