@@ -22,7 +22,12 @@
 		A100001C /* HotKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000D /* HotKey.swift */; };
 		A100001D /* APIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000E /* APIKeyStore.swift */; };
 		A1000060 /* NotesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000061 /* NotesService.swift */; };
-		A1000062 /* IntentClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000063 /* IntentClassifier.swift */; };
+		A1000064 /* IntentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000065 /* IntentEngine.swift */; };
+		A1000068 /* RemindersService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000069 /* RemindersService.swift */; };
+		A1000072 /* UpdaterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000073 /* UpdaterService.swift */; };
+		A1000074 /* MouseVelocityTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000075 /* MouseVelocityTracker.swift */; };
+		A1000076 /* OpenRouterAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000077 /* OpenRouterAuth.swift */; };
+		A1000066 /* IntentExamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000067 /* IntentExamples.swift */; };
 		A1000071 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000070 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -34,7 +39,12 @@
 		A1000005 /* AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIService.swift; sourceTree = "<group>"; };
 		A1000006 /* NotchModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchModel.swift; sourceTree = "<group>"; };
 		A1000061 /* NotesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesService.swift; sourceTree = "<group>"; };
-		A1000063 /* IntentClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentClassifier.swift; sourceTree = "<group>"; };
+		A1000065 /* IntentEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentEngine.swift; sourceTree = "<group>"; };
+		A1000069 /* RemindersService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemindersService.swift; sourceTree = "<group>"; };
+		A1000073 /* UpdaterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterService.swift; sourceTree = "<group>"; };
+		A1000075 /* MouseVelocityTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseVelocityTracker.swift; sourceTree = "<group>"; };
+		A1000077 /* OpenRouterAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAuth.swift; sourceTree = "<group>"; };
+		A1000067 /* IntentExamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentExamples.swift; sourceTree = "<group>"; };
 		A1000007 /* GlassBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassBackground.swift; sourceTree = "<group>"; };
 		A1000008 /* NotchBody.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchBody.swift; sourceTree = "<group>"; };
 		A1000009 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
@@ -86,7 +96,12 @@
 				A1000005 /* AIService.swift */,
 				A1000006 /* NotchModel.swift */,
 				A1000061 /* NotesService.swift */,
-				A1000063 /* IntentClassifier.swift */,
+				A1000069 /* RemindersService.swift */,
+				A1000073 /* UpdaterService.swift */,
+				A1000075 /* MouseVelocityTracker.swift */,
+				A1000077 /* OpenRouterAuth.swift */,
+				A1000065 /* IntentEngine.swift */,
+				A1000067 /* IntentExamples.swift */,
 				A1000007 /* GlassBackground.swift */,
 				A1000008 /* NotchBody.swift */,
 				A1000009 /* Components.swift */,
@@ -192,7 +207,12 @@
 				A1000014 /* AIService.swift in Sources */,
 				A1000015 /* NotchModel.swift in Sources */,
 				A1000060 /* NotesService.swift in Sources */,
-				A1000062 /* IntentClassifier.swift in Sources */,
+				A1000068 /* RemindersService.swift in Sources */,
+				A1000072 /* UpdaterService.swift in Sources */,
+				A1000074 /* MouseVelocityTracker.swift in Sources */,
+				A1000076 /* OpenRouterAuth.swift in Sources */,
+				A1000064 /* IntentEngine.swift in Sources */,
+				A1000066 /* IntentExamples.swift in Sources */,
 				A1000016 /* GlassBackground.swift in Sources */,
 				A1000017 /* NotchBody.swift in Sources */,
 				A1000018 /* Components.swift in Sources */,
@@ -258,7 +278,7 @@
 				CODE_SIGN_ENTITLEMENTS = NotchGlass/Resources/NotchGlass.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NotchGlass/Resources/Info.plist;
@@ -266,7 +286,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -281,7 +301,7 @@
 				CODE_SIGN_ENTITLEMENTS = NotchGlass/Resources/NotchGlass.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NotchGlass/Resources/Info.plist;
@@ -289,7 +309,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
