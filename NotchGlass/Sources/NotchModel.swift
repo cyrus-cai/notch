@@ -14,12 +14,14 @@ final class NotchModel: ObservableObject {
     /// Where pressing Enter on the current line will *send* it — decided live by the
     /// intent classifier as you type. This is a routing destination, NOT a rendered
     /// surface: there's only ever one input on screen ("Type anything…"). It just
-    /// determines whether Enter asks the AI or files the line in Apple Notes.
-    ///   · `chat` — ask the AI a question (idle/load/result)
-    ///   · `note` — file the line as a new note in Apple Notes
+    /// determines whether Enter asks the AI or files the line somewhere.
+    ///   · `chat`     — ask the AI a question (idle/load/result)
+    ///   · `note`     — file the line as a new note in Apple Notes
+    ///   · `reminder` — file the line in Apple Reminders with the time it names
     enum Panel: String, Equatable {
         case chat
         case note
+        case reminder
     }
 
     /// One bubble in the on-screen conversation. `role` is `"user"` or
@@ -55,7 +57,24 @@ final class NotchModel: ObservableObject {
 
     // Open / closed drives the grow-out-of-the-notch animation.
     @Published var open = false
+    /// Which screen's island is unfurled. With one panel per display sharing this
+    /// model, `open` alone would unfurl every screen at once — views gate on
+    /// `isOpen(on:)` so only the hovered screen expands while the others keep
+    /// their resting notch. `nil` while closed (and in single-screen debug paths,
+    /// where it means "any screen").
+    @Published var activeDisplay: CGDirectDisplayID? = nil
     @Published var mode: Mode = .idle
+
+    /// The cursor's velocity at the instant the island opened — SwiftUI
+    /// orientation (+x right, +y down), points/second. Hover-opens pass the
+    /// tracker's reading; every other path (⌘, / debug launches) leaves it
+    /// zero, which renders as the standard calm unfurl. `NotchIsland` consumes
+    /// it to seed the entry kick and ease the open spring — set *before* `open`
+    /// flips so the view computes its animation from a fresh reading.
+    /// Deliberately not `@Published`: it is only ever written immediately before
+    /// `open` flips (which already invalidates the tree), so publishing it would
+    /// just add a second whole-tree invalidation on the open edge.
+    var entryVelocity: CGVector = .zero
 
     @Published var text = "" {      // current input (idle prompt or follow-up)
         didSet {
@@ -66,6 +85,8 @@ final class NotchModel: ObservableObject {
                text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 manualPanelOverride = nil
             }
+            detectedDue = RemindersService.futureDate(in: text)
+            scheduleClassification()
         }
     }
 
@@ -81,16 +102,59 @@ final class NotchModel: ObservableObject {
     /// One shared floor on purpose: we never switch surfaces *more* eagerly than the
     /// button is willing to say we will. Below it, the read is treated as unsure and
     /// the current surface (→ ask, by the resting default) handles the line. Tuned
-    /// against the classifier's scoring: a single weak signal lands ~0.27–0.33 and
-    /// stays below; a clear cue (todo phrasing, time+fragment, a question opener, or
-    /// any `?`) clears it.
-    static let intentActionFloor = 0.5
+    /// against the embedding engine's calibration (confidence = |2p−1|): on held-out
+    /// data 0.4 keeps ~3% confident-and-wrong while still routing ~70% of clear
+    /// lines; everything below falls to the ask default (or the LLM second opinion
+    /// on Apple Intelligence machines — see `scheduleClassification`).
+    static let intentActionFloor = 0.4
 
-    /// The classifier's read of the current `text` — recomputed on each access, so
-    /// it always reflects what's in the box right now. `submitCurrent()` uses it to
-    /// route Enter and the send button uses it to label its destination.
-    var suggestedIntent: IntentClassifier.Result {
-        IntentClassifier.classify(text)
+    /// The engine's latest read of `text` — published asynchronously by
+    /// `scheduleClassification()` after a short debounce, since classification runs
+    /// off the main actor (embedding lookup ~10ms on the engine's actor). `.empty`
+    /// while the field is empty or a read is still in flight, which resolves to the
+    /// ask default everywhere it's consumed.
+    @Published private(set) var liveIntent: IntentEngine.Reading = .empty
+
+    /// The first *future* moment the current text names (NSDataDetector, sub-ms,
+    /// recomputed synchronously in `text.didSet`). This is what splits the note
+    /// branch: the engine only reads ask-vs-note semantically; a note that names a
+    /// future time is a **reminder** — a structural fact, not a semantic one. The
+    /// same date routes the hint and becomes the due date `submitReminder()` files,
+    /// so the "Remind" label and the alarm can never disagree.
+    @Published private(set) var detectedDue: Date? = nil
+
+    /// In-flight classification for the current text — superseded (cancelled) by
+    /// every keystroke, so only the read of what's actually in the box lands.
+    private var classifyTask: Task<Void, Never>?
+
+    /// Debounced re-classification of `text`, called from its `didSet`. Two stages:
+    ///   1. ~140ms after the last keystroke: embedding classify (fast, every Mac).
+    ///   2. If that read is *unsure* (< 0.5): wait for a real pause (~350ms more),
+    ///      then ask the on-device LLM for a second opinion — only exists on Apple
+    ///      Intelligence machines; `refine` returns nil everywhere else.
+    /// Each publish re-checks that `text` is still the snapshot it classified, so a
+    /// stale read can never label (or route) a line it wasn't computed from.
+    private func scheduleClassification() {
+        classifyTask?.cancel()
+        let snapshot = text
+        guard !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            liveIntent = .empty
+            return
+        }
+        classifyTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 140_000_000)
+            guard !Task.isCancelled, let self, self.text == snapshot else { return }
+            let reading = await IntentEngine.shared.classify(snapshot)
+            guard !Task.isCancelled, self.text == snapshot else { return }
+            self.liveIntent = reading
+
+            guard reading.confidence < 0.5 else { return }
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled, self.text == snapshot else { return }
+            guard let refined = await IntentEngine.shared.refine(snapshot),
+                  !Task.isCancelled, self.text == snapshot else { return }
+            self.liveIntent = refined
+        }
     }
 
     /// Which destination the text *confidently* wants, or `nil` when there's no
@@ -101,10 +165,12 @@ final class NotchModel: ObservableObject {
     /// line, not what the panel looks like. The "ambiguous → ask" default is applied
     /// at submit time by falling back to `.chat`, not here.
     var suggestedPanel: Panel? {
-        guard suggestedIntent.confidence >= Self.intentActionFloor else { return nil }
-        switch suggestedIntent.intent {
+        guard liveIntent.confidence >= Self.intentActionFloor else { return nil }
+        switch liveIntent.intent {
         case .ask:       return .chat
-        case .note:      return .note
+        // Within the note branch, naming a future time upgrades the line to a
+        // reminder (a date on an *ask* changes nothing — "明天天气怎么样" still asks).
+        case .note:      return detectedDue != nil ? .reminder : .note
         case .ambiguous: return nil
         }
     }
@@ -116,26 +182,38 @@ final class NotchModel: ObservableObject {
     /// show its destination and never lie about it.
     var effectiveSubmitPanel: Panel { manualPanelOverride ?? suggestedPanel ?? .chat }
 
-    /// Tab in the idle prompt: flip where Enter will send the current line
-    /// (Ask ⇄ Note), overriding the classifier. Flips from whatever the *effective*
-    /// destination is right now — including a prior override — so each press reads
-    /// as "the other one", exactly what the flipped inline hint shows.
+    /// Tab in the idle prompt: step where Enter will send the current line
+    /// (Ask → Note → Remind → Ask…), overriding the classifier. Steps from whatever
+    /// the *effective* destination is right now — including a prior override — so
+    /// each press reads as "the next one", exactly what the cycled inline hint shows.
     func toggleSubmitPanel() {
-        manualPanelOverride = effectiveSubmitPanel == .note ? .chat : .note
+        switch effectiveSubmitPanel {
+        case .chat:     manualPanelOverride = .note
+        case .note:     manualPanelOverride = .reminder
+        case .reminder: manualPanelOverride = .chat
+        }
     }
 
     /// The word in the inline hint — the destination spelled out: "Note" when this
-    /// line will be saved to Apple Notes, "Ask" when it'll go to the AI. Flips live
-    /// with the classifier as the text crosses intents, so the hint beside the caret
-    /// literally says where Enter sends the line.
+    /// line will be saved to Apple Notes, "Remind" when it'll be filed in Apple
+    /// Reminders, "Ask" when it'll go to the AI. Flips live with the classifier as
+    /// the text crosses intents, so the hint beside the caret literally says where
+    /// Enter sends the line.
     var submitLabel: String {
-        effectiveSubmitPanel == .note ? "Note" : "Ask"
+        switch effectiveSubmitPanel {
+        case .chat:     return "Ask"
+        case .note:     return "Note"
+        case .reminder: return "Remind"
+        }
     }
 
-    /// One past line written to Notes this session, kept only to flash a brief
-    /// "Saved to Notes" confirmation under the record input. `nil` clears the cue.
-    /// Not persisted — Notes itself is the store of record; this is just feedback.
+    /// One past line written to Notes/Reminders this session, kept only to flash a
+    /// brief confirmation under the record input. `nil` clears the cue.
+    /// Not persisted — Notes/Reminders are the store of record; this is feedback.
     @Published var lastSavedNote: String? = nil
+    /// Which app the flashed cue's line landed in, so the cue can say "Added to
+    /// Reminders" vs "Added to Notes". Only meaningful while `lastSavedNote` is set.
+    @Published var lastSavedToReminders = false
     /// Set when a note write fails (e.g. Automation permission not granted), so the
     /// record view can surface the recovery hint instead of silently dropping the
     /// line. Cleared on the next successful write or when the user edits the field.
@@ -240,7 +318,23 @@ final class NotchModel: ObservableObject {
 
     // MARK: - Open / collapse
 
-    func openPanel() {
+    /// Whether the island on `display` should render expanded. A `nil` active
+    /// display means "no specific screen claimed the panel" (debug launch paths
+    /// set `open` directly) and unfurls everywhere; otherwise only the claiming
+    /// screen expands.
+    func isOpen(on display: CGDirectDisplayID?) -> Bool {
+        open && (activeDisplay == nil || display == nil || activeDisplay == display)
+    }
+
+    /// Open (or migrate) the panel on the given screen. Hovering another screen's
+    /// resting notch while the panel is open elsewhere moves the whole island —
+    /// conversation and all — to where the user actually is. `activeDisplay` is
+    /// set BEFORE `open` so AppDelegate's combined observer keys the right panel.
+    /// `velocity` is the cursor's approach vector (zero for non-hover opens);
+    /// it must land before `open` so the island's animation reads it fresh.
+    func openPanel(on display: CGDirectDisplayID?, velocity: CGVector = .zero) {
+        entryVelocity = velocity
+        if let display { activeDisplay = display }
         open = true
     }
 
@@ -257,7 +351,13 @@ final class NotchModel: ObservableObject {
 
     /// Open the panel straight into settings — the path the gear and ⌘, take.
     /// Works whether the panel was resting or already open on some other view.
-    func openSettings() {
+    /// `display` says which screen should host it (AppDelegate passes the screen
+    /// under the mouse when ⌘, fires from anywhere); nil keeps the current one.
+    func openSettings(on display: CGDirectDisplayID? = nil) {
+        // Summoned by keyboard, not approached by mouse — a stale entry vector
+        // from an earlier hover must not kick the settings unfurl sideways.
+        entryVelocity = .zero
+        if let display { activeDisplay = display }
         open = true
         mode = .idle
         showSettings = true
@@ -277,7 +377,11 @@ final class NotchModel: ObservableObject {
     ///   · keep open while the user is mid-way through typing
     ///   · keep open while the Recent list is expanded — moving the mouse away
     ///     must never fold a notch that has recent content on screen
-    func collapseOnLeave() {
+    func collapseOnLeave(from display: CGDirectDisplayID? = nil) {
+        // The pointer leaving a *resting* notch on a screen that isn't hosting
+        // the open panel has nothing to fold — and must never close the island
+        // that's actually in use on another display.
+        if let display, let active = activeDisplay, display != active { return }
         if mode == .load || mode == .result { return }
         if hasText { return }
         // Mid-confirmation of a destructive clear — don't fold the panel out from
@@ -300,6 +404,7 @@ final class NotchModel: ObservableObject {
         // supersede-cancel can't reach the detached round.
         task = nil
         open = false
+        activeDisplay = nil
         mode = .idle
         text = ""; turns = []
         showHistory = false
@@ -333,16 +438,18 @@ final class NotchModel: ObservableObject {
     /// The single Enter entry point the input field calls. There's only one surface
     /// — the chat input — so this never changes what the panel looks like; it just
     /// routes the line by **intent**:
-    ///   · the classifier says note → write it to Apple Notes (feedback shows inline)
-    ///   · ask, or ambiguous        → send it to the AI
+    ///   · note naming a future time → file it in Apple Reminders (alarm at that time)
+    ///   · note                      → write it to Apple Notes (feedback shows inline)
+    ///   · ask, or ambiguous         → send it to the AI
     /// Ambiguity falls to ask (`effectiveSubmitPanel` resolves `nil` → `.chat`), so an
     /// unsure line on a fresh prompt asks the AI — the agreed "ambiguous → ask" rule.
-    /// This matches `submitLabel` exactly, so the inline "Ask"/"Note" hint always
-    /// names where the line actually went.
+    /// This matches `submitLabel` exactly, so the inline "Ask"/"Note"/"Remind" hint
+    /// always names where the line actually went.
     func submitCurrent() {
         switch effectiveSubmitPanel {
-        case .chat: submit()
-        case .note: submitNote()
+        case .chat:     submit()
+        case .note:     submitNote()
+        case .reminder: submitReminder()
         }
     }
 
@@ -449,7 +556,11 @@ final class NotchModel: ObservableObject {
         guard !line.isEmpty else { return }
 
         // Optimistic: free the field for the next jot immediately, show progress.
+        // Collapse the recent list too — clearing the text would otherwise let a
+        // still-true `showHistory` pop it right back open under the saved cue.
         text = ""
+        showHistory = false
+        highlightedHistoryIndex = nil
         noteError = nil
         noteCueTask?.cancel()
         lastSavedNote = nil
@@ -460,6 +571,7 @@ final class NotchModel: ObservableObject {
             self.noteSaving = false
             switch result {
             case .success:
+                self.lastSavedToReminders = false
                 self.flashSavedCue(line)
             case .failure(let err):
                 // Put the line back so the user can retry / copy it, but only if
@@ -467,6 +579,43 @@ final class NotchModel: ObservableObject {
                 // fresh draft would be worse than losing the failed line to the cue.
                 if self.text.isEmpty { self.text = line }
                 self.noteError = err.errorDescription ?? "Couldn't save to Notes. Try again."
+            }
+        }
+    }
+
+    // MARK: - Reminder submit
+
+    /// Route a time-bound line into Apple Reminders, due (and ringing) at the
+    /// moment the text names. Same optimistic shape as `submitNote`: clear the
+    /// field immediately, show "Saving…", and on failure (usually the Reminders
+    /// permission not yet granted) restore the exact line so nothing is lost.
+    ///
+    /// The due date is captured **before** clearing the field — `text.didSet`
+    /// recomputes `detectedDue` to nil on the clear, so reading it after would
+    /// file a dateless reminder.
+    func submitReminder() {
+        let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return }
+        let due = detectedDue
+
+        text = ""
+        showHistory = false
+        highlightedHistoryIndex = nil
+        noteError = nil
+        noteCueTask?.cancel()
+        lastSavedNote = nil
+        noteSaving = true
+
+        RemindersService.createReminder(line, due: due) { [weak self] result in
+            guard let self else { return }
+            self.noteSaving = false
+            switch result {
+            case .success:
+                self.lastSavedToReminders = true
+                self.flashSavedCue(line)
+            case .failure(let err):
+                if self.text.isEmpty { self.text = line }
+                self.noteError = err.errorDescription ?? "Couldn't save to Reminders. Try again."
             }
         }
     }

@@ -44,12 +44,19 @@ enum APIKeyStore {
 
     // MARK: - Selected provider
 
-    /// Which backend is active. Persisted in `UserDefaults`, with MiMo as the
-    /// default to preserve the app's previous behavior.
+    /// Which backend is active. Persisted in `UserDefaults`. When the user has
+    /// never explicitly picked one, prefer a provider they already configured a
+    /// key for (installs that predate this default never wrote the selection),
+    /// and otherwise default to OpenRouter — the only backend that works without
+    /// pasting a key (one-click connect, free models).
     static var selectedProvider: Provider {
         get {
             let raw = UserDefaults.standard.string(forKey: selectedProviderKey) ?? ""
-            return Provider(rawValue: raw) ?? .mimo
+            if let chosen = Provider(rawValue: raw) { return chosen }
+            if let configured = Provider.allCases.first(where: { read($0) != nil }) {
+                return configured
+            }
+            return .openrouter
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: selectedProviderKey)

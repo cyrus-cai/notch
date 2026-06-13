@@ -9,5 +9,10 @@
 	     (text from NSAppleEventsUsageDescription in Info.plist). -->
 	<key>com.apple.security.automation.apple-events</key>
 	<true/>
+	<!-- Hardened-runtime resource access for EventKit: reminder mode writes into
+	     Apple Reminders (see RemindersService). Same one-time TCC prompt model as
+	     Notes, text from NSRemindersFullAccessUsageDescription in Info.plist. -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 </dict>
 </plist>

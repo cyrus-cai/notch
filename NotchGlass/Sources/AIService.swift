@@ -57,6 +57,10 @@ no markdown headers.
 /// Adding another OpenAI-compatible vendor is a one-line case here — no new
 /// networking code.
 enum Provider: String, CaseIterable, Identifiable, Sendable {
+    /// First in the menu deliberately: the only backend that works without
+    /// pasting a key (one-click OAuth connect, free models) — the default for
+    /// fresh installs.
+    case openrouter
     case mimo
     case deepseek
     case openai
@@ -82,6 +86,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// Human-readable name shown in Settings.
     var displayName: String {
         switch self {
+        case .openrouter: return "OpenRouter"
         case .mimo:      return "MiMo"
         case .deepseek:  return "DeepSeek"
         case .openai:    return "OpenAI"
@@ -98,6 +103,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// `/v1/chat/completions` shape; Anthropic uses its native `/v1/messages`.
     var endpoint: URL {
         switch self {
+        case .openrouter: return URL(string: "https://openrouter.ai/api/v1/chat/completions")!
         case .mimo:      return URL(string: "https://api.xiaomimimo.com/v1/chat/completions")!
         case .deepseek:  return URL(string: "https://api.deepseek.com/v1/chat/completions")!
         case .openai:    return URL(string: "https://api.openai.com/v1/chat/completions")!
@@ -113,6 +119,9 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// Default model used when the user hasn't picked one explicitly.
     var defaultModel: String {
         switch self {
+        // The free auto-router: OpenRouter picks a currently-available free
+        // model per request, so this keeps working as the free lineup rotates.
+        case .openrouter: return "openrouter/free"
         case .mimo:      return "mimo-v2.5-pro"
         case .deepseek:  return "deepseek-v4-flash"
         case .openai:    return "gpt-5.5"
@@ -132,6 +141,10 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// set rather than the source of truth.
     var availableModels: [String] {
         switch self {
+        case .openrouter:
+            // Just the router — the live `/models` fetch fills in the current
+            // `:free` lineup (see `ModelCatalog`), which rotates too often to bundle.
+            return ["openrouter/free"]
         case .mimo:
             return ["mimo-v2.5-pro", "mimo-v2.5"]
         case .deepseek:
@@ -156,6 +169,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// Where the user signs up / gets an API key (shown in the Settings footer).
     var signupHost: String {
         switch self {
+        case .openrouter: return "openrouter.ai"
         case .mimo:      return "platform.xiaomimimo.com"
         case .deepseek:  return "platform.deepseek.com"
         case .openai:    return "platform.openai.com"
@@ -173,6 +187,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// exact page where the user creates a key.
     var signupURL: URL {
         switch self {
+        case .openrouter: return URL(string: "https://openrouter.ai/settings/keys")!
         case .mimo:      return URL(string: "https://platform.xiaomimimo.com/console/api-keys/api_key")!
         case .deepseek:  return URL(string: "https://platform.deepseek.com/api_keys/api_key")!
         case .openai:    return URL(string: "https://platform.openai.com/api-keys/api_key")!
@@ -188,6 +203,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// Environment variable that force-overrides the stored key (handy for dev).
     var envVarName: String {
         switch self {
+        case .openrouter: return "OPENROUTER_API_KEY"
         case .mimo:      return "MIMO_API_KEY"
         case .deepseek:  return "DEEPSEEK_API_KEY"
         case .openai:    return "OPENAI_API_KEY"
@@ -207,6 +223,19 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .mimo:     return "max_completion_tokens"
         default:        return "max_tokens"
+        }
+    }
+
+    /// Vendor-specific extras sent with every chat request. OpenRouter's two
+    /// optional attribution headers identify the app (its docs ask nicely);
+    /// everyone else needs nothing beyond auth.
+    var extraHeaders: [String: String] {
+        switch self {
+        case .openrouter:
+            return ["HTTP-Referer": "https://github.com/\(UpdaterService.repo)",
+                    "X-Title": "NotchGlass"]
+        default:
+            return [:]
         }
     }
 }
@@ -232,8 +261,8 @@ struct StubAIService: AIService {
         let text = """
         \(contextNote)Here's a placeholder answer to **\(q)**.
 
-        No API key set yet — this is the offline stub. Open Settings (⌘,) and \
-        paste an API key to get live answers.
+        No model connected yet — this is the offline stub. Open Settings (⌘,) and \
+        connect a free OpenRouter account (or paste an API key) to get live answers.
         """
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -331,6 +360,9 @@ struct OpenAICompatAIService: AIService {
                     req.timeoutInterval = Self.streamTimeout
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                    for (field, value) in provider.extraHeaders {
+                        req.setValue(value, forHTTPHeaderField: field)
+                    }
 
                     // System prompt first, then the running conversation verbatim —
                     // so a follow-up is answered with every prior turn in context.
@@ -586,6 +618,14 @@ enum ModelCatalog {
                   (200..<300).contains(http.statusCode) else { return nil }
             let list = try JSONDecoder().decode(ModelList.self, from: data)
             let ids = list.data.map(\.id).filter { !$0.isEmpty }
+            // OpenRouter's catalog is its FULL marketplace — hundreds of ids, most
+            // of them paid, which a freshly-connected $0 account can't call. Offer
+            // only what actually works free: the auto-router plus the current
+            // `:free` variants.
+            if provider == .openrouter {
+                let free = ids.filter { $0.hasSuffix(":free") }.sorted()
+                return ["openrouter/free"] + free
+            }
             return ids.isEmpty ? nil : ids
         } catch {
             return nil
@@ -634,7 +674,7 @@ enum ConnectivityTest {
         /// Short user-facing line for the Settings footer.
         var message: String {
             switch self {
-            case .ok:                 return "Connected"
+            case .ok:                 return "Key verified"
             case .missingKey:         return "Enter a key"
             case .unauthorized:       return "Invalid key"
             case .http(let code):     return "Server error (\(code))"
@@ -652,7 +692,7 @@ enum ConnectivityTest {
     static func run(provider: Provider, apiKey: String) async -> Result {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return .missingKey }
-        guard let url = modelsURL(for: provider) else {
+        guard let url = probeURL(for: provider) else {
             // No /models sibling we can derive — fall back to "we can't test this".
             return .failed("Test unavailable for this provider")
         }
@@ -693,8 +733,13 @@ enum ConnectivityTest {
     }
 
     /// Same path derivation as `ModelCatalog.modelsURL`, duplicated here so the test
-    /// doesn't depend on that enum's private helper.
-    private static func modelsURL(for provider: Provider) -> URL? {
+    /// doesn't depend on that enum's private helper. OpenRouter is the exception:
+    /// its `/models` is public (answers 200 to any key, so it can't judge one) —
+    /// `/api/v1/key` requires auth and describes the key, making it the honest probe.
+    private static func probeURL(for provider: Provider) -> URL? {
+        if provider == .openrouter {
+            return URL(string: "https://openrouter.ai/api/v1/key")
+        }
         let s = provider.endpoint.absoluteString
         for suffix in ["/chat/completions", "/messages"] where s.hasSuffix(suffix) {
             return URL(string: String(s.dropLast(suffix.count)) + "/models")

@@ -402,11 +402,11 @@ struct InlineSendHint: View {
 
     /// Trailing room the caller should reserve INSIDE the field (as trailing
     /// padding) so text can never scroll under the docked hint: the widest hint
-    /// ("— Note") plus the breathing gap. Sized to the widest label so the field's
-    /// width stays constant when the hint flips Ask⇄Note mid-line — a live text
-    /// field relaid out per keystroke is exactly the jitter we're avoiding.
+    /// ("— Remind") plus the breathing gap. Sized to the widest label so the field's
+    /// width stays constant when the hint steps Ask→Note→Remind mid-line — a live
+    /// text field relaid out per keystroke is exactly the jitter we're avoiding.
     static func reservedTrailingWidth(fontSize: CGFloat) -> CGFloat {
-        width(of: "— Note", fontSize: fontSize) + gap
+        width(of: "— Remind", fontSize: fontSize) + gap
     }
 
     /// Width of the ghost itself. Rendered at the field's own size/weight, so it

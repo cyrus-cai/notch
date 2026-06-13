@@ -63,8 +63,21 @@ info "Installing to ${INSTALL_DIR}…"
 ditto "$src" "$dest" || die "Could not copy into ${INSTALL_DIR}."
 
 # --- relaunch --------------------------------------------------------------
+# `open` can fail with -600 (procNotFound) right after the swap: LaunchServices
+# is sometimes still tearing down its record of the instance we just killed and
+# refuses the path until that settles. Retry briefly, then fall back to spawning
+# the binary directly — same app, just sidesteps the stale LS record.
 info "Launching…"
-open "$dest" || die "Could not launch ${dest}."
+launched=false
+for _ in 1 2 3 4 5 6; do
+  if open "$dest" 2>/dev/null; then launched=true; break; fi
+  sleep 0.5
+done
+if ! $launched; then
+  ( "$dest/Contents/MacOS/NotchGlass" >/dev/null 2>&1 & )
+fi
+sleep 1
+pgrep -x NotchGlass >/dev/null || die "Could not launch ${dest}."
 
 ok "Reinstalled ${APP_NAME} from local build."
 printf '%sDone.%s Hover your notch to wake it.\n' "$bold" "$reset"

@@ -4,6 +4,9 @@ import SwiftUI
 /// Switches between idle / load / result exactly like the prototype's modes.
 struct NotchBody: View {
     @ObservedObject var model: NotchModel
+    /// Self-update state — read here only to badge the settings gear with a dot
+    /// when a newer release is available (the action itself lives in settings).
+    @ObservedObject private var updater = UpdaterService.shared
     /// Drives the custom field's first-responder. Set shortly after the panel
     /// opens so the caret lands without a click (the AppDelegate has just made
     /// the panel key; a tiny delay lets that settle first).
@@ -164,7 +167,8 @@ struct NotchBody: View {
             )
         }
         if model.lastSavedNote != nil {
-            return AnyView(feedbackLine("Added to Notes"))
+            return AnyView(feedbackLine(
+                model.lastSavedToReminders ? "Added to Reminders" : "Added to Notes"))
         }
         if model.noteSaving {
             return AnyView(feedbackLine("Saving…"))
@@ -202,6 +206,18 @@ struct NotchBody: View {
         GlassIconButton(systemName: "gearshape", help: "Settings (⌘,)", size: 26) {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                 model.toggleSettings()
+            }
+        }
+        // The whole passive update cue: a 5pt neutral dot on the gear when a
+        // newer release is known. Clicking through to settings shows the update
+        // action — the dot itself never interrupts anything, and never shouts in
+        // colour.
+        .overlay(alignment: .topTrailing) {
+            if case .available = updater.phase {
+                Circle()
+                    .fill(Tokens.text2)
+                    .frame(width: 5, height: 5)
+                    .offset(x: -1, y: 1)
             }
         }
     }
@@ -558,10 +574,10 @@ struct NotchBody: View {
                     onSubmitNav: followUp ? { false } : {
                         model.historyConfirmHighlighted()
                     },
-                    // Tab flips where Enter sends this line (Ask ⇄ Note) when the
-                    // classifier guessed wrong — the inline hint flips with it. Only
-                    // meaningful with text in the field; an empty field's Tab is
-                    // still swallowed so focus never wanders out of the prompt.
+                    // Tab steps where Enter sends this line (Ask → Note → Remind →…)
+                    // when the classifier guessed wrong — the inline hint steps with
+                    // it. Only meaningful with text in the field; an empty field's Tab
+                    // is still swallowed so focus never wanders out of the prompt.
                     onTab: followUp ? { false } : {
                         if model.hasText { model.toggleSubmitPanel() }
                         return true

@@ -6,32 +6,31 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
-	<key>CFBundleIconName</key>
-	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
-	<key>NSHumanReadableCopyright</key>
-	<string>Notch — Liquid Glass</string>
-	<!-- Record mode writes typed lines into Apple Notes via Apple Events; this is
-	     the text macOS shows in the one-time Automation permission prompt. -->
-	<key>NSAppleEventsUsageDescription</key>
-	<string>Notch saves the lines you type in record mode into the Notes app.</string>
-	<!-- Agent app: no Dock icon, no menu bar. Lives only in the notch. -->
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Notch saves the lines you type in record mode into the Notes app.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Notch — Liquid Glass</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Notch files time-bound lines you type as reminders in the Reminders app.</string>
 </dict>
 </plist>

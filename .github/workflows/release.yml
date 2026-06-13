@@ -25,11 +25,14 @@ jobs:
 
       - name: Build (Release)
         run: |
+          # Stamp the tag into the bundle (Info.plist reads $(MARKETING_VERSION));
+          # the in-app updater compares this version against the latest release.
           xcodebuild \
             -project NotchGlass.xcodeproj \
             -scheme NotchGlass \
             -configuration Release \
             -derivedDataPath build \
+            MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
             CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             build
 

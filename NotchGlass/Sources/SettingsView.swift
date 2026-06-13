@@ -15,4 +15,7 @@ extension Notification.Name {
     /// Posted by ⌘, (and the `NOTCH_SETTINGS` debug flag) so `AppDelegate` can
     /// open the panel straight into the inline settings view.
     static let openSettingsRequested = Notification.Name("openSettingsRequested")
+    /// Posted after the user changes the Display placement (Settings → Display),
+    /// so `AppDelegate` can create/destroy per-screen panels immediately.
+    static let displayPlacementChanged = Notification.Name("displayPlacementChanged")
 }

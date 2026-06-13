@@ -68,6 +68,28 @@ struct GlassMaterial: View {
     /// by `.onChange(of: expanded)` so the shimmer travels exactly once per open.
     @State private var sweep = false
 
+    /// The base darkening baked into the native glass material as a tint (see
+    /// `nativeGlass(in:)`) — chosen to match the panel's *lightest* veil value
+    /// (the bottom edge), so along the bottom and corners, where the animation
+    /// desync was most visible, escaped glass is indistinguishable from the
+    /// settled panel. The veil subtracts this via `veilAlpha` to keep every
+    /// composite target unchanged.
+    static let bakedTint: Double = 0.34
+
+    /// Whether the macOS 26 native glass (and therefore the baked tint) is in
+    /// play; the legacy backdrop keeps the original full-strength veil.
+    private var tintBaked: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+
+    /// The veil opacity that, layered over the baked glass tint, composites to
+    /// the originally tuned darkness: 1−(1−tint)(1−veil) = target.
+    private func veilAlpha(_ target: Double) -> Double {
+        guard tintBaked else { return target }
+        return max(0, (target - GlassMaterial.bakedTint) / (1 - GlassMaterial.bakedTint))
+    }
+
     var body: some View {
         let shape = NotchShape(bottomRadius: bottomRadius)
 
@@ -79,10 +101,16 @@ struct GlassMaterial: View {
         ZStack {
             shape.fill(.clear).nativeGlass(in: shape)
             darkVeil
-            // The raking diagonal gloss over the lower body — only when open.
-            if expanded { diagonalGloss(shape) }
+            // The raking diagonal gloss over the lower body — faded in when
+            // open. Both decorations stay MOUNTED at rest (opacity 0) instead
+            // of being `if expanded`-inserted: each is a blurred offscreen
+            // layer, and allocating those buffers on the open's very first
+            // frame cost that frame its budget — a visible hitch right as the
+            // expansion starts. An opacity flip under the open spring reads
+            // identically to the old insertion fade.
+            diagonalGloss(shape).opacity(expanded ? 1 : 0)
             blackCap(shape)
-            if expanded { expandShimmer(shape) }
+            expandShimmer(shape).opacity(expanded ? 1 : 0)
             // NOTE: the edge rim is intentionally NOT drawn here. It's stamped over
             // the island as a separate overlay *after* the bottom/left/right edge
             // fade (see `NotchIsland`), so the specular highlight keeps tracing the
@@ -227,17 +255,20 @@ struct GlassMaterial: View {
 
             ZStack {
                 if expanded {
+                    // Targets pass through `veilAlpha`, which discounts the
+                    // darkening already baked into the glass tint — the
+                    // composite stays exactly the tuned values above.
                     LinearGradient(
                         stops: [
-                            .init(color: .black,                       location: 0.0),
-                            .init(color: .black,                       location: solidEnd),
-                            .init(color: .black.opacity(glassTop),     location: meltEnd),
-                            .init(color: .black.opacity(glassBottom),  location: 1.0),
+                            .init(color: .black,                                  location: 0.0),
+                            .init(color: .black,                                  location: solidEnd),
+                            .init(color: .black.opacity(veilAlpha(glassTop)),     location: meltEnd),
+                            .init(color: .black.opacity(veilAlpha(glassBottom)),  location: 1.0),
                         ],
                         startPoint: .top, endPoint: .bottom
                     )
                 } else {
-                    Color.black.opacity(0.92)
+                    Color.black.opacity(veilAlpha(0.92))
                 }
 
                 // Subtle brighter sheen just under the black lip — depth.
@@ -323,7 +354,17 @@ private extension View {
     @ViewBuilder
     func nativeGlass<S: Shape>(in shape: S) -> some View {
         if #available(macOS 26.0, *) {
-            self.glassEffect(.clear, in: shape)
+            // The tint bakes the panel's BASE darkening into the glass material
+            // itself instead of leaving it all to the SwiftUI veil above. The
+            // system renders the glass in its own backdrop layer whose geometry
+            // animates out of sync with SwiftUI's per-frame spring layout (the
+            // window server interpolates it independently) — during the open
+            // spring, slivers of glass routinely escape the veil along the
+            // growing edges. A tinted material can never desync from itself, so
+            // an escaped sliver now reads as the same smoked glass as the panel
+            // body instead of a bright unveiled band. `darkVeil` subtracts this
+            // tint from its own stops so the settled look is unchanged.
+            self.glassEffect(.clear.tint(.black.opacity(GlassMaterial.bakedTint)), in: shape)
         } else {
             self.background(LegacyGlassBackdrop().clipShape(shape))
         }

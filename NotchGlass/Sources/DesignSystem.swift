@@ -21,10 +21,9 @@ enum Tokens {
     static let text4 = ink.opacity(0.40)   // meta (timestamps)
     static let hairline = Color.white.opacity(0.12)
 
-    // Status accents — used sparingly for inline feedback (e.g. the connectivity
-    // test verdict). Tuned bright/saturated so they read clearly on the dark glass
-    // without the muddiness a dimmed system red/green would have here.
-    static let success = Color(red: 0.30, green: 0.85, blue: 0.45)
+    // Danger accent — used sparingly for genuine errors and destructive actions
+    // (update failure, a destructive menu item). Success/confirmation states stay
+    // neutral ink instead: no coloured dots, no green pills.
     static let danger  = Color(red: 1.00, green: 0.42, blue: 0.42)
 
     /// Placeholder text for the prompt — a soft, faint hint, clearly LIGHTER than
@@ -56,8 +55,22 @@ extension Font {
 
 /// Geometry shared with the SwiftUI tree via the environment so views know how
 /// wide the transparent canvas is and can center the notch within it.
+///
+/// Each panel (one per screen — see `AppDelegate`) injects its own copy, which is
+/// how the same `ContentView` renders a hardware-notch-hugging island on the
+/// built-in display and a menu-bar-height "virtual notch" on external ones.
 struct NotchMetrics {
     var canvasWidth: CGFloat
+    /// Stable identifier of the display this canvas sits on (`CGDirectDisplayID`).
+    /// `nil` only in previews / the environment default; live panels always set it.
+    var displayID: CGDirectDisplayID? = nil
+    /// Height of the resting black zone: the hardware notch height on the built-in
+    /// screen, the menu-bar height on external (notch-less) screens — so the
+    /// virtual notch nests inside the menu bar instead of poking below it.
+    var restHeight: CGFloat = Tokens.notchTopHeight
+    /// Whether this screen has a real camera housing. Drives the camera dot —
+    /// drawing a fake lens on an external monitor reads as a mistake.
+    var hasHardwareNotch: Bool = true
 }
 
 private struct NotchMetricsKey: EnvironmentKey {

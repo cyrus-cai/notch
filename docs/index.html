@@ -14,7 +14,7 @@
 <link rel="icon" href="icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Space+Grotesk:wght@500&display=swap" rel="stylesheet">
 <script>document.documentElement.className = 'js';</script>
 <style>
   /* ================= page ================= */
@@ -22,6 +22,7 @@
   :root {
     --bg: #050507;
     --serif: "Instrument Serif", Georgia, serif;
+    --brand: "Space Grotesk", "SF Pro Display", -apple-system, sans-serif;
     --sf: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
     /* SwiftUI .spring(response: 0.42, dampingFraction: 0.72) ≈ slight overshoot */
@@ -74,13 +75,14 @@
     text-align: center;
   }
 
-  /* The masthead: app face + wordmark in the page's serif voice, seated in
-     the corner like any site that knows its own name. */
+  /* The masthead: app face + wordmark. The wordmark gets its own voice — a
+     plainspoken grotesque, distinct from both the body SF and the headline
+     serif — seated in the corner like any site that knows its own name. */
   .brand {
     position: absolute; top: 24px; left: 32px; z-index: 20;
     display: flex; align-items: center; gap: 12px;
-    font-family: var(--serif); font-style: normal; font-weight: 400;
-    font-size: 25px; letter-spacing: -.01em;
+    font-family: var(--brand); font-weight: 500;
+    font-size: 20px; letter-spacing: 0;
     color: rgba(255,255,255,.92);
     animation: fadein .9s ease .05s both;
   }
@@ -94,7 +96,7 @@
      carries all the literal explaining. */
   h1 {
     margin: 0 auto;
-    font-family: var(--serif); font-style: italic; font-weight: 400;
+    font-family: var(--serif); font-weight: 400;
     font-size: clamp(40px, 5.4vw, 76px);
     line-height: 1.14; letter-spacing: -.01em;
     color: rgba(255,255,255,.94);
@@ -528,7 +530,7 @@
     text-align: center;
   }
   .sec h2 {
-    font-family: var(--serif); font-style: italic; font-weight: 400;
+    font-family: var(--serif); font-weight: 400;
     font-size: clamp(30px, 3.8vw, 40px);
     line-height: 1.08; letter-spacing: -.01em;
     color: rgba(255,255,255,.92);
@@ -711,13 +713,13 @@
   }
   .ft-brand {
     display: flex; align-items: center; gap: 8px;
-    font-family: var(--serif); font-weight: 400;
-    font-size: 16.5px; color: rgba(255,255,255,.65);
+    font-family: var(--brand); font-weight: 500;
+    font-size: 13.5px; color: rgba(255,255,255,.65);
   }
   .ft-brand img { width: 16px; height: 16px; }
   .ft-dim {
     color: rgba(255,255,255,.32); font-weight: 400;
-    font-family: var(--serif); font-style: italic; font-size: 15px;
+    font-family: var(--sf); font-size: 12.5px;
   }
   .ft a { color: rgba(255,255,255,.38); text-decoration: none; margin-left: 18px; transition: color .2s ease; }
   .ft a:hover { color: rgba(255,255,255,.9); }
@@ -738,8 +740,8 @@
   .nav.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
   .nav-brand {
     display: flex; align-items: center; gap: 8px;
-    font-family: var(--serif); font-weight: 400;
-    font-size: 15px; color: rgba(255,255,255,.88);
+    font-family: var(--brand); font-weight: 500;
+    font-size: 13.5px; color: rgba(255,255,255,.88);
     text-decoration: none;
   }
   .nav-brand img { width: 16px; height: 16px; }
