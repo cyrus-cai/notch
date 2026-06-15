@@ -354,6 +354,111 @@ struct PromptField: NSViewRepresentable {
     }
 }
 
+/// The compact substring filter that sits above the recent list once it grows past a
+/// handful of rows. An `NSViewRepresentable` over `NSTextField` — NOT a SwiftUI
+/// `TextField` — for the same reason `PromptField` is: a plain SwiftUI field pops the
+/// floating autocomplete/suggestions panel and applies smart substitutions, which
+/// would be jarring over the glass. We reuse `PromptField.disableEditorMagic` to kill
+/// all of that on the field editor. Deliberately *not* auto-focused: keyboard focus
+/// stays in the main prompt so ↓/↑ still drive the list; the user clicks the field to
+/// start filtering.
+struct HistorySearchField: NSViewRepresentable {
+    @Binding var text: String
+    var placeholder: String
+    var fontSize: CGFloat
+    /// When this flips true the field grabs first-responder once, so the filter
+    /// icon can deposit the caret straight into the expanded field.
+    var focusTrigger: Bool = false
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.delegate = context.coordinator
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.lineBreakMode = .byTruncatingTail
+        field.cell?.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.isAutomaticTextCompletionEnabled = false
+        field.allowsCharacterPickerTouchBarItem = false
+        field.importsGraphics = false
+        field.allowsEditingTextAttributes = false
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        applyStyle(to: field)
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        // Same composition guard as PromptField: never overwrite the field while an
+        // IME composition is in flight, or half-typed pinyin gets wiped.
+        let composing = (field.currentEditor() as? NSTextView)?.hasMarkedText() ?? false
+        if !composing, field.stringValue != text { field.stringValue = text }
+        applyStyle(to: field)
+        // Kill editor-level magic whenever this field owns the field editor (the
+        // editor is created lazily on first focus; re-applying is harmless).
+        if let editor = field.currentEditor() {
+            PromptField.disableEditorMagic(editor)
+        }
+        // Take focus exactly ONCE per rising edge of focusTrigger, mirroring
+        // PromptField's latch so we don't fight the field editor on every render.
+        let coord = context.coordinator
+        if focusTrigger {
+            if !coord.didFocus, field.window != nil, field.currentEditor() == nil {
+                coord.didFocus = true
+                DispatchQueue.main.async { [weak field] in
+                    guard let field, field.currentEditor() == nil else { return }
+                    field.window?.makeFirstResponder(field)
+                    if let editor = field.currentEditor() {
+                        PromptField.disableEditorMagic(editor)
+                    }
+                }
+            }
+        } else {
+            coord.didFocus = false   // re-arm for the next expand
+        }
+    }
+
+    private func applyStyle(to field: NSTextField) {
+        let wantFont = NSFont.systemFont(ofSize: fontSize)
+        if field.font != wantFont { field.font = wantFont }
+        let wantText = NSColor(Tokens.text2)
+        if field.textColor != wantText { field.textColor = wantText }
+        let wantPlaceholder = NSAttributedString(
+            string: placeholder,
+            attributes: [
+                .foregroundColor: NSColor(Tokens.text4),
+                .font: wantFont,
+            ]
+        )
+        if field.placeholderAttributedString != wantPlaceholder {
+            field.placeholderAttributedString = wantPlaceholder
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: HistorySearchField
+        /// One-shot latch: true once we've taken focus for the current rising edge
+        /// of `focusTrigger`, reset when it falls.
+        var didFocus = false
+        init(_ parent: HistorySearchField) { self.parent = parent }
+
+        func controlTextDidChange(_ note: Notification) {
+            guard let field = note.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+
+        func controlTextDidBeginEditing(_ note: Notification) {
+            PromptField.disableEditorMagic((note.object as? NSTextField)?.currentEditor())
+        }
+    }
+}
+
 /// A Siri-style **inline ghost hint** that trails the typed text on the same line,
 /// spelling out where Enter will send it — "— Ask" for a question, "— Note" for a
 /// jot — the way Siri appends a faint "— Ask Siri" after what you've typed. The
@@ -401,18 +506,13 @@ struct InlineSendHint: View {
     private static let gap: CGFloat = 8
 
     /// Trailing room the caller should reserve INSIDE the field (as trailing
-    /// padding) so text can never scroll under the docked hint: the widest hint
-    /// ("— Remind") plus the breathing gap. Sized to the widest label so the field's
-    /// width stays constant when the hint steps Ask→Note→Remind mid-line — a live
-    /// text field relaid out per keystroke is exactly the jitter we're avoiding.
-    static func reservedTrailingWidth(fontSize: CGFloat) -> CGFloat {
-        width(of: "— Remind", fontSize: fontSize) + gap
-    }
-
-    /// Width of the ghost itself. Rendered at the field's own size/weight, so it
-    /// measures at the same `fontSize`.
-    private var hintWidth: CGFloat {
-        Self.width(of: hintString, fontSize: fontSize)
+    /// padding) so text can never scroll under the docked hint. Sized to the *current*
+    /// label ("— Ask", "— Note", "— Remind · Weekly · …") rather than the widest
+    /// possible label, so the field uses all available width when the destination is
+    /// short and no dead strip appears to the right of the ghost. The caller animates
+    /// this padding alongside the hint so Ask→Note→Remind transitions stay smooth.
+    static func reservedTrailingWidth(label: String, fontSize: CGFloat) -> CGFloat {
+        return width(of: "— \(label)", fontSize: fontSize) + gap
     }
 
     var body: some View {
@@ -423,7 +523,14 @@ struct InlineSendHint: View {
         // field scrolls underneath (the caller reserved that slot, so no overlap).
         // Visibility keys on `caretWidth` (not the committed `text`) so the hint
         // stays up while pinyin is still composing.
-        let dock = availableWidth - hintWidth
+        //
+        // The dock anchors to the LEFT edge of the reserved strip the caller padded
+        // into the field. Both the field's usable width and the dock reference the SAME
+        // reserved width (now sized to the current label) so the ghost lands flush where
+        // the text area ends — no gap, no overlap — while short labels reclaim the rest
+        // of the row for the editable area.
+        let reserved = Self.reservedTrailingWidth(label: label, fontSize: fontSize)
+        let dock = availableWidth - reserved + Self.gap
         let start = min(leadingInset + caretWidth + Self.gap, dock)
         let visible = caretWidth > 0
 
@@ -644,7 +751,51 @@ private struct GlassPressStyle: ButtonStyle {
     }
 }
 
-private extension View {
+/// A one-shot **rim glow** that pulses whenever a watched value changes — the input
+/// field's outer acknowledgement that its *destination* just flipped (Ask → Note →
+/// Remind). The inline "— Ask"/"— Note" ghost already cross-fades the word beside the
+/// caret; this brightens the field's own border for a beat so the change registers in
+/// peripheral vision too, not only where the eye is reading.
+///
+/// Mechanics: brighten instantly (no animation) on the change, then ease back to rest —
+/// a struck-then-settles curve, the same shape the entry kick uses, so the field reads
+/// as having been *tapped* by the switch rather than slowly glowing. Keyed on an
+/// `Equatable` trigger so it fires once per real transition; passing the intent
+/// *category* (not the full label) keeps a "Remind · Daily" → "Remind · Weekly" suffix
+/// edit from pulsing, since the destination itself didn't move.
+private struct IntentChangePulse<Trigger: Equatable, S: InsettableShape>: ViewModifier {
+    var trigger: Trigger
+    var shape: S
+    @State private var glow: Double = 0
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                shape
+                    .strokeBorder(Color.white.opacity(0.5 * glow), lineWidth: 1)
+                    .blur(radius: 1.5)
+                    .allowsHitTesting(false)
+            )
+            .onChange(of: trigger) { _, _ in
+                // Strike: jump to full on its own (instant) transaction so the brighten
+                // is a hit, not a ramp; then release back to rest on a soft ease.
+                var instant = Transaction(); instant.disablesAnimations = true
+                withTransaction(instant) { glow = 1 }
+                withAnimation(.easeOut(duration: 0.45)) { glow = 0 }
+            }
+    }
+}
+
+extension View {
+    /// Pulse a soft rim glow on `shape` each time `trigger` changes — see
+    /// `IntentChangePulse`. Used on the prompt field to flash its border when the
+    /// Ask/Note/Remind destination flips.
+    func intentChangePulse<T: Equatable, S: InsettableShape>(on trigger: T, shape: S) -> some View {
+        modifier(IntentChangePulse(trigger: trigger, shape: shape))
+    }
+}
+
+extension View {
     /// Wrap the content in a Liquid Glass chip of the given shape — genuine system
     /// glass on macOS 26+, a dark blur fallback below — topped with the same
     /// whisper-thin specular rim the island uses, so it sits in the same material
@@ -660,8 +811,14 @@ private extension View {
                     LegacyGlassBackdrop().clipShape(shape)
                 }
             }
+            // Both overlays are purely decorative (tint + specular rim). They sit ON
+            // TOP of the content, and a filled/stroked Shape is hit-testable by
+            // default — which would swallow taps meant for any control *nested* inside
+            // a capsule (e.g. a remove × or inline button). Mark them non-interactive
+            // so clicks pass through to the content below.
             .overlay(
                 shape.fill(.white.opacity(brighter ? 0.10 : 0.04))
+                    .allowsHitTesting(false)
             )
             .overlay(
                 shape.strokeBorder(
@@ -674,11 +831,84 @@ private extension View {
                     ),
                     lineWidth: 0.75
                 )
+                .allowsHitTesting(false)
             )
             // Real Liquid Glass barely casts a shadow — it reads as a thin chip of
             // glass, not a floating card. Just a whisper of a contact shadow to
             // seat it on the island; the specular rim does the rest of the work.
             .shadow(color: .black.opacity(0.10), radius: 1.5, y: 0.5)
+    }
+}
+
+/// One clipboard-preset chip — a small glass capsule labelled with a Writing-Tools
+/// style action ("Summarize", "Proofread", "更友好"…) that, on tap, runs that preset
+/// against the copied text. Same Liquid Glass language as `GlassTextButton`, sized a
+/// touch larger so a row of them reads as tappable actions, not metadata.
+struct ClipboardPresetChip: View {
+    var title: String
+    var action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.sf(12, weight: .medium))
+                .foregroundStyle(hovering ? Tokens.text1 : Tokens.text2)
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .glassCapsule(in: Capsule(), brighter: hovering)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(GlassPressStyle())
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.18), value: hovering)
+    }
+}
+
+/// A minimal left-aligned flow layout: lays children left-to-right, wrapping to the
+/// next line when the next child would overflow the proposed width. Used for the
+/// clipboard-preset chip row, which carries more chips than fit the panel on one
+/// line. Deliberately tiny — no alignment knobs beyond leading — since that's all the
+/// chip row needs; reach for a real grid if a second caller wants more.
+struct FlowLayout: Layout {
+    var hSpacing: CGFloat = 6
+    var vSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                // Wrap: bank the finished row's width, drop to the next line.
+                widest = max(widest, x - hSpacing)
+                x = 0; y += rowHeight + vSpacing; rowHeight = 0
+            }
+            x += size.width + hSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        widest = max(widest, x - hSpacing)
+        return CGSize(width: min(widest, maxWidth), height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = bounds.width
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0; y += rowHeight + vSpacing; rowHeight = 0
+            }
+            view.place(
+                at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(size)
+            )
+            x += size.width + hSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 
@@ -991,6 +1221,11 @@ struct MarkdownBlocks: View {
     let source: String
     var baseFont: CGFloat = 15
     var color: Color = Tokens.text1
+    /// Called when a code block's copy button writes its text to the pasteboard,
+    /// so the owner (NotchBody) can re-baseline the clipboard and stop that in-app
+    /// copy from poisoning the next Ask's clipboard-context injection. `nil` in the
+    /// (non-result) contexts that don't care.
+    var onInAppCopy: (() -> Void)? = nil
 
     private var blocks: [MarkdownBlock] { MarkdownParser.parse(source) }
 
@@ -1014,6 +1249,7 @@ struct MarkdownBlocks: View {
                 .tracking(-0.1)
                 .foregroundStyle(color)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
 
         case .bullet(let text):
             listRow(marker: "•", text: text)
@@ -1028,29 +1264,15 @@ struct MarkdownBlocks: View {
                 .lineSpacing(baseFont * 0.6)
                 .foregroundStyle(color)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
 
         case .code(_, let text):
             // Verbatim monospace block on a faintly inset surface so it reads as
-            // a code island against the glass without competing with the chat.
-            // We deliberately skip syntax coloring — the notch is for short
-            // answers, not an IDE — and skip inline-markdown parsing so things
-            // like `**` inside code render literally.
-            Text(text)
-                .font(.system(size: baseFont - 1, weight: .regular, design: .monospaced))
-                .foregroundStyle(color)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(Tokens.hairline, lineWidth: 0.5)
-                )
+            // a code island against the glass without competing with the chat. The
+            // island carries its own ghost one-tap copy button (drag-selection is
+            // unreliable on the narrow panel and the streaming tail-scroll collapses
+            // an in-progress drag), so `CodeBlockView` owns the rendering now.
+            CodeBlockView(text: text, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
 
         case .divider:
             // Use the same hairline the rest of the panel uses for separators
@@ -1076,7 +1298,76 @@ struct MarkdownBlocks: View {
                 .lineSpacing(baseFont * 0.5)
                 .foregroundStyle(color)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// A code island with its own ghost one-tap copy button. Split out of
+/// `MarkdownBlocks.row(for:)` so it can hold the `hovering`/`copied` `@State` the
+/// button needs. The button is a tap target overlaid on the island — independent of
+/// scroll position and text-selection hit-testing — so it works identically while
+/// the answer streams (once the closing fence parses this block into the tree) and
+/// after it settles, where multi-line drag-select on the narrow panel is unreliable.
+private struct CodeBlockView: View {
+    let text: String
+    let baseFont: CGFloat
+    let color: Color
+    /// Fired after the in-app pasteboard write so the owner can re-baseline the
+    /// clipboard and keep this copy from being re-injected into the next Ask.
+    let onInAppCopy: (() -> Void)?
+
+    @State private var hovering = false
+    @State private var copied = false
+
+    var body: some View {
+        // NOTE: the parent `MarkdownBlocks` container in NotchBody wraps the whole
+        // answer in `.textSelection(.disabled)` WHILE STREAMING (so tail-follow
+        // scroll can't collapse a drag) and `.enabled` once settled — so the inner
+        // `.textSelection(.enabled)` here is only effective post-stream. The copy
+        // button below works in BOTH states; don't remove the parent wrapper without
+        // auditing this.
+        Text(text)
+            .font(.system(size: baseFont - 1, weight: .regular, design: .monospaced))
+            .foregroundStyle(color)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Tokens.hairline, lineWidth: 0.5)
+            )
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    onInAppCopy?()
+                    withAnimation(.easeOut(duration: 0.15)) { copied = true }
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        withAnimation(.easeOut(duration: 0.25)) { copied = false }
+                    }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(copied ? Tokens.text2 : Tokens.text3)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(5)
+                // Ghost by default; brightens on hover; full while showing the check.
+                .opacity(copied ? 1.0 : hovering ? 0.7 : 0.3)
+                .animation(.easeOut(duration: 0.18), value: hovering)
+                .animation(.easeOut(duration: 0.15), value: copied)
+            }
+            .onHover { hovering = $0 }
     }
 }

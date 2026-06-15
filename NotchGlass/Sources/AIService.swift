@@ -48,14 +48,77 @@ question concisely and warmly in the user's language. Keep it under 90 words, \
 no markdown headers.
 """
 
+/// System prompt for summarizing a conversation into a short recent-list title.
+/// The title is derived from the *actual* exchange (not the user's first message),
+/// so generic prompts like "总结一下" don't end up as the displayed title.
+let titleSystemPrompt = """
+You write short, *distinctive* titles for a list of past conversations. The \
+list shows many titles stacked together, so each one must be specific enough \
+that the user can tell it apart from similar conversations at a glance.
+
+Given a conversation, produce a title that:
+- Captures the actual topic discussed (not the user's first message verbatim).
+- Leads with the most distinguishing detail — the specific name, number, \
+place, product, or action involved — rather than a broad category word. \
+Prefer "小米 SU7 售价" over "小米"; prefer "Redis 连接池泄漏" over "Redis 问题".
+- Fits in roughly 16 characters or 10 Chinese characters. Use the space to be \
+specific; don't pad, but don't truncate away the distinguishing detail either.
+- Is in the same language as the conversation.
+
+Output only the title text — no quotes, numbering, or explanation.
+"""
+
 // MARK: - Providers
 
-/// The AI backends the app knows how to talk to. Every supported provider here
-/// exposes an **OpenAI-compatible** `/v1/chat/completions` endpoint, so they all
-/// share one client (`OpenAICompatAIService`) and differ only in this metadata.
-///
-/// Adding another OpenAI-compatible vendor is a one-line case here — no new
-/// networking code.
+/// Everything the app needs to know about one AI backend, gathered in a single
+/// place. Each `Provider` case maps to exactly one `ProviderSpec` (see
+/// `Provider.spec`), so a provider's full definition — name, endpoint, models,
+/// signup links, env var — lives in one contiguous block instead of being smeared
+/// across a dozen parallel `switch`es. Adding a vendor means writing one `spec`
+/// literal; editing one means touching one place.
+struct ProviderSpec {
+    /// Human-readable name shown in Settings.
+    let displayName: String
+    /// The request endpoint. OpenAI-compatible vendors share the
+    /// `/v1/chat/completions` shape; Anthropic uses its native `/v1/messages`.
+    let endpoint: URL
+    /// Default model used when the user hasn't picked one explicitly. Always the
+    /// first entry of `availableModels`.
+    let defaultModel: String
+    /// The models offered in the Settings model picker. These are the current,
+    /// commonly-used model ids per vendor — a curated shortlist, not an exhaustive
+    /// catalog; vendors add/retire models over time, so treat this as a sensible
+    /// default set rather than the source of truth (the live `/models` fetch in
+    /// `ModelCatalog` supersedes it when a key is present).
+    let availableModels: [String]
+    /// Short host shown in the Settings footer ("get a key at …").
+    let signupHost: String
+    /// Clickable URL to the provider's API-key console. The footer shows the short
+    /// `signupHost`, but the link points at the exact key-creation page.
+    let signupURL: URL
+    /// Environment variable that force-overrides the stored key (handy for dev).
+    let envVarName: String
+
+    /// Convenience initializer: `models` carries the picker list and its first
+    /// entry doubles as `defaultModel`, so the two can never drift apart.
+    init(displayName: String, endpoint: String, models: [String],
+         signupHost: String, signupURL: String, envVarName: String) {
+        self.displayName = displayName
+        self.endpoint = URL(string: endpoint)!
+        self.defaultModel = models[0]
+        self.availableModels = models
+        self.signupHost = signupHost
+        self.signupURL = URL(string: signupURL)!
+        self.envVarName = envVarName
+    }
+}
+
+/// The AI backends the app knows how to talk to. Most expose an
+/// **OpenAI-compatible** `/v1/chat/completions` endpoint and share one client
+/// (`OpenAICompatAIService`); Anthropic speaks its native `/v1/messages` and uses
+/// a dedicated client. The per-provider data all lives in `spec`; the few
+/// properties below `spec` are behavioral, grouped by *how the client behaves*
+/// rather than by vendor, so they stay as small switches.
 enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// First in the menu deliberately: the only backend that works without
     /// pasting a key (one-click OAuth connect, free models) — the default for
@@ -73,6 +136,110 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
+    /// The single source of truth for this provider's configuration. Everything
+    /// that's pure per-vendor data is defined here, one self-contained block per
+    /// provider — read the block and you know the whole provider.
+    var spec: ProviderSpec {
+        switch self {
+        case .openrouter:
+            return ProviderSpec(
+                displayName: "OpenRouter",
+                endpoint: "https://openrouter.ai/api/v1/chat/completions",
+                // The free auto-router: OpenRouter picks a currently-available
+                // free model per request, so this keeps working as the free
+                // lineup rotates. The live `/models` fetch fills in the current
+                // `:free` lineup (see `ModelCatalog`), too fluid to bundle.
+                models: ["openrouter/free"],
+                signupHost: "openrouter.ai",
+                signupURL: "https://openrouter.ai/settings/keys",
+                envVarName: "OPENROUTER_API_KEY")
+        case .mimo:
+            return ProviderSpec(
+                displayName: "MiMo",
+                endpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+                models: ["mimo-v2.5-pro", "mimo-v2.5"],
+                signupHost: "platform.xiaomimimo.com",
+                signupURL: "https://platform.xiaomimimo.com/console/api-keys/api_key",
+                envVarName: "MIMO_API_KEY")
+        case .deepseek:
+            return ProviderSpec(
+                displayName: "DeepSeek",
+                endpoint: "https://api.deepseek.com/v1/chat/completions",
+                models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+                signupHost: "platform.deepseek.com",
+                signupURL: "https://platform.deepseek.com/api_keys/api_key",
+                envVarName: "DEEPSEEK_API_KEY")
+        case .openai:
+            return ProviderSpec(
+                displayName: "OpenAI",
+                endpoint: "https://api.openai.com/v1/chat/completions",
+                models: ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.2", "gpt-5", "gpt-5-mini"],
+                signupHost: "platform.openai.com",
+                signupURL: "https://platform.openai.com/api-keys/api_key",
+                envVarName: "OPENAI_API_KEY")
+        case .gemini:
+            return ProviderSpec(
+                displayName: "Google Gemini",
+                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                models: ["gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash"],
+                signupHost: "aistudio.google.com",
+                signupURL: "https://aistudio.google.com/app/apikey/api_key",
+                envVarName: "GEMINI_API_KEY")
+        case .anthropic:
+            return ProviderSpec(
+                displayName: "Anthropic",
+                endpoint: "https://api.anthropic.com/v1/messages",
+                models: ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"],
+                signupHost: "console.anthropic.com",
+                signupURL: "https://console.anthropic.com/settings/keys/api_key",
+                envVarName: "ANTHROPIC_API_KEY")
+        case .minimax:
+            return ProviderSpec(
+                displayName: "MiniMax",
+                endpoint: "https://api.minimaxi.com/v1/chat/completions",
+                models: ["MiniMax-M3", "MiniMax-M3-highspeed", "MiniMax-M2.7", "MiniMax-M2.5"],
+                signupHost: "platform.minimaxi.com",
+                signupURL: "https://platform.minimaxi.com/api_key",
+                envVarName: "MINIMAX_API_KEY")
+        case .glm:
+            return ProviderSpec(
+                displayName: "GLM",
+                endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                models: ["glm-5", "glm-5.1", "glm-5-turbo", "glm-4.6"],
+                signupHost: "open.bigmodel.cn",
+                signupURL: "https://open.bigmodel.cn/usercenter/apikeys/api_key",
+                envVarName: "GLM_API_KEY")
+        case .qwen:
+            return ProviderSpec(
+                displayName: "Qwen",
+                endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                models: ["qwen3-max", "qwen3.5-plus", "qwen3.5-flash", "qwen-plus", "qwen-flash"],
+                signupHost: "bailian.console.aliyun.com",
+                signupURL: "https://bailian.console.aliyun.com/api_key",
+                envVarName: "QWEN_API_KEY")
+        case .kimi:
+            return ProviderSpec(
+                displayName: "Kimi",
+                endpoint: "https://api.moonshot.cn/v1/chat/completions",
+                models: ["kimi-k2.6", "kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k"],
+                signupHost: "platform.moonshot.cn",
+                signupURL: "https://platform.moonshot.cn/console/api-keys/api_key",
+                envVarName: "KIMI_API_KEY")
+        }
+    }
+
+    // Per-vendor data — thin pass-throughs to `spec` so existing call sites
+    // (`provider.displayName`, `provider.endpoint`, …) keep working unchanged.
+    var displayName: String     { spec.displayName }
+    var endpoint: URL           { spec.endpoint }
+    var defaultModel: String    { spec.defaultModel }
+    var availableModels: [String] { spec.availableModels }
+    var signupHost: String      { spec.signupHost }
+    var signupURL: URL          { spec.signupURL }
+    var envVarName: String      { spec.envVarName }
+
+    // MARK: Behavioral traits (grouped by client behavior, not by vendor)
+
     /// Whether this provider speaks the OpenAI-compatible `/v1/chat/completions`
     /// contract (true for everyone) or a vendor-native protocol (Anthropic's
     /// `/v1/messages`). `AppDelegate` uses this to pick the client implementation.
@@ -80,139 +247,6 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .anthropic: return false
         default:         return true
-        }
-    }
-
-    /// Human-readable name shown in Settings.
-    var displayName: String {
-        switch self {
-        case .openrouter: return "OpenRouter"
-        case .mimo:      return "MiMo"
-        case .deepseek:  return "DeepSeek"
-        case .openai:    return "OpenAI"
-        case .gemini:    return "Google Gemini"
-        case .anthropic: return "Anthropic"
-        case .minimax:   return "MiniMax"
-        case .glm:       return "GLM"
-        case .qwen:      return "Qwen"
-        case .kimi:      return "Kimi"
-        }
-    }
-
-    /// The request endpoint. OpenAI-compatible vendors share the
-    /// `/v1/chat/completions` shape; Anthropic uses its native `/v1/messages`.
-    var endpoint: URL {
-        switch self {
-        case .openrouter: return URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-        case .mimo:      return URL(string: "https://api.xiaomimimo.com/v1/chat/completions")!
-        case .deepseek:  return URL(string: "https://api.deepseek.com/v1/chat/completions")!
-        case .openai:    return URL(string: "https://api.openai.com/v1/chat/completions")!
-        case .gemini:    return URL(string: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")!
-        case .anthropic: return URL(string: "https://api.anthropic.com/v1/messages")!
-        case .minimax:   return URL(string: "https://api.minimaxi.com/v1/chat/completions")!
-        case .glm:       return URL(string: "https://open.bigmodel.cn/api/paas/v4/chat/completions")!
-        case .qwen:      return URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")!
-        case .kimi:      return URL(string: "https://api.moonshot.cn/v1/chat/completions")!
-        }
-    }
-
-    /// Default model used when the user hasn't picked one explicitly.
-    var defaultModel: String {
-        switch self {
-        // The free auto-router: OpenRouter picks a currently-available free
-        // model per request, so this keeps working as the free lineup rotates.
-        case .openrouter: return "openrouter/free"
-        case .mimo:      return "mimo-v2.5-pro"
-        case .deepseek:  return "deepseek-v4-flash"
-        case .openai:    return "gpt-5.5"
-        case .gemini:    return "gemini-3.5-flash"
-        case .anthropic: return "claude-sonnet-4-6"
-        case .minimax:   return "MiniMax-M3"
-        case .glm:       return "glm-5"
-        case .qwen:      return "qwen3-max"
-        case .kimi:      return "kimi-k2.6"
-        }
-    }
-
-    /// The models offered in the Settings model picker for this provider. The
-    /// first entry is always `defaultModel`. These are the current, commonly-used
-    /// model ids per vendor — a curated shortlist, not an exhaustive catalog;
-    /// vendors add/retire models over time, so treat this as a sensible default
-    /// set rather than the source of truth.
-    var availableModels: [String] {
-        switch self {
-        case .openrouter:
-            // Just the router — the live `/models` fetch fills in the current
-            // `:free` lineup (see `ModelCatalog`), which rotates too often to bundle.
-            return ["openrouter/free"]
-        case .mimo:
-            return ["mimo-v2.5-pro", "mimo-v2.5"]
-        case .deepseek:
-            return ["deepseek-v4-flash", "deepseek-v4-pro"]
-        case .openai:
-            return ["gpt-5.5", "gpt-5.5-pro", "gpt-5.4", "gpt-5.2", "gpt-5", "gpt-5-mini"]
-        case .gemini:
-            return ["gemini-3.5-flash", "gemini-3-flash", "gemini-3.1-pro", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash"]
-        case .anthropic:
-            return ["claude-sonnet-4-6", "claude-opus-4-8", "claude-haiku-4-5"]
-        case .minimax:
-            return ["MiniMax-M3", "MiniMax-M3-highspeed", "MiniMax-M2.7", "MiniMax-M2.5"]
-        case .glm:
-            return ["glm-5", "glm-5.1", "glm-5-turbo", "glm-4.6"]
-        case .qwen:
-            return ["qwen3-max", "qwen3.5-plus", "qwen3.5-flash", "qwen-plus", "qwen-flash"]
-        case .kimi:
-            return ["kimi-k2.6", "kimi-k2.5", "moonshot-v1-128k", "moonshot-v1-32k"]
-        }
-    }
-
-    /// Where the user signs up / gets an API key (shown in the Settings footer).
-    var signupHost: String {
-        switch self {
-        case .openrouter: return "openrouter.ai"
-        case .mimo:      return "platform.xiaomimimo.com"
-        case .deepseek:  return "platform.deepseek.com"
-        case .openai:    return "platform.openai.com"
-        case .gemini:    return "aistudio.google.com"
-        case .anthropic: return "console.anthropic.com"
-        case .minimax:   return "platform.minimaxi.com"
-        case .glm:       return "open.bigmodel.cn"
-        case .qwen:      return "bailian.console.aliyun.com"
-        case .kimi:      return "platform.moonshot.cn"
-        }
-    }
-
-    /// Clickable URL to the provider's API-key console, opened from the Settings
-    /// footer. The footer shows the short `signupHost`, but the link points at the
-    /// exact page where the user creates a key.
-    var signupURL: URL {
-        switch self {
-        case .openrouter: return URL(string: "https://openrouter.ai/settings/keys")!
-        case .mimo:      return URL(string: "https://platform.xiaomimimo.com/console/api-keys/api_key")!
-        case .deepseek:  return URL(string: "https://platform.deepseek.com/api_keys/api_key")!
-        case .openai:    return URL(string: "https://platform.openai.com/api-keys/api_key")!
-        case .gemini:    return URL(string: "https://aistudio.google.com/app/apikey/api_key")!
-        case .anthropic: return URL(string: "https://console.anthropic.com/settings/keys/api_key")!
-        case .minimax:   return URL(string: "https://platform.minimaxi.com/api_key")!
-        case .glm:       return URL(string: "https://open.bigmodel.cn/usercenter/apikeys/api_key")!
-        case .qwen:      return URL(string: "https://bailian.console.aliyun.com/api_key")!
-        case .kimi:      return URL(string: "https://platform.moonshot.cn/console/api-keys/api_key")!
-        }
-    }
-
-    /// Environment variable that force-overrides the stored key (handy for dev).
-    var envVarName: String {
-        switch self {
-        case .openrouter: return "OPENROUTER_API_KEY"
-        case .mimo:      return "MIMO_API_KEY"
-        case .deepseek:  return "DEEPSEEK_API_KEY"
-        case .openai:    return "OPENAI_API_KEY"
-        case .gemini:    return "GEMINI_API_KEY"
-        case .anthropic: return "ANTHROPIC_API_KEY"
-        case .minimax:   return "MINIMAX_API_KEY"
-        case .glm:       return "GLM_API_KEY"
-        case .qwen:      return "QWEN_API_KEY"
-        case .kimi:      return "KIMI_API_KEY"
         }
     }
 

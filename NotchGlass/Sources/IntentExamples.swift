@@ -423,6 +423,15 @@ enum IntentExamples {
         "团建定在周五 桌游",
         "Q2绩效面谈 下周一",
         "新表已经寄回总部了",
+        // 指示性收藏（被指代的内容在剪贴板里，不在句子里）
+        "保存这个链接",
+        "把这个加到阅读清单",
+        "收藏这个",
+        "记下这个",
+        "保存这个网址",
+        "把这段话记下来",
+        "存一下这个",
+        "保存这个代码片段",
     ]
 
     // MARK: - English · ask
@@ -818,5 +827,18 @@ enum IntentExamples {
         "errands bank post office pharmacy",
         "weekend plans hike farmers market",
         "trip prep buy adapter download maps",
+        // deictic captures (referent lives on the clipboard, not in the line)
+        "save this link",
+        "add this to my reading list",
+        "bookmark this",
+        "note this url",
+        "save this snippet",
+        "keep this",
+        "file this away",
+        "save this for later",
+        "jot this down",
+        "add this to my notes",
+        "save this page",
+        "note this down",
     ]
 }

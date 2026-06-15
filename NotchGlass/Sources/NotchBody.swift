@@ -40,6 +40,20 @@ struct NotchBody: View {
     /// anything — including pinyin that hasn't committed to `model.text` yet, which
     /// is exactly when the native placeholder would disappear.
     @State private var followUpCaretWidth: CGFloat = 0
+    /// Drives the compact history filter field's first-responder. Set when the
+    /// filter icon is tapped so the caret lands in the expanded field without a
+    /// second click; reset when the filter collapses so it can re-arm next time.
+    @State private var filterFocused = false
+
+    /// Save-to-Notes confirmation state, keyed by the assistant turn being saved —
+    /// every answer in the thread carries its own save button beneath it (see
+    /// `assistantTurnFooter`), so the check and any error belong to one specific
+    /// segment, not the whole row. `savedNoteTurn` holds the id of the turn whose
+    /// button is currently showing its post-save check (cleared after a beat);
+    /// `noteSaveError` holds the id + message of the most recent failure, shown as a
+    /// brief inline line under that answer and auto-clearing after a few seconds.
+    @State private var savedNoteTurn: NotchModel.Turn.ID? = nil
+    @State private var noteSaveError: (turn: NotchModel.Turn.ID, message: String)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -82,6 +96,15 @@ struct NotchBody: View {
                 refocusInput()
             }
         }
+        // Collapsing the recent list returns the caret to the prompt. Without this, a
+        // user who clicked into the new HistorySearchField (taking first-responder off
+        // the prompt) and then pressed Esc to fold the list would be left in focus
+        // limbo on the now-removed filter field — unable to type until they click.
+        .onChange(of: model.showHistory) { _, isShowing in
+            if model.open, !isShowing, model.mode == .idle {
+                refocusInput()
+            }
+        }
         .onAppear {
             if model.open {
                 refocusInput()
@@ -110,12 +133,25 @@ struct NotchBody: View {
                 InlineSettingsView(model: model)
                     .transition(moduleTransition)
             } else {
+                if let clip = model.pendingClipboard {
+                    clipboardPreviewLine(clip)
+                        .transition(moduleTransition)
+                }
+
                 inputRow(placeholder: "Type anything...", followUp: false)
                     .onChange(of: model.text) { _, _ in
                         // Editing the field clears a stale note-save error so the cue
                         // doesn't linger over a line the user is actively rewriting.
                         if model.noteError != nil { model.noteError = nil }
                     }
+
+                // The one-tap action chips for the pending clipboard sit *below* the
+                // prompt — the field stays the focus, with the shortcuts as a quiet
+                // row beneath it.
+                if model.pendingClipboard != nil {
+                    clipboardPresetChips()
+                        .transition(moduleTransition)
+                }
 
                 // The recent list expands below the prompt once the clock is tapped.
                 if !model.hasText && !model.history.isEmpty && model.showHistory {
@@ -166,9 +202,11 @@ struct NotchBody: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             )
         }
-        if model.lastSavedNote != nil {
-            return AnyView(feedbackLine(
-                model.lastSavedToReminders ? "Added to Reminders" : "Added to Notes"))
+        // Both save paths now store their full display string (e.g.
+        // "Added to Reminders · Daily" / "Added to Notes") in lastSavedNote,
+        // so the cue text is whatever the model put there — no binary rebuild here.
+        if let cue = model.lastSavedNote {
+            return AnyView(feedbackLine(cue))
         }
         if model.noteSaving {
             return AnyView(feedbackLine("Saving…"))
@@ -184,6 +222,53 @@ struct NotchBody: View {
             .tracking(0.2)
             .foregroundStyle(Tokens.text4)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The terse "Copied: …" preview shown above the prompt when there's eligible
+    /// clipboard content — context for the input below, so the user can see what a
+    /// referential query ("summarize this") will fold in. The one-tap action chips
+    /// that act on this clip live *below* the input, in `clipboardPresetChips`.
+    private func clipboardPreviewLine(_ clip: String) -> some View {
+        let preview = clip.count > 40 ? String(clip.prefix(40)) + "…" : clip
+        return Text("Copied: \(preview)")
+            .font(.sf(11))
+            .tracking(0.2)
+            .foregroundStyle(Tokens.text4)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 8)
+    }
+
+    /// A *short* row of one-tap preset actions for the pending clipboard, sitting just
+    /// beneath the prompt. Deliberately auxiliary — the prompt above is the focus — so
+    /// by default only the few most-common actions (Summarize / Proofread / Translate)
+    /// show, with a small "⋯" chip to reveal the rest (Key Points / Rewrite / tone) on
+    /// demand. Tapping an action chip authors a referential query into the prompt and
+    /// submits it, so the existing clipboard-injection path in `submit()` folds the
+    /// copied text in — the chip is just a shortcut for typing "summarize this". The
+    /// label/phrase script follows the copied text (CJK chips for CJK clips), so a
+    /// Chinese clipboard offers 总结 / 校对 / 翻译 etc.
+    private func clipboardPresetChips() -> some View {
+        let cjk = model.pendingClipboardIsCJK
+        return FlowLayout(hSpacing: 6, vSpacing: 6) {
+            ForEach(model.visibleClipboardPresets) { preset in
+                ClipboardPresetChip(title: preset.label(cjk: cjk)) {
+                    model.runClipboardPreset(preset)
+                }
+            }
+            // The "⋯"/"⌃" toggle: reveals the rest of the actions, or collapses
+            // back to the primary few. Only shown when there's actually more to
+            // reveal than the primary set.
+            if model.clipboardPresets.count > NotchModel.ClipboardPreset.primary.count {
+                ClipboardPresetChip(title: model.clipboardPresetsExpanded ? "⌃" : "⋯") {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                        model.clipboardPresetsExpanded.toggle()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 10)
     }
 
     /// Shared open/close feel for the modules that unfurl below the prompt
@@ -222,19 +307,48 @@ struct NotchBody: View {
         }
     }
 
+    /// The compact filter icon that expands the history search field. Kept as a
+    /// small glass chip (matching Settings and Clear) so the filter no longer owns
+    /// a full-width input by default — it only unfurls when the user asks for it.
+    private var filterEntry: some View {
+        GlassIconButton(
+            systemName: "magnifyingglass",
+            help: model.showHistoryFilter ? "Hide filter" : "Filter recent",
+            size: 26
+        ) {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                model.showHistoryFilter.toggle()
+            }
+            if model.showHistoryFilter {
+                // Let the field materialize one beat before grabbing focus so the
+                // focus grab doesn't race the view's first render.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    filterFocused = true
+                }
+            } else {
+                filterFocused = false
+            }
+        }
+    }
+
     /// RECENT header + the scrollable list, as one block so the open animation
     /// moves the whole module together.
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Text("RECENT")
                     .font(.sf(10, weight: .semibold))
                     .tracking(0.8)
                     .foregroundStyle(Tokens.text4)
                 Spacer()
-                // Settings + Clear share this "manage" row; both only exist while
-                // the recent list is expanded, so the idle panel stays minimal.
+                // Settings + Filter + Clear share this "manage" row; all only exist
+                // while the recent list is expanded, so the idle panel stays minimal.
+                // The filter is now just an icon by default — the input only unfurls
+                // when the icon is tapped, keeping the list visually quiet.
                 settingsEntry
+                if model.history.count > 6 {
+                    filterEntry
+                }
                 // Clear is destructive, so it arms a confirmation rather than wiping
                 // history on first tap. The card itself is rendered centered over the
                 // whole island (see NotchIsland) — not anchored here — so it lands in
@@ -249,6 +363,37 @@ struct NotchBody: View {
             .padding(.top, 12)
             .padding(.bottom, 4)
 
+            // Live filter — hidden behind the filter icon by default. Only shown
+            // once the list is long enough to be worth searching (matches historyList's
+            // own > 6 overflow calibration) AND the user has explicitly expanded it.
+            // The field spans the section width so its text aligns with the list rows
+            // below, and its vertical padding is kept tight since it's a revealed
+            // secondary control.
+            if model.history.count > 6, model.showHistoryFilter {
+                HistorySearchField(
+                    text: $model.historySearchQuery,
+                    placeholder: "Filter\u{2026}",
+                    fontSize: 12,
+                    focusTrigger: filterFocused
+                )
+                .frame(height: 18)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.04))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Tokens.hairline, lineWidth: 0.5)
+                        )
+                )
+                .padding(.bottom, 4)
+                .transition(.opacity)
+                .onChange(of: model.showHistoryFilter) { _, showing in
+                    if !showing { filterFocused = false }
+                }
+            }
+
             historyList
         }
     }
@@ -258,39 +403,88 @@ struct NotchBody: View {
         // under the (non-scrolling) RECENT header, so the TOP never needs a fade — a
         // fixed top pad there would just open a dead gap below the header. Only the
         // bottom taper earns its keep, telling the user there's more below.
-        let overflowing = model.recentVisible.count > 4
-        return ScrollView {
+        // The list frame holds ~6 rows (~35pt each in 220pt); the fade + scroll
+        // only earn their keep past that. Calibrated to the current height so the
+        // bottom taper turns on right when the list actually overflows.
+        let overflowing = model.recentVisible.count > 6
+        return ScrollViewReader { proxy in
+        ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 // Index into the SAME slice the model navigates (`recentVisible`),
                 // so the keyboard highlight and the rendered rows can't drift.
                 ForEach(Array(model.recentVisible.enumerated()), id: \.element.id) { index, item in
                     Button { model.openHistory(item) } label: {
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Text(item.q)
+                            Text(item.displayTitle)
                                 .font(.sf(14))
                                 .tracking(-0.1)
                                 .foregroundStyle(Tokens.text2)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(relativeTime(item.t))
-                                .font(.sf(11).monospacedDigit())
-                                .tracking(0.2)
+                            // Ask rows show how long ago; Note/Reminder captures
+                            // show where tapping goes, in the same trailing slot —
+                            // so the Recent list reads as one ledger of everything
+                            // the notch did, not just AI answers. The capture badge
+                            // pairs the destination with an up-right arrow (the same
+                            // "opens elsewhere" glyph the footer uses) so the row
+                            // reads as a live jump into Notes/Reminders, not a dead
+                            // label — tapping it lands on that exact note/reminder.
+                            if item.source == .ask {
+                                Text(relativeTime(item.t))
+                                    .font(.sf(11).monospacedDigit())
+                                    .tracking(0.2)
+                                    .foregroundStyle(Tokens.text4)
+                            } else {
+                                HStack(spacing: 3) {
+                                    Text(item.source == .note ? "Notes" : "Reminders")
+                                        .font(.sf(11).weight(.medium))
+                                        .tracking(0.2)
+                                    Image(systemName: "arrow.up.right")
+                                        .font(.sf(9, weight: .semibold))
+                                }
                                 .foregroundStyle(Tokens.text4)
+                            }
                         }
                         .padding(.vertical, 9)
                         .padding(.horizontal, 8)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(HistoryRowStyle(selected: model.highlightedHistoryIndex == index))
+                    // VoiceOver: name the row by its title, and spell out what
+                    // activating it does — a capture jumps out to Notes/Reminders
+                    // (the up-right arrow glyph isn't announced), an Ask row reopens
+                    // the conversation in place.
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(item.displayTitle)
+                    .accessibilityHint(
+                        item.source == .note ? "Opens this note in Notes"
+                        : item.source == .reminder ? "Opens this reminder in Reminders"
+                        : "Reopens this conversation"
+                    )
+                    // A deleted row collapses up and fades rather than vanishing on a
+                    // hard cut — the rows below slide into the gap on the same spring
+                    // that drives the list's other module motion. Paired with the
+                    // `withAnimation` around the delete below; the removal edge is what
+                    // SwiftUI plays this transition against.
+                    .transition(
+                        .move(edge: .leading)
+                            .combined(with: .opacity)
+                            .combined(with: .scale(scale: 0.96, anchor: .leading))
+                    )
                     // Right-click a row to drop just that entry (Clear still wipes
                     // the whole list). Single-item delete needs no confirmation —
                     // one row is cheap to retype, unlike the destructive Clear-all.
                     .contextMenu {
                         Button("Delete", role: .destructive) {
-                            model.deleteHistory(id: item.id)
+                            withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                                model.deleteHistory(id: item.id)
+                            }
                         }
                     }
+                    // Target for keyboard-follow scrolling: ↓/↑ moves the highlight,
+                    // and the onChange below scrolls that row's id into view.
+                    .id(item.id)
                 }
             }
             // Breathing room only BELOW the last row, so the bottom fade tapers over
@@ -298,11 +492,27 @@ struct NotchBody: View {
             // header — no dead space between "RECENT" and the first entry.
             .padding(.bottom, overflowing ? edgeFade : 0)
         }
-        .frame(maxHeight: 184)
+        // Compact window: ~6 rows show before the list scrolls, so a short Recent
+        // list doesn't reserve a tall empty band under the header. Older rows are a
+        // scroll (or ↓) away.
+        .frame(maxHeight: 220)
         .scrollIndicators(.never)
         // Only the bottom edge fades (the header caps the top), and only once the
         // list overflows — a short list that fits stays crisp.
         .scrollEdgeFade(top: false, bottom: overflowing, fade: edgeFade)
+        // Keep the keyboard-highlighted row visible: stepping ↓/↑ past the visible
+        // window would otherwise leave the selection offscreen. Mirrors the
+        // streaming tail-follow in `conversationScroll` — a reactive scroll in its
+        // OWN transaction, separate from the highlight mutation, so SwiftUI doesn't
+        // silently drop the `scrollTo` mid-reconciliation.
+        .onChange(of: model.highlightedHistoryIndex) { _, newIndex in
+            guard let i = newIndex, model.recentVisible.indices.contains(i) else { return }
+            let id = model.recentVisible[i].id
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+        }
     }
 
     // MARK: - Load
@@ -351,7 +561,30 @@ struct NotchBody: View {
                 }
             }
             .padding(.top, 24)
+
+            // Save-to-Notes failures from the per-answer save button surface inline
+            // beneath that specific answer now (see `assistantTurnFooter`), not here —
+            // so this slot only carries the note/reminder cue for lines filed FROM the
+            // result view's follow-up field.
+
+            // Note/Reminder save feedback for lines filed FROM the result view (now
+            // that the follow-up field routes by intent). The idle prompt shows this
+            // same calm cue via `noteFeedbackContent`, but that path never renders in
+            // `.result` — so mirror it here: "Saving…" in flight, then the model's
+            // "Added to Reminders · Daily" / "Added to Notes" cue, which the model
+            // auto-clears after ~1.7s. The error slot above owns the failure case.
+            if model.noteSaving {
+                feedbackLine("Saving…")
+                    .padding(.top, 6)
+                    .transition(.opacity)
+            } else if let cue = model.lastSavedNote {
+                feedbackLine(cue)
+                    .padding(.top, 6)
+                    .transition(.opacity)
+            }
         }
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.lastSavedNote)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteSaving)
     }
 
     /// Stand-in for the follow-up field while on the offline stub: a full-width
@@ -472,26 +705,79 @@ struct NotchBody: View {
     @ViewBuilder
     private func turnView(_ turn: NotchModel.Turn) -> some View {
         if turn.role == "user" {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("You")
-                    .font(.sf(11, weight: .semibold))
-                    .tracking(0.3)
-                    .foregroundStyle(Tokens.text4)
-                    .frame(width: 30, alignment: .leading)
-                Text(turn.text)
-                    .font(.sf(14.5, weight: .medium))
-                    .tracking(-0.1)
-                    .foregroundStyle(Tokens.text2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 5) {
+                // Permanent clipboard trace: when this question's message was enriched
+                // with what the user copied, a quiet line says so — sitting right above
+                // the "You" row and staying for the life of the answer (unlike the
+                // load-only "Using clipboard" cue). It lines up under the "You" column
+                // so it reads as a caption on this turn. `paperclip`-free on purpose:
+                // one small grey line, same whisper as the note-save cue.
+                if turn.usedClipboard {
+                    Text("Based on what you copied")
+                        .font(.sf(11))
+                        .tracking(0.2)
+                        .foregroundStyle(Tokens.text4)
+                        .padding(.leading, 38)   // 30pt "You" column + 8pt HStack gap
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("You")
+                        .font(.sf(11, weight: .semibold))
+                        .tracking(0.3)
+                        .foregroundStyle(Tokens.text4)
+                        .frame(width: 30, alignment: .leading)
+                    Text(turn.text)
+                        .font(.sf(14.5, weight: .medium))
+                        .tracking(-0.1)
+                        .foregroundStyle(Tokens.text2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         } else if turn.text.isEmpty && turn.streaming {
             ThinkingDots()
                 .padding(.vertical, 2)
                 .padding(.horizontal, 2)
         } else {
-            MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Selection stays off while the answer streams: the per-token
+            // tail-follow scroll (onChange → scrollTo(.bottom)) would collapse
+            // any in-progress drag-selection. The instant the stream finishes,
+            // every prose block becomes selectable/copyable. `.disabled` and
+            // `.enabled` are distinct types, so this branches at the view level
+            // rather than ternary-ing the modifier's argument.
+            if turn.streaming {
+                MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.disabled)
+            } else {
+                // A settled answer carries its own quiet "file this in Notes" button
+                // directly beneath it — one per answer, so a long thread can save any
+                // segment, not just the latest. (It lived in the input row before, where
+                // it read as a property of the field rather than of this answer.)
+                VStack(alignment: .leading, spacing: 6) {
+                    MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                    assistantTurnFooter(turn)
+                }
+            }
+        }
+    }
+
+    /// The action row beneath a settled assistant answer: an icon-only "save to
+    /// Notes" button, plus a brief inline error line if that save failed. Kept faint
+    /// and small so it reads as a quiet caption on the answer, not a call to action —
+    /// the same whisper weight the affordance had in the input row, just relocated to
+    /// sit with the text it saves.
+    @ViewBuilder
+    private func assistantTurnFooter(_ turn: NotchModel.Turn) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            saveToNotesButton(for: turn)
+            if let err = noteSaveError, err.turn == turn.id {
+                Text(err.message)
+                    .font(.sf(11))
+                    .foregroundStyle(Tokens.text4)
+                    .transition(.opacity)
+            }
         }
     }
 
@@ -531,9 +817,10 @@ struct NotchBody: View {
         let fontSize: CGFloat = followUp ? 14.5 : 16.5
         return HStack(spacing: 12) {
             // The field, with a Siri-style ghost hint trailing the typed text on the
-            // same line (idle prompt only — a follow-up is always an ask, so there's
-            // nothing to disambiguate there). A `GeometryReader` hands the hint the
-            // row's width so it knows where to dock once a long line runs out of room.
+            // same line. This `inputRow` renders the hint only for the idle prompt
+            // (`!followUp`); the mid-thread field is `followUpRow`, which carries its
+            // own copy of the same hint. A `GeometryReader` hands the hint the row's
+            // width so it knows where to dock once a long line runs out of room.
             ZStack(alignment: .leading) {
                 GeometryReader { geo in
                     if !followUp {
@@ -553,10 +840,11 @@ struct NotchBody: View {
                     placeholder: placeholder,
                     fontSize: fontSize,
                     focusTrigger: focused,
-                    // Enter routes by intent (ask vs. note) from the idle prompt; the
-                    // follow-up variant stays a pure ask (see `followUpRow`, which is
-                    // what's actually used mid-thread — this branch is the defensive
-                    // path if `inputRow` is ever reused with `followUp: true`).
+                    // Enter routes by intent (ask / note / remind) from the idle
+                    // prompt. The real mid-thread field is `followUpRow`, which now
+                    // also routes by intent; this `followUp` branch is only the
+                    // defensive path if `inputRow` is ever reused with `followUp: true`,
+                    // and it keeps the plain-ask behaviour for that unused case.
                     onSubmit: { followUp ? model.submit() : model.submitCurrent() },
                     // Idle prompt only: ↓/↑ open and step the recent list, and Enter
                     // opens a keyboard-highlighted row instead of submitting. The
@@ -583,14 +871,18 @@ struct NotchBody: View {
                         return true
                     },
                     // Live width of committed text + any composing pinyin, so the
-                    // inline hint trails the caret as the IME composes (idle prompt
-                    // only — the follow-up has no inline hint to position).
+                    // inline hint trails the caret as the IME composes. Only the idle
+                    // prompt feeds `caretWidth` here; `followUpRow` owns its own
+                    // `followUpCaretWidth` tracking and its own hint overlay.
                     onCaretWidth: followUp ? { _ in } : { caretWidth = $0 }
                 )
                 // Reserve the hint's docking slot at the row's trailing edge: a long
                 // line scrolls within this narrower field while "— Ask"/"— Note"
                 // holds in the reserved strip beside it, never overlapped, never lost.
-                .padding(.trailing, followUp ? 0 : InlineSendHint.reservedTrailingWidth(fontSize: fontSize))
+                // The reserved width follows the current label so short labels don't
+                // waste space; the ZStack animation keeps the resize smooth.
+                .padding(.trailing, followUp ? 0 : InlineSendHint.reservedTrailingWidth(label: model.submitLabel, fontSize: fontSize))
+                .animation(.smooth(duration: 0.25), value: model.submitLabel)
             }
 
             // With the destination now spelled out inline beside the caret, the
@@ -629,6 +921,26 @@ struct NotchBody: View {
     private var followUpRow: some View {
         HStack(spacing: 6) {
             ZStack(alignment: .leading) {
+                // Same Siri-style ghost hint the idle prompt carries, now on the
+                // mid-thread field too: "— Ask"/"— Note"/"— Remind" trailing the caret
+                // so a routed-by-intent follow-up shows its destination, and Tab's
+                // correction step is finally visible here. Rendered behind the field
+                // and hit-transparent. Gated on `followUpCaretWidth > 0` (not
+                // `model.hasText`) so it appears during CJK/IME pre-composition —
+                // before pinyin commits to `model.text` — matching the idle row.
+                GeometryReader { geo in
+                    if followUpCaretWidth > 0 {
+                        InlineSendHint(
+                            label: model.submitLabel,
+                            fontSize: 14.5,
+                            caretWidth: followUpCaretWidth,
+                            availableWidth: geo.size.width
+                        )
+                        .frame(height: geo.size.height, alignment: .center)
+                    }
+                }
+                .allowsHitTesting(false)
+
                 PromptField(
                     // The native placeholder stays empty on purpose: NSTextField can
                     // only hard-swap its placeholder string, so the slot is owned by
@@ -637,25 +949,47 @@ struct NotchBody: View {
                     placeholder: "",
                     fontSize: 14.5,
                     focusTrigger: focused,
-                    onSubmit: { model.submit() },
+                    // Route by intent, same as the idle prompt — a follow-up line
+                    // like "remind me to ping Alex tomorrow at 9am" files to
+                    // Reminders instead of being asked to the AI. A plain question
+                    // still resolves to `.chat` → `submit()`, which continues the
+                    // existing thread (firstTurn = turns.isEmpty), so the common
+                    // follow-up path is unchanged.
+                    onSubmit: { model.submitCurrent() },
                     onBack: {
                         withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                             model.newChat()
                         }
+                    },
+                    // Tab cycles where Enter sends this line (Ask → Note → Remind →…)
+                    // when the classifier guessed wrong — the correction escape hatch,
+                    // matching the idle prompt. Empty-field Tab is still swallowed so
+                    // focus never wanders out of the field.
+                    onTab: {
+                        if model.hasText { model.toggleSubmitPanel() }
+                        return true
                     },
                     // Lets the overlay placeholder hide itself the instant the editor
                     // shows ANYTHING — committed text or still-composing pinyin (which
                     // isn't in `model.text` yet) — matching the native behaviour.
                     onCaretWidth: { followUpCaretWidth = $0 }
                 )
-                // The placeholder slot does triple duty while the field is empty,
-                // and every change of copy moves through a fade rather than a hard
-                // string swap:
+                // Reserve the hint's docking slot at the trailing edge, exactly like
+                // the idle row, so typed text scrolls within a narrower field and the
+                // "— Ask"/"— Remind" ghost never overlaps it. Width follows the current
+                // label so short labels don't leave a dead strip on the right.
+                .padding(.trailing, InlineSendHint.reservedTrailingWidth(label: model.submitLabel, fontSize: 14.5))
+                .animation(.smooth(duration: 0.25), value: model.submitLabel)
+                // The placeholder slot does double duty while the field is empty, and
+                // every change of copy moves through a fade rather than a hard string
+                // swap:
                 //  • copy confirmation up → "Copied to clipboard", shimmered, with a
                 //    light gliding across the glyphs, then fades back;
                 //  • hovering the continue-elsewhere button → a one-line hint for
                 //    what that button does, in place of a tooltip;
                 //  • otherwise → the usual "Ask a follow-up…" prompt.
+                // (Save-to-Notes confirmation no longer lands here — it's the per-answer
+                // button's own icon check now, see `saveToNotesButton`.)
                 if !model.hasText && followUpCaretWidth == 0 {
                     Group {
                         if handoffCopied {
@@ -677,9 +1011,12 @@ struct NotchBody: View {
             // and icon-only so it sits quietly beside the input; it steps aside for
             // the send button the moment the user starts typing a follow-up.
             if model.hasText {
-                SendButton(compact: true) { model.submit() }
+                SendButton(compact: true) { model.submitCurrent() }
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
             } else {
+                // Save-to-Notes used to sit here too; it now lives beneath each answer
+                // (see `assistantTurnFooter`), so the input row keeps only the
+                // "continue elsewhere" escape hatch.
                 continueElsewhereButton
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
@@ -699,6 +1036,10 @@ struct NotchBody: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(.white.opacity(focused ? 0.20 : 0.10), lineWidth: 0.5)
         )
+        // Flash the field's rim when the destination flips (Ask⇄Note⇄Remind) — the
+        // peripheral twin of the inline "— Ask"/"— Note" word swap. Keyed on the
+        // intent *category* so a recurrence-suffix edit doesn't pulse.
+        .intentChangePulse(on: model.effectiveSubmitPanel, shape: RoundedRectangle(cornerRadius: 12))
         .animation(.easeOut(duration: 0.2), value: focused)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: model.hasText)
     }
@@ -710,9 +1051,14 @@ struct NotchBody: View {
     /// text itself* (not the box) and swept left→right by `handoffSweep`, so the
     /// light catches the letters rather than scanning the field. One pass, then it
     /// settles, then the whole label fades back out (see `runHandoffCopy`).
-    private var copiedShimmerLabel: some View {
-        let label = "Copied to clipboard"
-        return Text(label)
+    private var copiedShimmerLabel: some View { shimmerLabel("Copied to clipboard", sweep: handoffSweep) }
+
+    /// The shared shimmer confirmation that lives in the placeholder slot: `copy`
+    /// sitting exactly where "Ask a follow-up…" sits, with a soft highlight gliding
+    /// once across the glyphs when `sweep` flips true. Parameterized so the copy and
+    /// save confirmations share one recipe instead of two near-identical copies.
+    private func shimmerLabel(_ copy: String, sweep: Bool) -> some View {
+        Text(copy)
             .font(.sf(14.5))
             .foregroundStyle(Tokens.placeholder)
             // The travelling highlight, drawn only where the glyphs are.
@@ -729,10 +1075,10 @@ struct NotchBody: View {
                         startPoint: .leading, endPoint: .trailing
                     )
                     .frame(width: band)
-                    .offset(x: handoffSweep ? w + band : -band)
+                    .offset(x: sweep ? w + band : -band)
                     .blendMode(.screen)
                 }
-                .mask(Text(label).font(.sf(14.5)))
+                .mask(Text(copy).font(.sf(14.5)))
                 .allowsHitTesting(false)
             )
     }
@@ -745,7 +1091,8 @@ struct NotchBody: View {
     /// quiet in-place cross-fade as the inline Ask⇄Note hint, where an NSTextField
     /// placeholder could only hard-cut between strings.
     private var followUpPlaceholderLabel: some View {
-        Text(hoveringContinue ? "Copy chat to continue in ChatGPT or Claude" : "Ask a follow-up…")
+        Text(hoveringContinue ? "Copy chat to continue in ChatGPT or Claude"
+             : "Ask a follow-up…")
             .font(.sf(14.5))
             .foregroundStyle(Tokens.placeholder)
             .lineLimit(1)
@@ -774,6 +1121,38 @@ struct NotchBody: View {
         .onHover { hoveringContinue = $0 }
     }
 
+    /// One-tap "file this answer in Apple Notes" button, sitting just beneath the
+    /// assistant answer it saves (one per answer). Faint and text-only so it reads as
+    /// a quiet caption on the text, not a call to action. Flips to "Saved" for a beat
+    /// on success — its own confirmation now that it no longer borrows the field's
+    /// placeholder shimmer.
+    private func saveToNotesButton(for turn: NotchModel.Turn) -> some View {
+        let saved = savedNoteTurn == turn.id
+        return Button { runNoteSave(turn) } label: {
+            Text(saved ? "Saved" : "Save to Notes")
+                .font(.sf(11.5, weight: .semibold))
+                .foregroundStyle(saved ? Tokens.text2 : Tokens.text3)
+                .lineLimit(1)
+                .contentTransition(.opacity)
+                // Extra slack on the leading edge so the hover capsule pushes a
+                // little further left of the text than it does on the right,
+                // rather than hugging the glyphs symmetrically.
+                .padding(.leading, 12)
+                .padding(.trailing, 6)
+                .frame(height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(RecentEntryStyle())
+        // The label carries leading padding so the hover capsule reaches out past
+        // the text's left edge. That padding also insets the text, which would
+        // leave it visibly indented from the answer above. Cancel the full leading
+        // inset so "Save to Notes" still sits flush-left with the answer text while
+        // the hover capsule alone extends to the left.
+        .padding(.leading, -12)
+        .help("Save this answer to Notes")
+        .animation(.easeOut(duration: 0.2), value: saved)
+    }
+
     /// Copy the conversation and play the in-field confirmation: the placeholder
     /// becomes "Copied to clipboard", a light sweeps once across those glyphs, the
     /// message holds for a beat, then the whole label fades back to "Ask a
@@ -792,6 +1171,38 @@ struct NotchBody: View {
             withAnimation(.easeOut(duration: 0.35)) { handoffCopied = false }
             try? await Task.sleep(nanoseconds: 400_000_000)
             handoffSweep = false                   // reset for the next copy
+        }
+    }
+
+    /// Save one specific answer to Apple Notes, driven ONLY by confirmed success (the
+    /// write is an async AppleScript round-trip, so the check follows the model's
+    /// completion bool, not an optimistic flip). On success the button's icon shows a
+    /// check for ~2s, then reverts. On failure no check plays; instead a brief inline
+    /// error line fades in beneath that answer and auto-clears after ~4s, so a
+    /// permission denial isn't silent. Both confirmations are keyed to `turn.id`, so a
+    /// save in a long thread lands on the right answer's button.
+    private func runNoteSave(_ turn: NotchModel.Turn) {
+        model.saveAnswerToNotes(turnID: turn.id) { success in
+            if success {
+                withAnimation(.easeOut(duration: 0.18)) { savedNoteTurn = turn.id }
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        if savedNoteTurn == turn.id { savedNoteTurn = nil }
+                    }
+                }
+            } else {
+                let message = model.noteError ?? "Couldn't save to Notes. Try again."
+                withAnimation(.easeOut(duration: 0.25)) {
+                    noteSaveError = (turn: turn.id, message: message)
+                }
+                Task {
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        if noteSaveError?.turn == turn.id { noteSaveError = nil }
+                    }
+                }
+            }
         }
     }
 }
@@ -878,8 +1289,13 @@ struct RecentEntryStyle: ButtonStyle {
     @State private var hovering = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+            // A Capsule, not a Circle: it collapses to a perfect circle behind a
+            // square icon button (e.g. the 27×27 continue-elsewhere icon) but reads
+            // as a proper pill behind a wide text label like "Save to Notes". A
+            // Circle stretched to the label's wide rectangular bounds rendered as an
+            // oversized ellipse that bled above and below the text.
             .background(
-                Circle().fill(.white.opacity(hovering ? 0.08 : 0))
+                Capsule().fill(.white.opacity(hovering ? 0.08 : 0))
             )
             .opacity(configuration.isPressed ? 0.5 : (hovering ? 1 : 0.85))
             .onHover { hovering = $0 }

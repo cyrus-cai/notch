@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Notch — Hover. Ask. Move on.</title>
-<meta name="description" content="A glass panel in your Mac's notch.">
-<meta property="og:title" content="Notch">
-<meta property="og:description" content="A glass panel in your Mac's notch. Hover. Ask. Move on.">
+<title>Notch — ask, note, or set a reminder from your Mac's notch</title>
+<meta name="description" content="Type into your Mac's notch. Notch sorts it into a question, a note, or a reminder. Questions use your own provider key. No account, no backend, open source.">
+<meta property="og:title" content="Notch — ask, note, or set a reminder from your Mac's notch">
+<meta property="og:description" content="Type into your Mac's notch. Notch sorts it into a question, a note, or a reminder. Questions use your own provider key. No account, no backend. Free and open source.">
 <meta property="og:image" content="https://cyrus-cai.github.io/notch/og.png">
 <meta property="og:url" content="https://cyrus-cai.github.io/notch/">
 <meta name="twitter:card" content="summary_large_image">
@@ -14,15 +14,20 @@
 <link rel="icon" href="icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Space+Grotesk:wght@500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&display=swap" rel="stylesheet">
 <script>document.documentElement.className = 'js';</script>
 <style>
   /* ================= page ================= */
 
   :root {
     --bg: #050507;
-    --serif: "Instrument Serif", Georgia, serif;
-    --brand: "Space Grotesk", "SF Pro Display", -apple-system, sans-serif;
+    /* Headlines now speak in the system's own display voice — SF Pro Display,
+       tightened and weighted — instead of a decorative book serif. Clean,
+       Apple-native, unmistakably a product page rather than an art piece. */
+    --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Helvetica Neue", sans-serif;
+    /* The wordmark keeps its serif voice — Fraunces, the one place a little
+       character earns its keep: the name of the thing. */
+    --brand: "Fraunces", Georgia, serif;
     --sf: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
     /* SwiftUI .spring(response: 0.42, dampingFraction: 0.72) ≈ slight overshoot */
@@ -76,13 +81,15 @@
   }
 
   /* The masthead: app face + wordmark. The wordmark gets its own voice — a
-     plainspoken grotesque, distinct from both the body SF and the headline
-     serif — seated in the corner like any site that knows its own name. */
+     warm book serif (Fraunces, pinned to its small optical size), distinct
+     from both the body SF and the headline serif — seated in the corner like
+     any site that knows its own name. */
   .brand {
     position: absolute; top: 24px; left: 32px; z-index: 20;
     display: flex; align-items: center; gap: 12px;
     font-family: var(--brand); font-weight: 500;
-    font-size: 20px; letter-spacing: 0;
+    font-variation-settings: 'opsz' 14;
+    font-size: 22px; letter-spacing: 0;
     color: rgba(255,255,255,.92);
     animation: fadein .9s ease .05s both;
   }
@@ -96,9 +103,9 @@
      carries all the literal explaining. */
   h1 {
     margin: 0 auto;
-    font-family: var(--serif); font-weight: 400;
-    font-size: clamp(40px, 5.4vw, 76px);
-    line-height: 1.14; letter-spacing: -.01em;
+    font-family: var(--display); font-weight: 600;
+    font-size: clamp(38px, 5vw, 68px);
+    line-height: 1.1; letter-spacing: -.028em;
     color: rgba(255,255,255,.94);
     animation: up .8s var(--spring) .15s both;
   }
@@ -111,7 +118,10 @@
     position: relative;
     margin-top: 52px;
     display: inline-grid;
-    font-family: var(--mono); font-size: 15px;
+    /* fluid type + a viewport-aware cap so the full command never overruns the
+       screen edges on narrow widths */
+    font-family: var(--mono); font-size: clamp(11px, 3.1vw, 15px);
+    max-width: calc(100vw - 32px);
     color: rgba(255,255,255,.78);
     background-color: rgba(255,255,255,0);
     background-image: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
@@ -165,14 +175,43 @@
   .install.copied .face-cmd { opacity: 0; transform: translateY(-6px); filter: blur(3px); }
   .install.copied .face-done { opacity: 1; transform: translateY(0); filter: blur(0); }
   .install .dollar { color: rgba(255,255,255,.32); }
-  .install .copy-ic { font-family: var(--sf); font-size: 11px; color: rgba(255,255,255,.32); }
+  /* the displayed command is cosmetic — clicking copies the full CMD either way,
+     so on narrow widths we swap in a compact form that fits on one line */
+  .install .cmd-short { display: none; }
+  /* the copy affordance reads as its own segment: a hairline divider sets it
+     apart from the command so the two don't run together at the capsule edge */
+  .install .copy-ic {
+    font-family: var(--sf); font-size: 11px; color: rgba(255,255,255,.38);
+    padding-left: 14px; margin-left: 2px;
+    border-left: 1px solid rgba(255,255,255,.12);
+  }
+  .install:hover .copy-ic { color: rgba(255,255,255,.6); }
   .install .check { color: rgba(255,255,255,.92); }
 
   .meta {
     margin-top: 20px;
     font-size: 14px;
-    color: rgba(255,255,255,.5);
+    color: rgba(255,255,255,.50);
     animation: up .8s var(--spring) .4s both;
+  }
+
+  /* Trust row — the honest credibility signals a real product leads with.
+     No vanity metrics: every item here is a verifiable fact about the app,
+     set in small-caps SF so it reads as a spec strip, not marketing. */
+  .trust {
+    margin: 26px auto 0;
+    display: flex; flex-wrap: wrap; justify-content: center;
+    align-items: center; gap: 10px 22px;
+    font-size: 12px; letter-spacing: .04em;
+    color: rgba(255,255,255,.50);
+    animation: up .8s var(--spring) .5s both;
+  }
+  .trust span { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+  .trust svg { display: block; opacity: .72; }
+  .trust .dot { width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,.22); }
+  @media (max-width: 480px) {
+    .trust { gap: 8px 16px; font-size: 11px; }
+    .trust .dot { display: none; }
   }
 
   /* Entrances come into focus like something seen through the glass — an
@@ -245,7 +284,7 @@
     z-index: 1;
     display: flex; align-items: center; justify-content: space-between;
     padding: 0 18px;
-    font-size: 12.5px;
+    font-size: 12px;
     text-shadow: 0 1px 8px rgba(0,0,0,.45);
   }
   .mb-left, .mb-right { display: flex; align-items: center; gap: 18px; }
@@ -427,7 +466,7 @@
     position: relative;
     height: 48px;
     display: flex; align-items: center;
-    font-size: 16.5px; letter-spacing: .1px;
+    font-size: 16.5px;
     white-space: nowrap; overflow: hidden;
     cursor: text;
   }
@@ -471,7 +510,7 @@
   /* Note-save feedback: one quiet 12pt line, text4 grey, no icon */
   .feedback {
     padding-top: 8px;
-    font-size: 12px; letter-spacing: .2px;
+    font-size: 12px;
     color: rgba(255,255,255,.40);             /* Tokens.text4 */
     display: none;
   }
@@ -490,11 +529,11 @@
   .turn-user { display: flex; align-items: baseline; gap: 8px; }
   .turn-user .you {
     width: 30px; flex: none;
-    font-size: 11px; font-weight: 600; letter-spacing: .3px;
+    font-size: 11px; font-weight: 600;
     color: rgba(255,255,255,.40);             /* Tokens.text4 */
   }
   .turn-user .q {
-    font-size: 14.5px; font-weight: 500; letter-spacing: -.1px;
+    font-size: 14.5px; font-weight: 500;
     color: rgba(255,255,255,.74);             /* Tokens.text2 */
   }
   .turn-ai {
@@ -530,16 +569,16 @@
     text-align: center;
   }
   .sec h2 {
-    font-family: var(--serif); font-weight: 400;
-    font-size: clamp(30px, 3.8vw, 40px);
-    line-height: 1.08; letter-spacing: -.01em;
+    font-family: var(--display); font-weight: 600;
+    font-size: clamp(28px, 3.4vw, 38px);
+    line-height: 1.1; letter-spacing: -.025em;
     color: rgba(255,255,255,.92);
   }
   .lead {
     max-width: 56ch;
-    margin: 16px auto 0;
-    font-size: 15px; line-height: 1.55; letter-spacing: .1px;
-    color: rgba(255,255,255,.52);
+    margin: 28px auto 0;
+    font-size: 15px; line-height: 1.55;
+    color: rgba(255,255,255,.50);
   }
 
   /* One hairline-rim recipe shared by every small glass piece below the fold —
@@ -587,13 +626,21 @@
   /* a frozen frame of the panel: typed line, ghost route, what came back */
   .vrow {
     display: flex; align-items: baseline; gap: 8px;
-    font-size: 14px; letter-spacing: .1px;
+    font-size: 14px;
     white-space: nowrap; overflow: hidden;
   }
   .vt { color: rgba(255,255,255,.96); }
   .vg { color: rgba(255,255,255,.38); flex: none; }
   .vai { margin-top: 12px; font-size: 13px; line-height: 1.5; color: rgba(255,255,255,.96); }
-  .vfb { margin-top: 12px; font-size: 12px; letter-spacing: .2px; color: rgba(255,255,255,.40); }
+  .vfb { margin-top: 12px; font-size: 12px; color: rgba(255,255,255,.40);
+    display: flex; align-items: center; gap: 7px; }
+  /* the real macOS app it lands in — a recognizable anchor, not a claim */
+  .vfb .app { width: 15px; height: 15px; border-radius: 4px; flex: none;
+    display: grid; place-items: center; font-size: 9px; }
+  .vfb .app-notes { background: linear-gradient(180deg,#ffe16b,#ffce3a); color: #5a4500; }
+  .vfb .app-rem { background: linear-gradient(180deg,#fdfdff,#eef0f5);
+    box-shadow: inset 0 0 0 .5px rgba(0,0,0,.10); }
+  .vfb .app svg { display: block; }
   .verb .vd { margin: 16px 4px 0; font-size: 13.5px; line-height: 1.55; color: rgba(255,255,255,.50); }
 
   /* --------- act two: the material, annotated --------- */
@@ -653,7 +700,7 @@
   .ann {
     position: absolute; z-index: 2; width: 196px;
     text-align: left;
-    font-size: 12.5px; line-height: 1.55; color: rgba(255,255,255,.45);
+    font-size: 12px; line-height: 1.55; color: rgba(255,255,255,.45);
   }
   .ann b {
     display: block; margin-bottom: 6px;
@@ -677,12 +724,12 @@
 
   .chips {
     display: flex; flex-wrap: wrap; justify-content: center; gap: 10px;
-    max-width: 560px; margin: 44px auto 0;
+    max-width: 560px; margin: 64px auto 0;
   }
   .chip {
     position: relative;
     padding: 8px 16px; border-radius: 999px;
-    font-size: 12.5px; color: rgba(255,255,255,.66);
+    font-size: 12px; color: rgba(255,255,255,.66);
     background-image: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.015));
   }
   .facts {
@@ -696,9 +743,21 @@
   /* --------- closing --------- */
 
   .cta { padding-bottom: clamp(110px, 15svh, 170px); }
+  /* The closing headline matches the rest: the system display voice, just a
+     touch larger to land the sign-off. No decorative serif moment. */
+  .cta h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(32px, 4vw, 50px);
+    line-height: 1.08; letter-spacing: -.028em;
+    color: rgba(255,255,255,.95);
+  }
+  /* capsule and source link stack vertically, centered — without this the two
+     inline boxes flow side-by-side and collide at wide widths */
+  .cta .r { display: flex; flex-direction: column; align-items: center; }
   .src {
-    display: inline-block; margin-top: 22px;
-    font-size: 12.5px; color: rgba(255,255,255,.45); text-decoration: none;
+    margin-top: 22px;
+    font-size: 12px; color: rgba(255,255,255,.45); text-decoration: none;
     border-bottom: 1px solid rgba(255,255,255,.14); padding-bottom: 1px;
     transition: color .2s ease, border-color .2s ease;
   }
@@ -714,12 +773,13 @@
   .ft-brand {
     display: flex; align-items: center; gap: 8px;
     font-family: var(--brand); font-weight: 500;
-    font-size: 13.5px; color: rgba(255,255,255,.65);
+    font-variation-settings: 'opsz' 14;
+    font-size: 15px; color: rgba(255,255,255,.65);
   }
   .ft-brand img { width: 16px; height: 16px; }
   .ft-dim {
     color: rgba(255,255,255,.32); font-weight: 400;
-    font-family: var(--sf); font-size: 12.5px;
+    font-family: var(--sf); font-size: 12px;
   }
   .ft a { color: rgba(255,255,255,.38); text-decoration: none; margin-left: 18px; transition: color .2s ease; }
   .ft a:hover { color: rgba(255,255,255,.9); }
@@ -741,11 +801,12 @@
   .nav-brand {
     display: flex; align-items: center; gap: 8px;
     font-family: var(--brand); font-weight: 500;
-    font-size: 13.5px; color: rgba(255,255,255,.88);
+    font-variation-settings: 'opsz' 14;
+    font-size: 15px; color: rgba(255,255,255,.88);
     text-decoration: none;
   }
   .nav-brand img { width: 16px; height: 16px; }
-  .nav-link { font-size: 12.5px; color: rgba(255,255,255,.55); text-decoration: none; transition: color .2s ease; }
+  .nav-link { font-size: 12px; color: rgba(255,255,255,.50); text-decoration: none; transition: color .2s ease; }
   .nav-link:hover { color: rgba(255,255,255,.95); }
   .nav-cmd {
     position: relative; display: grid;
@@ -770,7 +831,7 @@
   .cue {
     position: absolute; bottom: 16px; left: 50%; z-index: 12;
     transform: translateX(-50%);
-    color: rgba(255,255,255,.5);
+    color: rgba(255,255,255,.50);
     filter: drop-shadow(0 1px 6px rgba(0,0,0,.6));
     pointer-events: none;
     animation: fadein 1s ease 2.6s backwards;
@@ -794,6 +855,9 @@
   @media (max-width: 640px) {
     .ft { flex-direction: column; gap: 10px; text-align: center; }
     .ft a { margin: 0 9px; }
+    /* the long command no longer fits on one line — show the compact form */
+    .install .cmd-long { display: none; }
+    .install .cmd-short { display: inline; }
   }
 
   @media (max-width: 480px) {
@@ -801,7 +865,8 @@
     .brand img { width: 28px; height: 28px; }
     h1 { font-size: 34px; }
     h1 br { display: none; }
-    .install { font-size: 10.5px; padding: 12px 16px; gap: 8px; }
+    .install { padding: 13px 18px; }
+    .install .face { gap: 8px; }
     .scene { padding: 0 12px; }
   }
 
@@ -831,7 +896,7 @@
   <button class="install" id="install" title="Copy install command">
     <span class="face face-cmd">
       <span class="dollar">$</span>
-      <span id="cmdText">curl …/notch/master/install.sh | bash</span>
+      <span id="cmdText"><span class="cmd-long">curl -fsSL github.com/cyrus-cai/notch/…/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
       <span class="copy-ic">copy</span>
     </span>
     <span class="face face-done" aria-hidden="true">
@@ -839,7 +904,23 @@
       <span>copied — paste in Terminal</span>
     </span>
   </button>
-  <p class="meta">open source · macOS 14+</p>
+  <p class="meta">macOS 14+</p>
+  <div class="trust" aria-label="What you can trust">
+    <span title="No account, no server of ours">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l4.5 1.8v3.4c0 3-2 5-4.5 5.8C4.5 11.2 2.5 9.2 2.5 6.2V2.8L7 1z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5 6.9 6.5 8.4 9.2 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      No account, no telemetry
+    </span>
+    <span class="dot" aria-hidden="true"></span>
+    <span title="Your key, your provider — nothing in between">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="5" cy="7" r="3" stroke="currentColor" stroke-width="1.2"/><path d="M8 7h5M11 7v2.4M13 7v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      Bring your own key
+    </span>
+    <span class="dot" aria-hidden="true"></span>
+    <span title="Every line is public on GitHub">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4.6 9.5 2 7l2.6-2.5M9.4 4.5 12 7 9.4 9.5M7.8 3.2 6.2 10.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Fully open source
+    </span>
+  </div>
 </header>
 
 <div class="scene">
@@ -911,29 +992,29 @@
         <div class="vrow"><span class="vt">is a fortnight two weeks?</span><span class="vg">— Ask</span></div>
         <div class="vai">Yes — fourteen nights, exactly two weeks. British English, mostly.</div>
       </div>
-      <p class="vd">Answers stream into the panel — your train of thought never even notices.</p>
+      <p class="vd">The answer appears in the panel, without leaving what you're doing.</p>
     </div>
     <div class="verb r" style="--d:.08s">
       <div class="card">
         <div class="vrow"><span class="vt">sarah: prefers async standups</span><span class="vg">— Note</span></div>
-        <div class="vfb">Added to Notes</div>
+        <div class="vfb"><span class="app app-notes" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2.1 3.4h6.8M2.1 5.5h6.8M2.1 7.6h4.2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></span>Added to Apple Notes</div>
       </div>
-      <p class="vd">Lines that read like something to keep — names, ideas, numbers — are filed into Apple Notes.</p>
+      <p class="vd">Anything that reads like something to keep — a name, an idea, a number — lands in Apple Notes.</p>
     </div>
     <div class="verb r" style="--d:.16s">
       <div class="card">
         <div class="vrow"><span class="vt">call mum tomorrow 9am</span><span class="vg">— Remind</span></div>
-        <div class="vfb">Added to Reminders</div>
+        <div class="vfb"><span class="app app-rem" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 11 11" fill="none"><circle cx="3" cy="3.2" r="1.15" fill="#fc5c65"/><circle cx="3" cy="7" r="1.15" fill="#fd9426"/><path d="M5.4 3.2h3.2M5.4 7h3.2" stroke="#c9ccd6" stroke-width="1" stroke-linecap="round"/></svg></span>Added to Apple Reminders</div>
       </div>
-      <p class="vd">Put a time in it and it lands in Apple Reminders, due date set.</p>
+      <p class="vd">Anything with a time in it lands in Apple Reminders — due date already set.</p>
     </div>
   </div>
 </section>
 
 <section class="sec" id="craft">
   <div class="r">
-    <h2>Built like it belongs.</h2>
-    <p class="lead">Notch is just glass over dead pixels — but it's drawn by the same system that draws the rest of your Mac, and it moves like it was always there.</p>
+    <h2>Native, not bolted on.</h2>
+    <p class="lead">Most notch utilities are floating windows wearing a disguise. Notch is drawn with the same Liquid Glass material that paints the rest of macOS — same blur, same edge light, same spring.</p>
   </div>
   <div class="spec r">
     <div class="spec-edge"></div>
@@ -957,26 +1038,21 @@
 <section class="sec" id="byok">
   <div class="r">
     <h2>Your model. Your key.</h2>
-    <p class="lead">Notch has no backend and no accounts. Pick a provider, paste your own key, and every request goes straight from your Mac to them — nobody in between.</p>
+    <p class="lead">Sorting happens on your Mac; nothing is sent until you press Return. Then your question goes to the provider you picked, signed with your own key.</p>
   </div>
   <div class="chips r">
     <span class="chip">OpenAI</span><span class="chip">Anthropic</span><span class="chip">Google Gemini</span><span class="chip">DeepSeek</span><span class="chip">Qwen</span><span class="chip">Kimi</span><span class="chip">GLM</span><span class="chip">MiniMax</span><span class="chip">MiMo</span>
-  </div>
-  <div class="facts">
-    <div class="fact r"><h3>No account</h3><p>Nothing to sign up for, no server of ours to trust. The app talks to your provider, and to no one else.</p></div>
-    <div class="fact r" style="--d:.08s"><h3>No telemetry</h3><p>No analytics, no crash reporters, nothing phoning home. What you type stays between you and the model you chose.</p></div>
-    <div class="fact r" style="--d:.16s"><h3>Typing stays local</h3><p>The sorting happens on your Mac. Nothing is sent until you press return.</p></div>
   </div>
 </section>
 
 <section class="sec cta" id="install-cta">
   <div class="r">
-    <h2>Give your notch a job.</h2>
-    <p class="lead">The whole app is public on GitHub — read every line before you run it.</p>
+    <h2>Put it on your Mac.</h2>
+    <p class="lead">Free and open source. One command to install — no account, no sign-up.</p>
     <button class="install" title="Copy install command">
       <span class="face face-cmd">
         <span class="dollar">$</span>
-        <span>curl …/notch/master/install.sh | bash</span>
+        <span><span class="cmd-long">curl -fsSL github.com/cyrus-cai/notch/…/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
         <span class="copy-ic">copy</span>
       </span>
       <span class="face face-done" aria-hidden="true">
@@ -984,15 +1060,13 @@
         <span>copied — paste in Terminal</span>
       </span>
     </button>
-    <p class="meta">macOS 14+ · bring your own key</p>
-    <br>
     <a class="src" href="https://github.com/cyrus-cai/notch">Browse the source ↗</a>
   </div>
 </section>
 
 <footer>
   <div class="ft">
-    <span class="ft-brand"><img src="icon.png" alt="">Notch<span class="ft-dim">&nbsp;— a tiny app for a tiny place</span></span>
+    <span class="ft-brand"><img src="icon.png" alt="">Notch</span>
     <span class="ft-links">
       <a href="https://github.com/cyrus-cai/notch">GitHub</a>
       <a href="https://github.com/cyrus-cai/notch/issues">Issues</a>

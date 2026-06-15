@@ -56,6 +56,15 @@ struct ContentView: View {
                     return true
                 }
                 if model.showHistory {
+                    // Two-step Esc when filtering: the first Esc clears just the
+                    // filter query (and restores the full list); only a second Esc
+                    // folds the list back to the prompt. Must run before
+                    // collapseHistory() — this catcher fires ahead of SwiftUI's own
+                    // exit handling.
+                    if !model.historySearchQuery.isEmpty {
+                        model.historySearchQuery = ""
+                        return true
+                    }
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                         model.collapseHistory()
                     }
