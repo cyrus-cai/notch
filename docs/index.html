@@ -199,7 +199,7 @@
             backdrop-filter: blur(18px) saturate(1.5);
     border: none;
     border-radius: 999px;
-    padding: 18px 30px;
+    padding: 13px 22px;
     cursor: pointer;
     overflow: hidden;
     transition: background-color .25s ease, color .25s ease, transform .35s var(--spring);
@@ -239,7 +239,7 @@
   /* two faces stacked in the same cell; the capsule morphs between them */
   .install .face {
     grid-area: 1 / 1;
-    display: inline-flex; align-items: center; justify-content: center; gap: 12px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px;
     white-space: nowrap;
     transition: opacity .25s ease, transform .45s var(--spring), filter .25s ease;
   }
@@ -253,32 +253,34 @@
   /* the copy affordance reads as its own segment: a hairline divider sets it
      apart from the command so the two don't run together at the capsule edge */
   .install .copy-ic {
-    font-family: var(--sf); font-size: 11px; color: rgba(40,40,48,.40);
-    padding-left: 14px; margin-left: 2px;
-    border-left: 1px solid rgba(40,40,48,.16);
+    font-family: var(--sf); font-size: 10px; color: rgba(40,40,48,.30);
+    padding-left: 11px; margin-left: 1px;
+    border-left: 1px solid rgba(40,40,48,.10);
   }
-  .install:hover .copy-ic { color: rgba(28,28,34,.62); }
+  .install:hover .copy-ic { color: rgba(28,28,34,.50); }
   .install .check { color: rgba(20,20,24,.92); }
-  /* the macOS version now rides inside the capsule as a quiet trailing segment,
-     set off by the same hairline divider as the copy affordance */
-  .install .os {
-    font-family: var(--sf); font-size: 11px; color: rgba(40,40,48,.38);
-    padding-left: 14px; margin-left: 2px;
-    border-left: 1px solid rgba(40,40,48,.16);
+  /* the platform note sits below the install row as a quiet caption rather than
+     riding inside the capsule — keeps both pills clean and equal */
+  .install-note {
+    margin-top: 14px; text-align: center;
+    font-family: var(--sf); font-size: 12px; color: rgba(40,40,48,.38);
+    letter-spacing: .01em;
   }
 
   /* The agent capsule: same glass, but its label is the product's own voice
-     (SF, not mono) since you're handing this to an AI, not a shell. A faint
-     spark marks it as the "let an agent do it" path. */
+     (SF, not mono) since you're handing this to an AI, not a shell. A quiet
+     prompt chevron — the shell's "›" — marks it as a command you hand off,
+     mirroring the "$" on the curl capsule rather than shouting in color. */
   .install-ai .ai-label {
     font-family: var(--sf); font-size: clamp(12px, 2.6vw, 14px);
     letter-spacing: -.005em;
   }
   .install-ai .ai-spark {
-    font-size: 13px; color: rgba(120,95,180,.78);
-    transition: color .25s ease, transform .45s var(--spring);
+    font-family: var(--mono); font-size: 15px; line-height: 1;
+    color: rgba(40,40,48,.40);
+    transition: color .25s ease;
   }
-  .install-ai:hover .ai-spark { color: rgba(120,95,180,.95); transform: rotate(90deg); }
+  .install-ai:hover .ai-spark { color: rgba(28,28,34,.62); }
 
   /* Trust row — the honest credibility signals a real product leads with.
      No vanity metrics: every item here is a verifiable fact about the app,
@@ -981,11 +983,9 @@
   @media (max-width: 640px) {
     .ft { flex-direction: column; gap: 10px; text-align: center; }
     .ft a { margin: 0 9px; }
-    /* the long command no longer fits on one line — show the compact form,
-       and drop the trailing macOS segment so the capsule stays one tidy line */
+    /* the long command no longer fits on one line — show the compact form */
     .install .cmd-long { display: none; }
     .install .cmd-short { display: inline; }
-    .install .os { display: none; }
     /* stack the two install paths; let each fill the row so they read as a
        tidy two-option list rather than two ragged pills */
     .install-row { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -1033,9 +1033,8 @@
     <button class="install" id="install" title="Copy install command">
       <span class="face face-cmd">
         <span class="dollar">$</span>
-        <span id="cmdText"><span class="cmd-long">curl -fsSL github.com/cyrus-cai/notch/…/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
+        <span id="cmdText"><span class="cmd-long">curl -fsSL …notch/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
         <span class="copy-ic" data-i18n="install.copy">copy</span>
-        <span class="os" data-i18n="install.os">macOS 14+</span>
       </span>
       <span class="face face-done" aria-hidden="true">
         <span class="check">✓</span>
@@ -1044,7 +1043,7 @@
     </button>
     <button class="install install-ai" id="installAI" data-cmd-key="ai" title="Copy a plain-English install request for your coding agent">
       <span class="face face-cmd">
-        <span class="ai-spark" aria-hidden="true">✦</span>
+        <span class="ai-spark" aria-hidden="true">›</span>
         <span class="ai-label" data-i18n="install.ai">Install with Claude Code / Codex</span>
         <span class="copy-ic" data-i18n="install.copy">copy</span>
       </span>
@@ -1054,6 +1053,7 @@
       </span>
     </button>
   </div>
+  <p class="install-note" data-i18n="install.os">for macOS only</p>
 </header>
 
 <div class="scene">
@@ -1186,9 +1186,8 @@
       <button class="install" title="Copy install command">
         <span class="face face-cmd">
           <span class="dollar">$</span>
-          <span><span class="cmd-long">curl -fsSL github.com/cyrus-cai/notch/…/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
+          <span><span class="cmd-long">curl -fsSL …notch/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
           <span class="copy-ic" data-i18n="install.copy">copy</span>
-          <span class="os" data-i18n="install.os">macOS 14+</span>
         </span>
         <span class="face face-done" aria-hidden="true">
           <span class="check">✓</span>
@@ -1197,7 +1196,7 @@
       </button>
       <button class="install install-ai" data-cmd-key="ai" title="Copy a plain-English install request for your coding agent">
         <span class="face face-cmd">
-          <span class="ai-spark" aria-hidden="true">✦</span>
+          <span class="ai-spark" aria-hidden="true">›</span>
           <span class="ai-label" data-i18n="install.ai">Install with Claude Code / Codex</span>
           <span class="copy-ic" data-i18n="install.copy">copy</span>
         </span>
@@ -1207,6 +1206,7 @@
         </span>
       </button>
     </div>
+    <p class="install-note" data-i18n="install.os">for macOS only</p>
     <a class="src" href="https://github.com/cyrus-cai/notch" data-i18n="cta.src">Browse the source ↗</a>
   </div>
 </section>
@@ -1320,7 +1320,7 @@
     'hero.sub':     { zh: '问 AI、记笔记、设提醒，全都在 Mac 的刘海里完成——连 App 都不用开。<strong style="white-space:nowrap">快 5 倍</strong>，<strong style="white-space:nowrap">颜值在线</strong>。',
                       hant: '問 AI、記筆記、設提醒，全都在 Mac 的瀏海裡完成——連 App 都不用開。<strong style="white-space:nowrap">快 5 倍</strong>，<strong style="white-space:nowrap">顏值在線</strong>。' },
     'install.copy': { zh: '复制', hant: '複製' },
-    'install.os':   { zh: 'macOS 14+', hant: 'macOS 14+' },
+    'install.os':   { zh: '仅支持 macOS', hant: '僅支援 macOS' },
     'install.done': { zh: '已复制，去终端里粘贴', hant: '已複製，去終端機裡貼上' },
     'install.ai':   { zh: '让 Claude Code / Codex 帮你装', hant: '讓 Claude Code / Codex 幫你裝' },
     'install.aidone': { zh: '已复制，粘到你的 AI 里', hant: '已複製，貼到你的 AI 裡' },
