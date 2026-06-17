@@ -63,7 +63,7 @@ final class OpenRouterAuth: ObservableObject {
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
         guard let listener = try? NWListener(using: params) else {
-            phase = .failed("Couldn't open a local port for the sign-in redirect")
+            phase = .failed(L("or.error.noPort"))
             return
         }
         self.listener = listener
@@ -80,12 +80,12 @@ final class OpenRouterAuth: ObservableObject {
                 switch state {
                 case .ready:
                     guard let port = listener.port?.rawValue else {
-                        self.fail("Couldn't open a local port for the sign-in redirect")
+                        self.fail(L("or.error.noPort"))
                         return
                     }
                     self.openBrowser(port: port, challenge: challenge)
                 case .failed:
-                    self.fail("Couldn't open a local port for the sign-in redirect")
+                    self.fail(L("or.error.noPort"))
                 default:
                     break
                 }
@@ -185,7 +185,7 @@ final class OpenRouterAuth: ObservableObject {
             exchange(code: code)
         } else {
             respond(conn, status: "200 OK", body: Self.deniedPage)
-            fail("Sign-in was cancelled in the browser")
+            fail(L("or.error.cancelled"))
         }
     }
 
@@ -229,14 +229,14 @@ final class OpenRouterAuth: ObservableObject {
                       (200..<300).contains(http.statusCode),
                       case let key = try JSONDecoder().decode(ExchangeResponse.self, from: data).key,
                       !key.isEmpty else {
-                    fail("OpenRouter didn't issue a key — try connecting again")
+                    fail(L("or.error.noKey"))
                     return
                 }
                 APIKeyStore.save(key, for: .openrouter)
                 NotificationCenter.default.post(name: .aiBackendChanged, object: nil)
                 phase = .connected
             } catch {
-                fail("Couldn't reach OpenRouter — check your connection and try again")
+                fail(L("or.error.unreachable"))
             }
         }
     }
@@ -265,17 +265,21 @@ final class OpenRouterAuth: ObservableObject {
 
     /// What the redirect tab shows. Styled to read as the app speaking — dark,
     /// quiet, one line — since this page IS the end of the user-visible flow.
-    private static let successPage = page(
-        title: "Connected",
-        line: "NotchGlass is connected — you can close this tab.")
+    /// Computed (not stored) so the copy tracks the live App Language rather than
+    /// freezing at first access.
+    private static var successPage: String {
+        page(title: L("or.page.connected.title"),
+             line: L("or.page.connected.line"))
+    }
 
-    private static let deniedPage = page(
-        title: "Cancelled",
-        line: "Sign-in was cancelled. You can close this tab and try again from NotchGlass.")
+    private static var deniedPage: String {
+        page(title: L("or.page.cancelled.title"),
+             line: L("or.page.cancelled.line"))
+    }
 
     private static func page(title: String, line: String) -> String {
         """
-        <!doctype html><html><head><meta charset="utf-8"><title>NotchGlass — \(title)</title></head>
+        <!doctype html><html><head><meta charset="utf-8"><title>Notch — \(title)</title></head>
         <body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;\
         background:#101014;color:rgba(255,255,255,.85);\
         font:15px/1.5 -apple-system,BlinkMacSystemFont,sans-serif">

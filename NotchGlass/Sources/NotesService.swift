@@ -15,9 +15,9 @@ enum NotesError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            return "Allow access to Notes in System Settings → Privacy & Security → Automation."
+            return L("notes.error.permission")
         case .notesUnavailable:
-            return "Couldn't reach Notes. Try again."
+            return L("notes.error.unavailable")
         case .scriptError(let msg):
             return msg
         }

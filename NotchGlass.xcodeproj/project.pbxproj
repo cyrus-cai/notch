@@ -27,8 +27,10 @@
 		A1000072 /* UpdaterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000073 /* UpdaterService.swift */; };
 		A1000074 /* MouseVelocityTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000075 /* MouseVelocityTracker.swift */; };
 		A1000076 /* OpenRouterAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000077 /* OpenRouterAuth.swift */; };
+		A1000078 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000079 /* Localization.swift */; };
 		A1000066 /* IntentExamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000067 /* IntentExamples.swift */; };
 		A1000071 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000070 /* Assets.xcassets */; };
+		A10004A1 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = A10004A0 /* Fonts */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +46,7 @@
 		A1000073 /* UpdaterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterService.swift; sourceTree = "<group>"; };
 		A1000075 /* MouseVelocityTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseVelocityTracker.swift; sourceTree = "<group>"; };
 		A1000077 /* OpenRouterAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAuth.swift; sourceTree = "<group>"; };
+		A1000079 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
 		A1000067 /* IntentExamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentExamples.swift; sourceTree = "<group>"; };
 		A1000007 /* GlassBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassBackground.swift; sourceTree = "<group>"; };
 		A1000008 /* NotchBody.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchBody.swift; sourceTree = "<group>"; };
@@ -55,6 +58,7 @@
 		A100000E /* APIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeyStore.swift; sourceTree = "<group>"; };
 		A100000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000070 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A10004A0 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fonts; sourceTree = "<group>"; };
 		A1000100 /* NotchGlass.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NotchGlass.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -100,6 +104,7 @@
 				A1000073 /* UpdaterService.swift */,
 				A1000075 /* MouseVelocityTracker.swift */,
 				A1000077 /* OpenRouterAuth.swift */,
+				A1000079 /* Localization.swift */,
 				A1000065 /* IntentEngine.swift */,
 				A1000067 /* IntentExamples.swift */,
 				A1000007 /* GlassBackground.swift */,
@@ -119,6 +124,7 @@
 			children = (
 				A100000B /* Info.plist */,
 				A1000070 /* Assets.xcassets */,
+				A10004A0 /* Fonts */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -190,6 +196,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000071 /* Assets.xcassets in Resources */,
+				A10004A1 /* Fonts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -211,6 +218,7 @@
 				A1000072 /* UpdaterService.swift in Sources */,
 				A1000074 /* MouseVelocityTracker.swift in Sources */,
 				A1000076 /* OpenRouterAuth.swift in Sources */,
+				A1000078 /* Localization.swift in Sources */,
 				A1000064 /* IntentEngine.swift in Sources */,
 				A1000066 /* IntentExamples.swift in Sources */,
 				A1000016 /* GlassBackground.swift in Sources */,
@@ -286,9 +294,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Notch;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -309,9 +317,9 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Notch;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};

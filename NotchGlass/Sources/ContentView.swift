@@ -4,6 +4,11 @@ import SwiftUI
 /// everything else is empty space that lets clicks fall through to apps below.
 struct ContentView: View {
     @ObservedObject var model: NotchModel
+    /// The live string store. Observing it here, at the root of every panel, plus
+    /// the `.id(loc.language)` below, rebuilds the whole SwiftUI subtree when the
+    /// App Language changes — so every `L(_:)` lookup re-evaluates at once, no
+    /// relaunch, without each child view having to observe the store itself.
+    @EnvironmentObject private var loc: Localization
     @Environment(\.notchMetrics) private var metrics
 
     var body: some View {
@@ -30,10 +35,28 @@ struct ContentView: View {
             }
 
             NotchIsland(model: model)
+                // Rebuild the island's subtree on an App Language switch so every
+                // localized string re-evaluates at once. The island is collapsed
+                // (or being opened) when the user returns from a switch, so the
+                // identity change never interrupts a visible animation.
+                .id(loc.language)
         }
         .frame(width: metrics.canvasWidth, alignment: .top)
         .ignoresSafeArea()
         .background(KeyEventCatcher { event in
+            // ⌘F summons the recent-list filter. The chip is gone — this is the only
+            // way in. Only meaningful when there's a list worth filtering (matches the
+            // field's own > 6 render gate). If the list is collapsed, open it first so
+            // the field has somewhere to land; if the filter's already up, ⌘F is a
+            // no-op rather than a toggle (Esc clears/closes it — see below).
+            if event.keyCode == 3, event.modifierFlags.contains(.command),
+               !model.showSettings, model.history.count > 6 {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                    if !model.showHistory { model.showHistory = true }
+                    model.showHistoryFilter = true
+                }
+                return true
+            }
             // Esc: if the recent list is open, fold just that back to the input
             // first (one step "out"); only a second Esc closes the whole panel.
             // Works mid-request too — closing detaches the in-flight answer, which
@@ -56,13 +79,20 @@ struct ContentView: View {
                     return true
                 }
                 if model.showHistory {
-                    // Two-step Esc when filtering: the first Esc clears just the
-                    // filter query (and restores the full list); only a second Esc
-                    // folds the list back to the prompt. Must run before
-                    // collapseHistory() — this catcher fires ahead of SwiftUI's own
-                    // exit handling.
+                    // Stepped Esc while filtering, unwinding the ⌘F summon in reverse:
+                    //   1. non-empty query  → clear the query (keep the field open)
+                    //   2. empty query, field up → close just the filter field
+                    //   3. field down        → fold the list back to the prompt
+                    // Must run before collapseHistory() — this catcher fires ahead of
+                    // SwiftUI's own exit handling.
                     if !model.historySearchQuery.isEmpty {
                         model.historySearchQuery = ""
+                        return true
+                    }
+                    if model.showHistoryFilter {
+                        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                            model.showHistoryFilter = false
+                        }
                         return true
                     }
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {

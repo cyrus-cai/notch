@@ -51,6 +51,13 @@ extension Font {
     static func sf(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .default)
     }
+
+    /// The brand wordmark voice — Prompt (Medium / 500), bundled and registered
+    /// via `ATSApplicationFontsPath` so it matches the "Notch" wordmark on the
+    /// landing page (its `--brand` family). Used only for the name of the thing.
+    static func brand(_ size: CGFloat) -> Font {
+        .custom("Prompt-Medium", fixedSize: size)
+    }
 }
 
 /// Geometry shared with the SwiftUI tree via the environment so views know how

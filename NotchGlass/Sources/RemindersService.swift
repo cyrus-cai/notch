@@ -15,9 +15,9 @@ enum RemindersError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            return "Allow access in System Settings → Privacy & Security → Reminders."
+            return L("reminders.error.permission")
         case .noList:
-            return "No Reminders list found. Open the Reminders app once, then try again."
+            return L("reminders.error.noList")
         case .saveFailed(let msg):
             return msg
         }

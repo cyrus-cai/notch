@@ -1,0 +1,592 @@
+import Foundation
+import Combine
+import SwiftUI
+
+/// The app's interface language, chosen in Settings → General → App Language and
+/// persisted in `UserDefaults`. Independent of the macOS system language: a user
+/// can run a Chinese interface on an English Mac (or the reverse). `.system`
+/// follows whatever the OS reports, which is the default.
+///
+/// Switching is *live* — no relaunch. The single `Localization` store publishes
+/// the change, every view reads its strings through `L(_:)`, and SwiftUI
+/// re-renders the tree. See `Localization`.
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system
+    case english
+    case chineseSimplified
+    case chineseTraditional
+
+    var id: String { rawValue }
+
+    /// The picker label — each language named in itself (the convention OS
+    /// language pickers use), so the row reads the same whatever the current UI
+    /// language is. `.system` is the one exception: it's named in the active
+    /// language because it describes a behavior, not a language.
+    var label: String {
+        switch self {
+        case .system:             return L("appLang.system")
+        case .english:            return "English"
+        case .chineseSimplified:  return "简体中文"
+        case .chineseTraditional: return "繁體中文"
+        }
+    }
+
+    /// The concrete locale this choice resolves to — `.system` reads the OS
+    /// preference and folds it onto the three we ship, defaulting to English for
+    /// anything we don't translate.
+    var resolved: Localization.Locale {
+        switch self {
+        case .english:            return .en
+        case .chineseSimplified:  return .zhHans
+        case .chineseTraditional: return .zhHant
+        case .system:             return AppLanguage.systemLocale
+        }
+    }
+
+    /// Map the OS's preferred localization onto one of our three. `zh-Hant` /
+    /// `zh-TW` / `zh-HK` / `zh-MO` → Traditional; any other `zh*` → Simplified;
+    /// everything else → English — mirrors the landing page's `normLang`.
+    private static var systemLocale: Localization.Locale {
+        let pref = (Locale.preferredLanguages.first ?? "en").lowercased()
+        if pref.hasPrefix("zh-hant") || pref.hasPrefix("zh-tw")
+            || pref.hasPrefix("zh-hk") || pref.hasPrefix("zh-mo") { return .zhHant }
+        if pref.hasPrefix("zh") { return .zhHans }
+        return .en
+    }
+
+    private static let key = "appLanguage"
+    static var current: AppLanguage {
+        get {
+            UserDefaults.standard.string(forKey: key)
+                .flatMap(AppLanguage.init) ?? .system
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: key)
+        }
+    }
+}
+
+/// The live string store. One shared instance drives the whole app: views inject
+/// it as an `@EnvironmentObject` (or read the shared singleton), call `L("key")`
+/// to look up the active-language string, and re-render whenever `language`
+/// changes — which is what makes the App Language switch instant, no relaunch.
+final class Localization: ObservableObject {
+    static let shared = Localization()
+
+    /// The three concrete catalogs we ship. `.system` resolves to one of these.
+    enum Locale { case en, zhHans, zhHant }
+
+    /// The user's choice. Setting it persists and republishes, so every view
+    /// reading `L(_:)` re-evaluates with the new language on the next render.
+    @Published var language: AppLanguage {
+        didSet {
+            guard language != oldValue else { return }
+            AppLanguage.current = language
+        }
+    }
+
+    private init() {
+        language = AppLanguage.current
+    }
+
+    /// Look up `key` in the active language, falling back to English, then to the
+    /// key itself (so a missing entry is visible in development rather than blank).
+    func string(_ key: String) -> String {
+        let table: [String: String]
+        switch language.resolved {
+        case .en:     table = Strings.en
+        case .zhHans: table = Strings.zhHans
+        case .zhHant: table = Strings.zhHant
+        }
+        return table[key] ?? Strings.en[key] ?? key
+    }
+}
+
+/// Global accessor — terse on purpose, since it appears inline in nearly every
+/// view (`Text(L("settings.title"))`). Reads the shared store, so it tracks the
+/// live language. For interpolation, pass positional args and use `%@` / `%lld`
+/// in the catalog value (`L("update.to", v)`).
+@inline(__always)
+func L(_ key: String) -> String {
+    Localization.shared.string(key)
+}
+
+/// Interpolating variant: substitutes the args into the catalog value with
+/// `String(format:)`. Catalog strings use `%@` for text and `%lld` for integers,
+/// the same order in every language (CJK keeps the same `%@` slots).
+func L(_ key: String, _ args: CVarArg...) -> String {
+    String(format: Localization.shared.string(key), arguments: args)
+}
+
+/// The string catalog. EN is the source of truth; the two Chinese variants follow
+/// the landing page's voice — natural spoken Chinese with a little spark, never
+/// stiff machine translation. `zhHant` is the Traditional counterpart of `zhHans`
+/// (same tone, Taiwan/HK vocabulary: 檔案/金鑰/游標/終端機…).
+///
+/// Keys are dot-namespaced by area. Self-named proper nouns (provider brands,
+/// "macOS", language names shown in their own script) are intentionally absent —
+/// they read the same in every language and stay hardcoded at the call site.
+enum Strings {
+    // MARK: English (source of truth)
+    static let en: [String: String] = [
+        // App Language picker
+        "appLang.system": "System",
+        "appLang.footer": "Sets the language Notch's own interface is shown in. System follows your Mac.",
+
+        // Settings shell
+        "settings.title": "SETTINGS",
+        "settings.back": "Back to prompt",
+        "sidebar.model": "Model",
+        "sidebar.translation": "Translation",
+        "sidebar.general": "General",
+        "sidebar.about": "About",
+
+        // Model section
+        "model.provider": "Provider",
+        "model.apiKey": "API key",
+        "model.pasteKey": "Paste your API key",
+        "model.test": "Test",
+        "model.cancel": "Cancel",
+        "model.change": "Change",
+        "model.save": "Save",
+        "model.saved": "Saved",
+        "model.account": "Account",
+        "model.disconnect": "Disconnect",
+        "model.connecting": "Connecting…",
+        "model.finishSignIn": "Finish signing in in your browser…",
+        "model.pasteInstead": "Paste a key instead",
+        "model.connectOpenRouter": "Connect OpenRouter",
+        "model.label": "Model",
+        "model.default": "Default (%@)",
+        "model.footer.openrouter.pre": "Free to use — Connect signs you in to ",
+        "model.footer.openrouter.host": "openrouter.ai",
+        "model.footer.openrouter.post": " and stores a key for your own account on this Mac. Free models have a daily request cap; adding credits there raises it.",
+        "model.footer.byok.pre": "Stored on this Mac. Without a key the app uses an offline stub. Get a key at ",
+        "model.footer.byok.post": ".",
+        "model.footer.env": "A key from the %@ environment variable is in use; it overrides these fields.",
+
+        // Connectivity verdicts
+        "conn.ok": "Key verified",
+        "conn.missingKey": "Enter a key",
+        "conn.unauthorized": "Invalid key",
+        "conn.serverError": "Server error (%lld)",
+        "conn.offline": "No connection",
+        "conn.timedOut": "Timed out",
+        "conn.unavailable": "Test unavailable for this provider",
+        "conn.unexpected": "Unexpected response",
+
+        // Translation section
+        "translation.language": "Language",
+        "translation.footer": "Sets the language the Translate chip aims for. Auto lets the model pick a target from the copied text.",
+        "translation.auto": "Auto",
+
+        // General section
+        "general.showOn": "Show on",
+        "general.placement.footer": "External monitors get a menu-bar-height island.",
+        "general.dockIcon": "Dock icon",
+        "general.dockIcon.footer": "Hidden keeps it a pure overlay — summon with ⌘, or by hovering the notch.",
+        "general.appLanguage": "App Language",
+        "placement.all": "All displays",
+        "placement.builtIn": "Built-in display",
+        "dock.hidden": "Hidden",
+        "dock.shown": "Shown",
+
+        // About section
+        "about.update.to": "Update to %@",
+        "about.updating": "Updating…",
+        "about.updateFailed": "Update failed — get it from the releases page",
+        "about.github": "GitHub",
+        "about.releases": "Releases",
+
+        // Idle / input
+        "input.placeholder": "Type anything...",
+        "input.saving": "Saving…",
+        "input.copiedPrefix": "Copied: %@",
+        "hint.ask": "Ask",
+        "hint.note": "Note",
+        "hint.remind": "Remind",
+        "recur.daily": " · Daily",
+        "recur.weekly": " · Weekly",
+        "recur.weeklyOn": " · Weekly · %@",
+        "recur.monthly": " · Monthly",
+
+        // Clipboard preset chips
+        "preset.summarize": "Summarize",
+        "preset.keyPoints": "Key Points",
+        "preset.proofread": "Proofread",
+        "preset.rewrite": "Rewrite",
+        "preset.friendly": "Friendly",
+        "preset.professional": "Professional",
+        "preset.concise": "Concise",
+        "preset.translate": "Translate",
+
+        // Capture chips
+        "capture.note": "Note",
+        "capture.remind": "Remind",
+
+        // Recent list
+        "recent.settings": "Settings (⌘,)",
+        "recent.header": "RECENT",
+        "recent.clear": "Clear",
+        "recent.filter": "Filter…",
+        "recent.badge.notes": "Notes",
+        "recent.badge.reminders": "Reminders",
+        "recent.hint.note": "Opens this note in Notes",
+        "recent.hint.reminder": "Opens this reminder in Reminders",
+        "recent.hint.ask": "Reopens this conversation",
+        "recent.delete": "Delete",
+        "recent.recent": "Recent",
+
+        // Clear-history confirm
+        "clear.title": "Clear recent history?",
+        "clear.body": "This permanently removes all recent questions. This can't be undone.",
+        "clear.cancel": "Cancel",
+        "clear.confirm": "Clear History",
+
+        // Result / thread
+        "result.setUpModel": "Set up your model",
+        "result.basedOnCopied": "Based on what you copied",
+        "result.you": "You",
+        "result.newConversation": "New conversation (←)",
+        "result.copiedToClipboard": "Copied to clipboard",
+        "result.copyToContinue": "Copy chat to continue in ChatGPT or Claude",
+        "result.followUp": "Ask a follow-up…",
+        "result.saveToNotes": "Save to Notes",
+        "result.savedToNotes": "Saved",
+        "result.saveHint": "Save this answer to Notes",
+
+        // Feedback / errors
+        "feedback.addedNotesClip": "Added to Notes · with clipboard",
+        "feedback.addedNotes": "Added to Notes",
+        "feedback.notesFailed": "Couldn't save to Notes. Try again.",
+        "feedback.addedReminders": "Added to Reminders%@",
+        "feedback.remindersFailed": "Couldn't save to Reminders. Try again.",
+        "error.generic": "Something went wrong. Try again.",
+
+        // Relative time
+        "time.justNow": "just now",
+        "time.minutesAgo": "%lldm ago",
+        "time.hoursAgo": "%lldh ago",
+        "time.daysAgo": "%lldd ago",
+
+        // Service errors
+        "notes.error.permission": "Allow access to Notes in System Settings → Privacy & Security → Automation.",
+        "notes.error.unavailable": "Couldn't reach Notes. Try again.",
+        "notes.error.fallback": "Couldn't save to Notes.",
+        "reminders.error.permission": "Allow access in System Settings → Privacy & Security → Reminders.",
+        "reminders.error.noList": "No Reminders list found. Open the Reminders app once, then try again.",
+
+        // AI service errors / stub
+        "service.error.http": "%@ request failed (HTTP %lld).",
+        "service.error.malformed": "%@ returned an unexpected response.",
+        "stub.noModel": "No model connected yet — this is the offline stub. Open Settings (⌘,) and connect a free OpenRouter account (or paste an API key) to get live answers.",
+
+        // OpenRouter OAuth
+        "or.error.noPort": "Couldn't open a local port for the sign-in redirect",
+        "or.error.cancelled": "Sign-in was cancelled in the browser",
+        "or.error.noKey": "OpenRouter didn't issue a key — try connecting again",
+        "or.error.unreachable": "Couldn't reach OpenRouter — check your connection and try again",
+
+        // OpenRouter browser-redirect pages (shown in the user's browser)
+        "or.page.connected.title": "Connected",
+        "or.page.connected.line": "Notch is connected — you can close this tab.",
+        "or.page.cancelled.title": "Cancelled",
+        "or.page.cancelled.line": "Sign-in was cancelled. You can close this tab and try again from Notch.",
+    ]
+
+    // MARK: 简体中文
+    static let zhHans: [String: String] = [
+        "appLang.system": "跟随系统",
+        "appLang.footer": "设置 Notch 界面本身显示的语言。「跟随系统」会跟着你的 Mac 走。",
+
+        "settings.title": "设置",
+        "settings.back": "返回输入",
+        "sidebar.model": "模型",
+        "sidebar.translation": "翻译",
+        "sidebar.general": "通用",
+        "sidebar.about": "关于",
+
+        "model.provider": "服务商",
+        "model.apiKey": "API 密钥",
+        "model.pasteKey": "粘贴你的 API 密钥",
+        "model.test": "测试",
+        "model.cancel": "取消",
+        "model.change": "更改",
+        "model.save": "保存",
+        "model.saved": "已保存",
+        "model.account": "账号",
+        "model.disconnect": "断开",
+        "model.connecting": "连接中…",
+        "model.finishSignIn": "去浏览器里完成登录…",
+        "model.pasteInstead": "改用密钥粘贴",
+        "model.connectOpenRouter": "连接 OpenRouter",
+        "model.label": "模型",
+        "model.default": "默认（%@）",
+        "model.footer.openrouter.pre": "免费使用——点「连接」会带你登录 ",
+        "model.footer.openrouter.host": "openrouter.ai",
+        "model.footer.openrouter.post": "，并把密钥存在这台 Mac 上、归你自己的账号所有。免费模型每天有请求上限；在那边充点额度就能提高。",
+        "model.footer.byok.pre": "只存在这台 Mac 上。没有密钥时，App 会用离线占位回复。去这里拿密钥：",
+        "model.footer.byok.post": "。",
+        "model.footer.env": "正在使用来自 %@ 环境变量的密钥，它会覆盖这里的设置。",
+
+        "conn.ok": "密钥已验证",
+        "conn.missingKey": "请输入密钥",
+        "conn.unauthorized": "密钥无效",
+        "conn.serverError": "服务器错误（%lld）",
+        "conn.offline": "无网络连接",
+        "conn.timedOut": "请求超时",
+        "conn.unavailable": "该服务商不支持测试",
+        "conn.unexpected": "响应异常",
+
+        "translation.language": "语言",
+        "translation.footer": "设置「翻译」按钮的目标语言。选「自动」时，由模型从复制的文本里推断目标语言。",
+        "translation.auto": "自动",
+
+        "general.showOn": "显示于",
+        "general.placement.footer": "外接显示器会得到一个菜单栏高度的小岛。",
+        "general.dockIcon": "程序坞图标",
+        "general.dockIcon.footer": "隐藏后它就是个纯浮层——用 ⌘, 或把鼠标移到刘海上来唤出。",
+        "general.appLanguage": "App 语言",
+        "placement.all": "所有显示器",
+        "placement.builtIn": "内建显示器",
+        "dock.hidden": "隐藏",
+        "dock.shown": "显示",
+
+        "about.update.to": "更新到 %@",
+        "about.updating": "更新中…",
+        "about.updateFailed": "更新失败——请到发布页手动下载",
+        "about.github": "GitHub",
+        "about.releases": "发布页",
+
+        "input.placeholder": "随便打点什么…",
+        "input.saving": "保存中…",
+        "input.copiedPrefix": "已复制：%@",
+        "hint.ask": "问问",
+        "hint.note": "记下",
+        "hint.remind": "提醒",
+        "recur.daily": " · 每天",
+        "recur.weekly": " · 每周",
+        "recur.weeklyOn": " · 每周 · %@",
+        "recur.monthly": " · 每月",
+
+        "preset.summarize": "总结",
+        "preset.keyPoints": "提炼要点",
+        "preset.proofread": "校对",
+        "preset.rewrite": "改写",
+        "preset.friendly": "更亲切",
+        "preset.professional": "更专业",
+        "preset.concise": "更简洁",
+        "preset.translate": "翻译",
+
+        "capture.note": "记下",
+        "capture.remind": "提醒",
+
+        "recent.settings": "设置（⌘,）",
+        "recent.header": "最近",
+        "recent.clear": "清空",
+        "recent.filter": "筛选…",
+        "recent.badge.notes": "备忘录",
+        "recent.badge.reminders": "提醒事项",
+        "recent.hint.note": "在「备忘录」中打开这条笔记",
+        "recent.hint.reminder": "在「提醒事项」中打开这条提醒",
+        "recent.hint.ask": "重新打开这段对话",
+        "recent.delete": "删除",
+        "recent.recent": "最近",
+
+        "clear.title": "清空最近记录？",
+        "clear.body": "这会永久删除所有最近的提问，无法撤销。",
+        "clear.cancel": "取消",
+        "clear.confirm": "清空记录",
+
+        "result.setUpModel": "先配置你的模型",
+        "result.basedOnCopied": "结合了你复制的内容",
+        "result.you": "你",
+        "result.newConversation": "新对话（←）",
+        "result.copiedToClipboard": "已复制到剪贴板",
+        "result.copyToContinue": "复制对话，去 ChatGPT 或 Claude 接着聊",
+        "result.followUp": "继续追问…",
+        "result.saveToNotes": "存到备忘录",
+        "result.savedToNotes": "已保存",
+        "result.saveHint": "把这条回答存到「备忘录」",
+
+        "feedback.addedNotesClip": "已存入备忘录 · 含剪贴板内容",
+        "feedback.addedNotes": "已存入备忘录",
+        "feedback.notesFailed": "存入备忘录失败，请重试。",
+        "feedback.addedReminders": "已加入提醒事项%@",
+        "feedback.remindersFailed": "加入提醒事项失败，请重试。",
+        "error.generic": "出了点问题，请重试。",
+
+        "time.justNow": "刚刚",
+        "time.minutesAgo": "%lld 分钟前",
+        "time.hoursAgo": "%lld 小时前",
+        "time.daysAgo": "%lld 天前",
+
+        "notes.error.permission": "请在「系统设置 → 隐私与安全性 → 自动化」中允许访问「备忘录」。",
+        "notes.error.unavailable": "无法连接「备忘录」，请重试。",
+        "notes.error.fallback": "存入备忘录失败。",
+        "reminders.error.permission": "请在「系统设置 → 隐私与安全性 → 提醒事项」中允许访问。",
+        "reminders.error.noList": "找不到提醒事项列表。请先打开一次「提醒事项」App，然后重试。",
+
+        "service.error.http": "%@ 请求失败（HTTP %lld）。",
+        "service.error.malformed": "%@ 返回了异常响应。",
+        "stub.noModel": "还没连接模型——现在是离线占位回复。打开设置（⌘,），连接一个免费的 OpenRouter 账号（或粘贴 API 密钥）就能拿到实时回答。",
+
+        "or.error.noPort": "无法为登录回调打开本地端口",
+        "or.error.cancelled": "已在浏览器中取消登录",
+        "or.error.noKey": "OpenRouter 没有签发密钥——请再连一次",
+        "or.error.unreachable": "无法连接 OpenRouter——请检查网络后重试",
+
+        "or.page.connected.title": "已连接",
+        "or.page.connected.line": "Notch 已连接——可以关掉这个标签页了。",
+        "or.page.cancelled.title": "已取消",
+        "or.page.cancelled.line": "登录已取消。关掉这个标签页，回 Notch 再试一次就好。",
+    ]
+
+    // MARK: 繁體中文
+    static let zhHant: [String: String] = [
+        "appLang.system": "跟隨系統",
+        "appLang.footer": "設定 Notch 介面本身顯示的語言。「跟隨系統」會跟著你的 Mac 走。",
+
+        "settings.title": "設定",
+        "settings.back": "返回輸入",
+        "sidebar.model": "模型",
+        "sidebar.translation": "翻譯",
+        "sidebar.general": "一般",
+        "sidebar.about": "關於",
+
+        "model.provider": "服務商",
+        "model.apiKey": "API 金鑰",
+        "model.pasteKey": "貼上你的 API 金鑰",
+        "model.test": "測試",
+        "model.cancel": "取消",
+        "model.change": "更改",
+        "model.save": "儲存",
+        "model.saved": "已儲存",
+        "model.account": "帳號",
+        "model.disconnect": "中斷連接",
+        "model.connecting": "連接中…",
+        "model.finishSignIn": "去瀏覽器裡完成登入…",
+        "model.pasteInstead": "改用金鑰貼上",
+        "model.connectOpenRouter": "連接 OpenRouter",
+        "model.label": "模型",
+        "model.default": "預設（%@）",
+        "model.footer.openrouter.pre": "免費使用——點「連接」會帶你登入 ",
+        "model.footer.openrouter.host": "openrouter.ai",
+        "model.footer.openrouter.post": "，並把金鑰存在這台 Mac 上、歸你自己的帳號所有。免費模型每天有請求上限；在那邊儲值一點額度就能提高。",
+        "model.footer.byok.pre": "只存在這台 Mac 上。沒有金鑰時，App 會用離線佔位回覆。去這裡拿金鑰：",
+        "model.footer.byok.post": "。",
+        "model.footer.env": "正在使用來自 %@ 環境變數的金鑰，它會覆蓋這裡的設定。",
+
+        "conn.ok": "金鑰已驗證",
+        "conn.missingKey": "請輸入金鑰",
+        "conn.unauthorized": "金鑰無效",
+        "conn.serverError": "伺服器錯誤（%lld）",
+        "conn.offline": "無網路連線",
+        "conn.timedOut": "請求逾時",
+        "conn.unavailable": "此服務商不支援測試",
+        "conn.unexpected": "回應異常",
+
+        "translation.language": "語言",
+        "translation.footer": "設定「翻譯」按鈕的目標語言。選「自動」時，由模型從複製的文字裡推斷目標語言。",
+        "translation.auto": "自動",
+
+        "general.showOn": "顯示於",
+        "general.placement.footer": "外接螢幕會得到一個選單列高度的小島。",
+        "general.dockIcon": "Dock 圖示",
+        "general.dockIcon.footer": "隱藏後它就是個純浮層——用 ⌘, 或把游標移到瀏海上來喚出。",
+        "general.appLanguage": "App 語言",
+        "placement.all": "所有螢幕",
+        "placement.builtIn": "內建螢幕",
+        "dock.hidden": "隱藏",
+        "dock.shown": "顯示",
+
+        "about.update.to": "更新到 %@",
+        "about.updating": "更新中…",
+        "about.updateFailed": "更新失敗——請到發佈頁手動下載",
+        "about.github": "GitHub",
+        "about.releases": "發佈頁",
+
+        "input.placeholder": "隨便打點什麼…",
+        "input.saving": "儲存中…",
+        "input.copiedPrefix": "已複製：%@",
+        "hint.ask": "問問",
+        "hint.note": "記下",
+        "hint.remind": "提醒",
+        "recur.daily": " · 每天",
+        "recur.weekly": " · 每週",
+        "recur.weeklyOn": " · 每週 · %@",
+        "recur.monthly": " · 每月",
+
+        "preset.summarize": "總結",
+        "preset.keyPoints": "提煉要點",
+        "preset.proofread": "校對",
+        "preset.rewrite": "改寫",
+        "preset.friendly": "更親切",
+        "preset.professional": "更專業",
+        "preset.concise": "更簡潔",
+        "preset.translate": "翻譯",
+
+        "capture.note": "記下",
+        "capture.remind": "提醒",
+
+        "recent.settings": "設定（⌘,）",
+        "recent.header": "最近",
+        "recent.clear": "清空",
+        "recent.filter": "篩選…",
+        "recent.badge.notes": "備忘錄",
+        "recent.badge.reminders": "提醒事項",
+        "recent.hint.note": "在「備忘錄」中開啟這則筆記",
+        "recent.hint.reminder": "在「提醒事項」中開啟這則提醒",
+        "recent.hint.ask": "重新開啟這段對話",
+        "recent.delete": "刪除",
+        "recent.recent": "最近",
+
+        "clear.title": "清空最近記錄？",
+        "clear.body": "這會永久刪除所有最近的提問，無法復原。",
+        "clear.cancel": "取消",
+        "clear.confirm": "清空記錄",
+
+        "result.setUpModel": "先設定你的模型",
+        "result.basedOnCopied": "結合了你複製的內容",
+        "result.you": "你",
+        "result.newConversation": "新對話（←）",
+        "result.copiedToClipboard": "已複製到剪貼簿",
+        "result.copyToContinue": "複製對話，去 ChatGPT 或 Claude 接著聊",
+        "result.followUp": "繼續追問…",
+        "result.saveToNotes": "存到備忘錄",
+        "result.savedToNotes": "已儲存",
+        "result.saveHint": "把這則回答存到「備忘錄」",
+
+        "feedback.addedNotesClip": "已存入備忘錄 · 含剪貼簿內容",
+        "feedback.addedNotes": "已存入備忘錄",
+        "feedback.notesFailed": "存入備忘錄失敗，請重試。",
+        "feedback.addedReminders": "已加入提醒事項%@",
+        "feedback.remindersFailed": "加入提醒事項失敗，請重試。",
+        "error.generic": "出了點問題，請重試。",
+
+        "time.justNow": "剛剛",
+        "time.minutesAgo": "%lld 分鐘前",
+        "time.hoursAgo": "%lld 小時前",
+        "time.daysAgo": "%lld 天前",
+
+        "notes.error.permission": "請在「系統設定 → 隱私權與安全性 → 自動化」中允許存取「備忘錄」。",
+        "notes.error.unavailable": "無法連接「備忘錄」，請重試。",
+        "notes.error.fallback": "存入備忘錄失敗。",
+        "reminders.error.permission": "請在「系統設定 → 隱私權與安全性 → 提醒事項」中允許存取。",
+        "reminders.error.noList": "找不到提醒事項列表。請先開啟一次「提醒事項」App，然後重試。",
+
+        "service.error.http": "%@ 請求失敗（HTTP %lld）。",
+        "service.error.malformed": "%@ 回傳了異常回應。",
+        "stub.noModel": "還沒連接模型——現在是離線佔位回覆。打開設定（⌘,），連接一個免費的 OpenRouter 帳號（或貼上 API 金鑰）就能拿到即時回答。",
+
+        "or.error.noPort": "無法為登入回呼開啟本地連接埠",
+        "or.error.cancelled": "已在瀏覽器中取消登入",
+        "or.error.noKey": "OpenRouter 沒有簽發金鑰——請再連一次",
+        "or.error.unreachable": "無法連接 OpenRouter——請檢查網路後重試",
+
+        "or.page.connected.title": "已連接",
+        "or.page.connected.line": "Notch 已連接——可以關掉這個分頁了。",
+        "or.page.cancelled.title": "已取消",
+        "or.page.cancelled.line": "登入已取消。關掉這個分頁，回 Notch 再試一次就好。",
+    ]
+}

@@ -801,7 +801,7 @@ extension View {
     /// whisper-thin specular rim the island uses, so it sits in the same material
     /// family. Works for both circular icon chips and capsule text pills.
     @ViewBuilder
-    func glassCapsule<S: InsettableShape>(in shape: S, brighter: Bool) -> some View {
+    func glassCapsule<S: InsettableShape>(in shape: S, brighter: Bool, tint: Color? = nil) -> some View {
         self
             .background {
                 if #available(macOS 26.0, *) {
@@ -816,8 +816,13 @@ extension View {
             // default — which would swallow taps meant for any control *nested* inside
             // a capsule (e.g. a remove × or inline button). Mark them non-interactive
             // so clicks pass through to the content below.
+            //
+            // `tint`, when set, washes the fill in a colour instead of plain white — a
+            // whisper of hue so a chip can read as a slightly different colour from its
+            // untinted siblings while staying in the same glass material.
             .overlay(
-                shape.fill(.white.opacity(brighter ? 0.10 : 0.04))
+                shape.fill((tint ?? .white)
+                    .opacity(tint != nil ? (brighter ? 0.30 : 0.20) : (brighter ? 0.10 : 0.04)))
                     .allowsHitTesting(false)
             )
             .overlay(
@@ -846,20 +851,40 @@ extension View {
 /// touch larger so a row of them reads as tappable actions, not metadata.
 struct ClipboardPresetChip: View {
     var title: String
+    /// A faint background tint for the leading capture chip ("Note"/"Remind"), set so
+    /// it reads as a slightly different *colour* from the plain-glass Ask presets beside
+    /// it — same size, same text weight, same hover feel, just a coloured wash over the
+    /// glass. `nil` (the default) leaves the chip untinted, identical to the presets.
+    var tint: Color? = nil
+    /// When set, a trailing "↵" key cap rides inside the chip — the discoverability cue
+    /// for the leading capture chip, which Enter on an empty prompt already fires. Only
+    /// the capture chip passes this; the plain Ask presets leave it `nil`.
+    var keyHint: Bool = false
     var action: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.sf(12, weight: .medium))
-                .foregroundStyle(hovering ? Tokens.text1 : Tokens.text2)
-                .lineLimit(1)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .glassCapsule(in: Capsule(), brighter: hovering)
-                .contentShape(Capsule())
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.sf(12, weight: .medium))
+                    .foregroundStyle(hovering ? Tokens.text1 : Tokens.text2)
+                    .lineLimit(1)
+                // The "↵" cue: a small return glyph, so the capture chip advertises its
+                // keyboard twin without spelling out the word "Enter". Brightens with the
+                // chip on hover. No background — it rides as a bare glyph beside the label.
+                if keyHint {
+                    Image(systemName: "return")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(hovering ? Tokens.text2 : Tokens.text3)
+                }
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, keyHint ? 10 : 12)
+            .padding(.vertical, 6)
+            .glassCapsule(in: Capsule(), brighter: hovering, tint: tint)
+            .contentShape(Capsule())
         }
         .buttonStyle(GlassPressStyle())
         .onHover { hovering = $0 }
@@ -930,10 +955,10 @@ struct ClearHistoryConfirm: View {
 
             VStack(spacing: 14) {
                 VStack(spacing: 6) {
-                    Text("Clear recent history?")
+                    Text(L("clear.title"))
                         .font(.sf(15, weight: .semibold))
                         .foregroundStyle(Tokens.text1)
-                    Text("This permanently removes all recent questions. This can't be undone.")
+                    Text(L("clear.body"))
                         .font(.sf(12))
                         .foregroundStyle(Tokens.text3)
                         .multilineTextAlignment(.center)
@@ -941,8 +966,8 @@ struct ClearHistoryConfirm: View {
                 }
 
                 HStack(spacing: 10) {
-                    ConfirmDialogButton(title: "Cancel", role: .cancel, action: onCancel)
-                    ConfirmDialogButton(title: "Clear History", role: .destructive, action: onConfirm)
+                    ConfirmDialogButton(title: L("clear.cancel"), role: .cancel, action: onCancel)
+                    ConfirmDialogButton(title: L("clear.confirm"), role: .destructive, action: onConfirm)
                 }
             }
             .padding(.horizontal, 20)

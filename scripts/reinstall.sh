@@ -2,7 +2,7 @@
 #
 # Notch — local dev reinstall.
 #
-# Builds the app from local source (Debug), replaces /Applications/NotchGlass.app
+# Builds the app from local source (Debug), replaces /Applications/Notch.app
 # with the freshly-built bundle, and relaunches it. This is the dev loop's
 # "reinstall" — it picks up uncommitted local changes, unlike install.sh which
 # pulls the latest published GitHub release.
@@ -17,7 +17,9 @@ cd "$(dirname "$0")/.."
 PROJECT="NotchGlass.xcodeproj"
 SCHEME="NotchGlass"
 CONFIG="Debug"
-APP_NAME="NotchGlass.app"
+# The Xcode target is still "NotchGlass", but PRODUCT_NAME is "Notch", so the
+# built bundle and executable are named Notch — that's what the Dock shows.
+APP_NAME="Notch.app"
 INSTALL_DIR="/Applications"
 
 bold=$'\033[1m'; dim=$'\033[2m'; red=$'\033[31m'; green=$'\033[32m'; reset=$'\033[0m'
@@ -46,6 +48,8 @@ src="$built_dir/$APP_NAME"
 # starts the new build clean. (No error if nothing is running.)
 info "Stopping any running ${APP_NAME}…"
 pkill -f "$APP_NAME/Contents/MacOS" 2>/dev/null || true
+# Also stop any legacy NotchGlass.app process from before the rename.
+pkill -f "NotchGlass.app/Contents/MacOS" 2>/dev/null || true
 # Give the process a moment to release the bundle before we overwrite it.
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   pgrep -f "$APP_NAME/Contents/MacOS" >/dev/null 2>&1 || break
@@ -57,6 +61,12 @@ dest="$INSTALL_DIR/$APP_NAME"
 if [ -d "$dest" ]; then
   info "Replacing existing ${APP_NAME}…"
   rm -rf "$dest" 2>/dev/null || die "Could not remove old ${dest} (try: sudo rm -rf \"$dest\")."
+fi
+# Remove the legacy bundle from before the rename so we don't keep two copies.
+legacy="$INSTALL_DIR/NotchGlass.app"
+if [ -d "$legacy" ]; then
+  info "Removing legacy NotchGlass.app…"
+  rm -rf "$legacy" 2>/dev/null || true
 fi
 
 info "Installing to ${INSTALL_DIR}…"
@@ -74,10 +84,10 @@ for _ in 1 2 3 4 5 6; do
   sleep 0.5
 done
 if ! $launched; then
-  ( "$dest/Contents/MacOS/NotchGlass" >/dev/null 2>&1 & )
+  ( "$dest/Contents/MacOS/Notch" >/dev/null 2>&1 & )
 fi
 sleep 1
-pgrep -x NotchGlass >/dev/null || die "Could not launch ${dest}."
+pgrep -x Notch >/dev/null || die "Could not launch ${dest}."
 
 ok "Reinstalled ${APP_NAME} from local build."
 printf '%sDone.%s Hover your notch to wake it.\n' "$bold" "$reset"

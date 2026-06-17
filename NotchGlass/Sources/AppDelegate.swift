@@ -57,8 +57,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let canvasHeight: CGFloat = 640
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Agent app: no Dock icon, no app menu — it's a pure overlay.
-        NSApp.setActivationPolicy(.accessory)
+        // Agent app by default: no Dock icon, no app menu — it's a pure overlay.
+        // The user can opt into a Dock icon (Settings → General), which flips this
+        // to `.regular`; `applyDockIconVisibility` reads the persisted choice.
+        applyDockIconVisibility()
 
         // Seed the configured flag to match the service the model launched with.
         model.isConfigured = AppDelegate.isConfigured()
@@ -154,6 +156,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if env["NOTCH_DEMO_HISTORY"] == "1" {
                 model.showHistory = true
             }
+            // NOTCH_DEMO_CLIP=<text> seeds a pending clipboard at launch (bypassing
+            // the freshness gate) so the preset row and its note/reminder capture
+            // chip can be inspected without a real copy-then-hover. Debug aid only.
+            if let clip = env["NOTCH_DEMO_CLIP"], !clip.isEmpty {
+                model.seedDemoClipboard(clip)
+            }
         }
         // Debug aid: NOTCH_SETTINGS=1 opens the panel straight into the inline
         // settings view at launch (via the same path as ⌘,) so it can be
@@ -180,6 +188,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.rebuildPanels()
+            }
+        }
+
+        // The Settings → General Dock-icon choice flips the activation policy live.
+        NotificationCenter.default.addObserver(
+            forName: .dockIconVisibilityChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.applyDockIconVisibility()
             }
         }
 
@@ -230,6 +249,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildPanels()
     }
 
+    /// Apply the persisted Dock-icon choice by setting the app's activation
+    /// policy. Called at launch and whenever the Settings → General toggle flips.
+    ///
+    /// Switching to `.regular` mid-session doesn't reliably surface the Dock icon
+    /// on its own — AppKit only commits the policy change once the app activates —
+    /// so we follow a show with an explicit activation. The panels are
+    /// non-activating overlays, so this never steals focus from them at rest; it
+    /// just lets the Dock icon appear right after the user asks for it instead of
+    /// on the next app switch. `.accessory` needs no such nudge.
+    private func applyDockIconVisibility() {
+        let visibility = DockIconVisibility.current
+        NSApp.setActivationPolicy(visibility.activationPolicy)
+        if visibility == .shown {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
     // MARK: - Panel management
 
     /// The screens that should carry a notch island under the current setting.
@@ -278,6 +314,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hasNotch = screen.safeAreaInsets.top > 0
         let root = ContentView(model: model)
             .frame(width: canvasWidth, height: canvasHeight, alignment: .top)
+            // The live string store — observed app-wide so an App Language switch
+            // re-renders every panel's SwiftUI tree instantly, no relaunch.
+            .environmentObject(Localization.shared)
             .environment(\.notchMetrics, NotchMetrics(
                 canvasWidth: canvasWidth,
                 displayID: id,
@@ -355,8 +394,8 @@ enum DisplayPlacement: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .all:     return "All displays"
-        case .builtIn: return "Built-in display"
+        case .all:     return L("placement.all")
+        case .builtIn: return L("placement.builtIn")
         }
     }
 
@@ -365,6 +404,145 @@ enum DisplayPlacement: String, CaseIterable, Identifiable {
         get {
             UserDefaults.standard.string(forKey: key)
                 .flatMap(DisplayPlacement.init) ?? .all
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: key)
+        }
+    }
+}
+
+/// Whether the app shows an icon in the Dock — persisted in `UserDefaults`,
+/// edited in Settings → General, consumed by `AppDelegate` to pick the
+/// activation policy. Hidden by default: this is a notch overlay, so it ships
+/// as a pure menu-bar-less accessory (`.accessory`); flipping it to shown makes
+/// it a `.regular` app with a Dock icon for users who want one place to relaunch
+/// or quit it from.
+enum DockIconVisibility: String, CaseIterable, Identifiable {
+    case hidden
+    case shown
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .hidden: return L("dock.hidden")
+        case .shown:  return L("dock.shown")
+        }
+    }
+
+    /// The `NSApplication.ActivationPolicy` this choice maps to. `.accessory`
+    /// keeps the app off the Dock and out of the ⌘-Tab switcher (the overlay's
+    /// natural home); `.regular` gives it a Dock icon and app menu.
+    var activationPolicy: NSApplication.ActivationPolicy {
+        switch self {
+        case .hidden: return .accessory
+        case .shown:  return .regular
+        }
+    }
+
+    private static let key = "dockIconVisibility"
+    static var current: DockIconVisibility {
+        get {
+            UserDefaults.standard.string(forKey: key)
+                .flatMap(DockIconVisibility.init) ?? .hidden
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: key)
+        }
+    }
+}
+
+/// The language the Translate chip targets — persisted in `UserDefaults`, edited
+/// in Settings → Translation, consumed by `ClipboardPreset.phrase(cjk:)`. The
+/// default `.auto` keeps the original behavior (the model infers a target from
+/// the copied text); any explicit choice appends "to <language>" to the phrase
+/// so a tap always lands in the language the user picked.
+enum TranslationLanguage: String, CaseIterable, Identifiable {
+    case auto
+    case english
+    case chineseSimplified
+    case chineseTraditional
+    case japanese
+    case korean
+    case french
+    case german
+    case spanish
+    case portuguese
+    case italian
+    case russian
+    case arabic
+    case hindi
+
+    var id: String { rawValue }
+
+    /// The picker label, shown in the user's interface language-agnostic form
+    /// (each language named in itself, the convention OS language pickers use).
+    var label: String {
+        switch self {
+        case .auto:               return L("translation.auto")
+        case .english:            return "English"
+        case .chineseSimplified:  return "简体中文"
+        case .chineseTraditional: return "繁體中文"
+        case .japanese:           return "日本語"
+        case .korean:             return "한국어"
+        case .french:             return "Français"
+        case .german:             return "Deutsch"
+        case .spanish:            return "Español"
+        case .portuguese:         return "Português"
+        case .italian:            return "Italiano"
+        case .russian:            return "Русский"
+        case .arabic:             return "العربية"
+        case .hindi:              return "हिन्दी"
+        }
+    }
+
+    /// The target named in English, for the Latin-script phrase ("Translate this
+    /// to Japanese"). `nil` for `.auto` — there's no target to name.
+    var englishName: String? {
+        switch self {
+        case .auto:               return nil
+        case .english:            return "English"
+        case .chineseSimplified:  return "Simplified Chinese"
+        case .chineseTraditional: return "Traditional Chinese"
+        case .japanese:           return "Japanese"
+        case .korean:             return "Korean"
+        case .french:             return "French"
+        case .german:             return "German"
+        case .spanish:            return "Spanish"
+        case .portuguese:         return "Portuguese"
+        case .italian:            return "Italian"
+        case .russian:            return "Russian"
+        case .arabic:             return "Arabic"
+        case .hindi:              return "Hindi"
+        }
+    }
+
+    /// The target named in Chinese, for the CJK phrase ("把这段翻译成日语"). `nil`
+    /// for `.auto`.
+    var cjkName: String? {
+        switch self {
+        case .auto:               return nil
+        case .english:            return "英语"
+        case .chineseSimplified:  return "简体中文"
+        case .chineseTraditional: return "繁体中文"
+        case .japanese:           return "日语"
+        case .korean:             return "韩语"
+        case .french:             return "法语"
+        case .german:             return "德语"
+        case .spanish:            return "西班牙语"
+        case .portuguese:         return "葡萄牙语"
+        case .italian:            return "意大利语"
+        case .russian:            return "俄语"
+        case .arabic:             return "阿拉伯语"
+        case .hindi:              return "印地语"
+        }
+    }
+
+    private static let key = "translationLanguage"
+    static var current: TranslationLanguage {
+        get {
+            UserDefaults.standard.string(forKey: key)
+                .flatMap(TranslationLanguage.init) ?? .auto
         }
         set {
             UserDefaults.standard.set(newValue.rawValue, forKey: key)

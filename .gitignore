@@ -23,6 +23,9 @@ Package.resolved
 Icon
 ._*
 
+# Claude Code local state
+.claude/
+
 # Misc
 *.moved-aside
 *.pbxuser

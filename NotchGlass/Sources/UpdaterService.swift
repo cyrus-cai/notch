@@ -206,7 +206,7 @@ final class UpdaterService: ObservableObject {
     /// The app bundle inside the extracted archive — at the root (CI zips with
     /// `--keepParent`) or one folder down, same tolerance as `install.sh`.
     private nonisolated static func findApp(in dir: URL, fm: FileManager) -> URL? {
-        let name = "NotchGlass.app"
+        let name = "Notch.app"
         let direct = dir.appendingPathComponent(name)
         if fm.fileExists(atPath: direct.path) { return direct }
         let kids = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []

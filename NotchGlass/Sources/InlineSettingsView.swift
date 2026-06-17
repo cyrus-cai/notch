@@ -76,16 +76,49 @@ struct InlineSettingsView: View {
     /// The left-hand category list — the point of the column is that the next
     /// setting gets a home without redesigning the panel.
     enum Section: String, CaseIterable, Identifiable {
-        case model = "Model"      // provider, API key, model override
-        case display = "Display"  // which screens carry a notch island
-        case about = "About"      // version + self-update
+        case model = "Model"             // provider, API key, model override
+        case translation = "Translation" // preferred target language for Translate
+        case general = "General"         // app-level toggles (display placement, Dock icon)
+        case about = "About"             // version + self-update
         var id: String { rawValue }
+
+        /// The sidebar label, localized. The raw value stays English (a stable
+        /// identity); this is what the user actually reads.
+        var title: String {
+            switch self {
+            case .model:       return L("sidebar.model")
+            case .translation: return L("sidebar.translation")
+            case .general:     return L("sidebar.general")
+            case .about:       return L("sidebar.about")
+            }
+        }
     }
-    @State private var section: Section = .model
+    /// The open category, backed by `model.settingsSection` (not plain `@State`)
+    /// so an App Language switch — which rebuilds this whole subtree via the
+    /// root's `.id(loc.language)` — keeps the user on the pane they were on (e.g.
+    /// General, where the language picker lives) instead of snapping back to Model.
+    private var section: Section {
+        get { Section(rawValue: model.settingsSection) ?? .model }
+        nonmutating set { model.settingsSection = newValue.rawValue }
+    }
+
+    /// The interface language — mirrors the persisted value; writes go through
+    /// `selectAppLanguage`, which republishes `Localization.shared` so the whole
+    /// app re-renders in the new language at once.
+    @State private var appLanguage: AppLanguage = .current
 
     /// Which screens carry an island — mirrors the persisted value; writes go
     /// through `selectPlacement` so `AppDelegate` rebuilds panels immediately.
     @State private var placement: DisplayPlacement = .current
+
+    /// The language the Translate chip targets — mirrors the persisted value;
+    /// writes go through `selectTranslationLanguage` so the next tap picks it up.
+    @State private var translationLanguage: TranslationLanguage = .current
+
+    /// Whether the app shows a Dock icon — mirrors the persisted value; writes go
+    /// through `selectDockIconVisibility` so `AppDelegate` flips the activation
+    /// policy immediately.
+    @State private var dockIconVisibility: DockIconVisibility = .current
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -116,9 +149,14 @@ struct InlineSettingsView: View {
                         }
                         modelRow
                         footer
-                    case .display:
+                    case .translation:
+                        translationLanguageRow
+                        translationFooter
+                    case .general:
+                        appLanguageRow
+                        appLanguageFooter
                         placementRow
-                        placementFooter
+                        dockIconRow
                     case .about:
                         aboutSection
                     }
@@ -157,7 +195,7 @@ struct InlineSettingsView: View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(Section.allCases) { s in
                 SidebarItem(
-                    title: s.rawValue,
+                    title: s.title,
                     selected: section == s,
                     // The gear's update dot continues here: it leads to settings,
                     // then the About entry carries it the rest of the way to the
@@ -169,7 +207,7 @@ struct InlineSettingsView: View {
             }
             Spacer(minLength: 0)
         }
-        .frame(width: 96, alignment: .topLeading)
+        .frame(width: 104, alignment: .topLeading)
         .padding(.trailing, 12)
     }
 
@@ -193,6 +231,7 @@ struct InlineSettingsView: View {
                 HStack(spacing: 6) {
                     Text(title)
                         .font(.sf(12.5, weight: .medium))
+                        .lineLimit(1)
                         .foregroundStyle(selected ? Tokens.text1 : (hovering ? Tokens.text2 : Tokens.text3))
                     if badged {
                         Circle()
@@ -231,9 +270,9 @@ struct InlineSettingsView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(RecentEntryStyle())
-            .help("Back to prompt")
+            .help(L("settings.back"))
 
-            Text("SETTINGS")
+            Text(L("settings.title"))
                 .font(.sf(10, weight: .semibold))
                 .tracking(0.8)
                 .foregroundStyle(Tokens.text4)
@@ -248,7 +287,7 @@ struct InlineSettingsView: View {
     // MARK: - Rows
 
     private var providerRow: some View {
-        settingRow(label: "Provider") {
+        settingRow(label: L("model.provider")) {
             GlassMenu(title: provider.displayName) {
                 ForEach(Provider.allCases) { p in
                     Button(p.displayName) { selectProvider(p) }
@@ -281,7 +320,7 @@ struct InlineSettingsView: View {
     private var keyRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
-                Text("API key")
+                Text(L("model.apiKey"))
                     .font(.sf(13, weight: .medium))
                     .foregroundStyle(Tokens.text2)
                     .frame(width: 64, alignment: .leading)
@@ -292,7 +331,7 @@ struct InlineSettingsView: View {
                         // `prompt:` ignores the color we set and renders its own dim gray,
                         // so we overlay a Text we fully control to get a clean bright hint.
                         if apiKey.isEmpty {
-                            Text("Paste your API key")
+                            Text(L("model.pasteKey"))
                                 .font(.sf(13))
                                 .foregroundStyle(Tokens.text2)
                                 .allowsHitTesting(false)
@@ -335,7 +374,7 @@ struct InlineSettingsView: View {
                     if testing {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Test") { test() }
+                        Button(L("model.test")) { test() }
                             .buttonStyle(.plain)
                             .font(.sf(11, weight: .semibold))
                             .foregroundStyle(canTest ? Tokens.text1 : Tokens.text4)
@@ -344,7 +383,7 @@ struct InlineSettingsView: View {
                     // Back out of editing without touching the stored key — only
                     // offered when there is a stored key to fall back to.
                     if !APIKeyStore.stored(for: provider).isEmpty {
-                        Button("Cancel") { stopEditingKey() }
+                        Button(L("model.cancel")) { stopEditingKey() }
                             .buttonStyle(.plain)
                             .font(.sf(11, weight: .semibold))
                             .foregroundStyle(Tokens.text2)
@@ -355,12 +394,12 @@ struct InlineSettingsView: View {
                     if testing {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Test") { test() }
+                        Button(L("model.test")) { test() }
                             .buttonStyle(.plain)
                             .font(.sf(11, weight: .semibold))
                             .foregroundStyle(Tokens.text1)
                     }
-                    Button("Change") { startEditingKey() }
+                    Button(L("model.change")) { startEditingKey() }
                         .buttonStyle(.plain)
                         .font(.sf(11, weight: .semibold))
                         .foregroundStyle(Tokens.text1)
@@ -369,7 +408,7 @@ struct InlineSettingsView: View {
                 // a save, then settles back to "Save" — no separate badge, no green
                 // checkmark, just the panel's own light text.
                 if editingKey || canSave || saved {
-                    Button(saved ? "Saved" : "Save") { save() }
+                    Button(saved ? L("model.saved") : L("model.save")) { save() }
                         .buttonStyle(.plain)
                         .font(.sf(11, weight: .semibold))
                         .foregroundStyle(saved ? Tokens.text2 : (canSave ? Tokens.text1 : Tokens.text4))
@@ -435,7 +474,7 @@ struct InlineSettingsView: View {
     private var openRouterAccountRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
-                Text("Account")
+                Text(L("model.account"))
                     .font(.sf(13, weight: .medium))
                     .foregroundStyle(Tokens.text2)
                     .frame(width: 64, alignment: .leading)
@@ -461,12 +500,12 @@ struct InlineSettingsView: View {
                     if testing {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Test") { test() }
+                        Button(L("model.test")) { test() }
                             .buttonStyle(.plain)
                             .font(.sf(11, weight: .semibold))
                             .foregroundStyle(Tokens.text1)
                     }
-                    Button("Disconnect") { disconnectOpenRouter() }
+                    Button(L("model.disconnect")) { disconnectOpenRouter() }
                         .buttonStyle(.plain)
                         .font(.sf(11, weight: .semibold))
                         .foregroundStyle(Tokens.text1)
@@ -476,19 +515,19 @@ struct InlineSettingsView: View {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
                             Text(orAuth.phase == .exchanging
-                                 ? "Connecting…"
-                                 : "Finish signing in in your browser…")
+                                 ? L("model.connecting")
+                                 : L("model.finishSignIn"))
                                 .font(.sf(12.5))
                                 .foregroundStyle(Tokens.text2)
                         }
                         .frame(height: 30)
-                        Button("Cancel") { orAuth.cancel() }
+                        Button(L("model.cancel")) { orAuth.cancel() }
                             .buttonStyle(.plain)
                             .font(.sf(11, weight: .semibold))
                             .foregroundStyle(Tokens.text2)
                     default:
                         connectButton
-                        Button("Paste a key instead") {
+                        Button(L("model.pasteInstead")) {
                             orAuth.acknowledge()
                             manualKeyEntry = true
                             startEditingKey()
@@ -523,7 +562,7 @@ struct InlineSettingsView: View {
             HStack(spacing: 7) {
                 Image(systemName: "link")
                     .font(.system(size: 11, weight: .semibold))
-                Text("Connect OpenRouter")
+                Text(L("model.connectOpenRouter"))
                     .font(.sf(13, weight: .medium))
             }
             .foregroundStyle(Tokens.text1)
@@ -580,14 +619,14 @@ struct InlineSettingsView: View {
     /// What the model chip shows: the saved id, or the resolved default when the
     /// sentinel empty string is selected.
     private var modelLabel: String {
-        modelID.isEmpty ? "Default (\(provider.defaultModel))" : modelID
+        modelID.isEmpty ? L("model.default", provider.defaultModel) : modelID
     }
 
     private var modelRow: some View {
-        settingRow(label: "Model") {
+        settingRow(label: L("model.label")) {
             HStack(spacing: 6) {
                 GlassMenu(title: modelLabel) {
-                    Button("Default (\(provider.defaultModel))") { modelID = "" }
+                    Button(L("model.default", provider.defaultModel)) { modelID = "" }
                     Divider()
                     ForEach(modelRows, id: \.self) { id in
                         Button(id) { modelID = id }
@@ -603,11 +642,13 @@ struct InlineSettingsView: View {
         }
     }
 
+    // MARK: - General
+
     /// Which screens carry a notch island. External monitors get a virtual
     /// notch that nests inside their menu bar; the choice applies immediately
     /// (AppDelegate listens and rebuilds the per-screen panels).
     private var placementRow: some View {
-        settingRow(label: "Show on") {
+        settingRow(label: L("general.showOn")) {
             GlassMenu(title: placement.label) {
                 ForEach(DisplayPlacement.allCases) { p in
                     Button(p.label) { selectPlacement(p) }
@@ -623,8 +664,100 @@ struct InlineSettingsView: View {
         NotificationCenter.default.post(name: .displayPlacementChanged, object: nil)
     }
 
-    private var placementFooter: some View {
-        Text("All displays gives every connected screen its own island — the real notch on this Mac, a menu-bar-height one on external monitors. Hover any of them.")
+    /// Whether the app shows a Dock icon. Off by default — the notch overlay is a
+    /// menu-bar-less accessory — but some users want one place to relaunch or quit
+    /// it from. The choice applies immediately (AppDelegate flips the activation
+    /// policy).
+    private var dockIconRow: some View {
+        settingRow(label: L("general.dockIcon")) {
+            GlassMenu(title: dockIconVisibility.label) {
+                ForEach(DockIconVisibility.allCases) { v in
+                    Button(v.label) { selectDockIconVisibility(v) }
+                }
+            }
+        }
+    }
+
+    private func selectDockIconVisibility(_ newValue: DockIconVisibility) {
+        guard newValue != dockIconVisibility else { return }
+        dockIconVisibility = newValue
+        DockIconVisibility.current = newValue
+        NotificationCenter.default.post(name: .dockIconVisibilityChanged, object: nil)
+    }
+
+    /// The interface language. `System` follows the Mac; the explicit picks
+    /// (English / 简体中文 / 繁體中文) each named in their own script. Switching
+    /// republishes `Localization.shared`, so the whole app — this panel included —
+    /// re-renders in the new language at once, no relaunch.
+    private var appLanguageRow: some View {
+        settingRow(label: L("general.appLanguage")) {
+            GlassMenu(title: appLanguage.label) {
+                ForEach(AppLanguage.allCases) { lang in
+                    Button {
+                        selectAppLanguage(lang)
+                    } label: {
+                        if lang == appLanguage {
+                            Label(lang.label, systemImage: "checkmark")
+                        } else {
+                            Text(lang.label)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func selectAppLanguage(_ newValue: AppLanguage) {
+        guard newValue != appLanguage else { return }
+        appLanguage = newValue
+        // Drives the live switch: republishing `language` re-renders every view
+        // reading `L(_:)` (and rebuilds the panel subtree via `.id(loc.language)`).
+        Localization.shared.language = newValue
+    }
+
+    private var appLanguageFooter: some View {
+        Text(L("appLang.footer"))
+            .font(.sf(11))
+            .foregroundStyle(Tokens.text4)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 2)
+    }
+
+    // MARK: - Translation
+
+    /// The language the Translate chip aims for. `Auto` leaves the target to the
+    /// model (the original behavior); any explicit pick is named in the phrase so
+    /// a tap always lands there. Applies to the next tap — no rebuild needed.
+    private var translationLanguageRow: some View {
+        settingRow(label: L("translation.language")) {
+            GlassMenu(title: translationLanguage.label) {
+                // The list is long (14 entries) — mark the active one with a native
+                // checkmark so the current target is obvious on open. A plain
+                // `Button` label of just the checkmark image gets SwiftUI to render
+                // it leading, the way the system menu marks a selected item.
+                ForEach(TranslationLanguage.allCases) { lang in
+                    Button {
+                        selectTranslationLanguage(lang)
+                    } label: {
+                        if lang == translationLanguage {
+                            Label(lang.label, systemImage: "checkmark")
+                        } else {
+                            Text(lang.label)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func selectTranslationLanguage(_ newValue: TranslationLanguage) {
+        guard newValue != translationLanguage else { return }
+        translationLanguage = newValue
+        TranslationLanguage.current = newValue
+    }
+
+    private var translationFooter: some View {
+        Text(L("translation.footer"))
             .font(.sf(11))
             .foregroundStyle(Tokens.text4)
             .fixedSize(horizontal: false, vertical: true)
@@ -641,16 +774,22 @@ struct InlineSettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 12) {
                 // App icon, if the bundle carries one — falls back gracefully.
+                // The icon ships with the standard macOS ~10% transparent margin
+                // (so the Dock renders it correctly), which would otherwise make it
+                // read small here. Scale up by the inverse of that footprint so the
+                // squircle fills the 44pt frame; the frame clips the bled-out margin.
                 if let icon = NSApp.applicationIconImage {
                     Image(nsImage: icon)
                         .resizable()
+                        .scaledToFill()
+                        .scaleEffect(1024.0 / 824.0)
                         .frame(width: 44, height: 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .clipped()
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Notch")
-                        .font(.sf(17, weight: .semibold))
+                        .font(.brand(18))
                         .foregroundStyle(Tokens.text1)
 
                     Text(UpdaterService.currentVersion)
@@ -679,14 +818,14 @@ struct InlineSettingsView: View {
         Group {
             switch updater.phase {
             case .available(let v):
-                Button("Update to \(v)") { updater.update() }
+                Button(L("about.update.to", v)) { updater.update() }
                     .buttonStyle(.plain)
                     .font(.sf(12, weight: .semibold))
                     .foregroundStyle(Tokens.text1)
             case .updating:
                 HStack(spacing: 7) {
                     ProgressView().controlSize(.small)
-                    Text("Updating…")
+                    Text(L("about.updating"))
                         .font(.sf(12, weight: .semibold))
                         .foregroundStyle(Tokens.text2)
                 }
@@ -698,7 +837,7 @@ struct InlineSettingsView: View {
                         Circle()
                             .fill(Tokens.danger)
                             .frame(width: 6, height: 6)
-                        Text("Update failed — get it from the releases page")
+                        Text(L("about.updateFailed"))
                             .font(.sf(11.5, weight: .medium))
                             .foregroundStyle(Tokens.danger.opacity(0.92))
                     }
@@ -720,14 +859,14 @@ struct InlineSettingsView: View {
     /// same understated language as the Model footer's signup host.
     private var aboutLinks: some View {
         HStack(spacing: 14) {
-            Button("GitHub") {
+            Button(L("about.github")) {
                 NSWorkspace.shared.open(URL(string: "https://github.com/\(UpdaterService.repo)")!)
             }
             .buttonStyle(.plain)
             .font(.sf(11.5, weight: .medium))
             .foregroundStyle(Tokens.text2)
 
-            Button("Releases") {
+            Button(L("about.releases")) {
                 NSWorkspace.shared.open(UpdaterService.releasesPage)
             }
             .buttonStyle(.plain)
@@ -739,7 +878,7 @@ struct InlineSettingsView: View {
     private var footer: some View {
         Group {
             if envOverride {
-                Text("A key from the \(provider.envVarName) environment variable is in use; it overrides these fields.")
+                Text(L("model.footer.env", provider.envVarName))
             } else {
                 Text(footerText)
             }
@@ -752,25 +891,26 @@ struct InlineSettingsView: View {
 
     /// Footer help with the signup host as a clickable link, built as an
     /// `AttributedString` so the sentence stays one `Text` while only the host
-    /// opens `provider.signupURL`.
+    /// opens `provider.signupURL`. The pre/post fragments are localized; the host
+    /// itself is the literal domain, so it stays the same in every language.
     private var footerText: AttributedString {
         if provider == .openrouter {
             // The free-by-default story: connect once, the key lives in the
             // user's own account, and the daily cap is theirs alone.
-            var text = AttributedString("Free to use — Connect signs you in to ")
+            var text = AttributedString(L("model.footer.openrouter.pre"))
             var host = AttributedString("openrouter.ai")
             host.link = URL(string: "https://openrouter.ai")
             host.foregroundColor = Tokens.text2
             text.append(host)
-            text.append(AttributedString(" and stores a key for your own account on this Mac. Free models have a daily request cap; adding credits there raises it."))
+            text.append(AttributedString(L("model.footer.openrouter.post")))
             return text
         }
-        var text = AttributedString("Stored on this Mac. Without a key the app uses an offline stub. Get a key at ")
+        var text = AttributedString(L("model.footer.byok.pre"))
         var host = AttributedString(provider.signupHost)
         host.link = provider.signupURL
         host.foregroundColor = Tokens.text2
         text.append(host)
-        text.append(AttributedString("."))
+        text.append(AttributedString(L("model.footer.byok.post")))
         return text
     }
 

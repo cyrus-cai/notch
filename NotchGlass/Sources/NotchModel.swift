@@ -296,9 +296,9 @@ final class NotchModel: ObservableObject {
     /// Enter sends the line.
     var submitLabel: String {
         switch effectiveSubmitPanel {
-        case .chat:     return "Ask"
-        case .note:     return "Note"
-        case .reminder: return "Remind\(submitHintSuffix)"
+        case .chat:     return L("hint.ask")
+        case .note:     return L("hint.note")
+        case .reminder: return L("hint.remind") + submitHintSuffix
         }
     }
 
@@ -319,15 +319,15 @@ final class NotchModel: ObservableObject {
         guard effectiveSubmitPanel == .reminder else { return "" }
         switch RemindersService.recurrenceKind(in: text) {
         case .daily:
-            return " \u{00B7} Daily"
+            return L("recur.daily")
         case .weekly(let ekDay):
             if let ekDay {
                 let dayIdx = ekDay.rawValue - 1   // EKWeekday 1-Sun…7-Sat \u{2192} 0-based
-                return " \u{00B7} Weekly \u{00B7} \(Calendar.current.shortWeekdaySymbols[dayIdx % 7])"
+                return L("recur.weeklyOn", Calendar.current.shortWeekdaySymbols[dayIdx % 7])
             }
-            return " \u{00B7} Weekly"
+            return L("recur.weekly")
         case .monthly:
-            return " \u{00B7} Monthly"
+            return L("recur.monthly")
         case nil:
             return ""
         }
@@ -379,6 +379,19 @@ final class NotchModel: ObservableObject {
     /// actually point at. `nil` when the clipboard is stale, empty, oversized, or
     /// an unsupported type.
     @Published var pendingClipboard: String? = nil
+
+    /// What the *copied text itself* reads as, when it leans note/reminder rather than
+    /// something to ask about — `.note` or `.reminder`, never `.chat`, and `nil` while
+    /// it reads as an Ask, is ambiguous, or the classifier hasn't landed yet. Computed
+    /// off the same engine the input box uses, but on the clipboard's text instead of
+    /// the prompt's, and published asynchronously by `classifyPendingClipboard()` when
+    /// a new clip becomes pending. Drives a leading "Note"/"Remind" capture chip in the
+    /// preset row so a copied jot can be filed in one tap, ahead of the Ask presets.
+    @Published private(set) var pendingClipboardCapture: Panel? = nil
+
+    /// In-flight clipboard classification — superseded (cancelled) when a new clip
+    /// becomes pending, so only the read of what's actually copied lands.
+    private var clipboardClassifyTask: Task<Void, Never>?
 
     /// Set for exactly one `submit()` when a clipboard preset chip is fired, so that
     /// turn folds in the copied text *unconditionally* — skipping the `isReferentialQuery`
@@ -442,6 +455,11 @@ final class NotchModel: ObservableObject {
     /// confirmation card is mounted on the *island* — so it sits in the middle of
     /// the whole glass panel rather than anchored under the pill near the bottom.
     @Published var confirmingClear = false
+    /// The open settings category (raw value of `InlineSettingsView.Section`),
+    /// held here rather than as view-local `@State` so it survives the panel
+    /// subtree rebuild an App Language switch triggers (root `.id(loc.language)`).
+    /// Without this, switching language while in General would snap back to Model.
+    @Published var settingsSection: String = "Model"
     /// Which recent row the keyboard has highlighted while navigating the list
     /// with ↑/↓. `nil` means nothing is highlighted yet — the list may be open
     /// (revealed by mouse) but the caret is still in the input. The first ↓
@@ -533,8 +551,53 @@ final class NotchModel: ObservableObject {
         let next = clipboardContextIfEligible()
         // A new (or cleared) clipboard always reopens the preset row collapsed, so the
         // panel never inherits a previous clip's expanded state.
-        if next != pendingClipboard { clipboardPresetsExpanded = false }
+        if next != pendingClipboard {
+            clipboardPresetsExpanded = false
+            // Drop the prior clip's verdict *synchronously* so its chip can't linger
+            // over the new clip while the async re-classification is still in flight —
+            // otherwise a "Note" chip from the old copy could briefly sit (and act) on
+            // the new one. classifyPendingClipboard republishes once the read lands.
+            pendingClipboardCapture = nil
+            classifyPendingClipboard(next)
+        }
         pendingClipboard = next
+    }
+
+    /// Read whether the *copied text* is itself a note/reminder, and publish the verdict
+    /// to `pendingClipboardCapture`. Mirrors the input box's `scheduleClassification`,
+    /// but on the clipboard string and with no debounce — a clipboard changes far less
+    /// often than a keystroke, so we classify the one snapshot directly. Clears the
+    /// capture immediately for an empty/stale clip so a leftover verdict can't linger.
+    ///
+    /// The note→reminder split is the same structural rule the prompt uses: a note that
+    /// names a future time is a reminder. We compute that date here from the *clip*
+    /// (not `detectedDue`, which tracks the input box) so the chip and the eventual
+    /// write agree on what got copied.
+    private func classifyPendingClipboard(_ clip: String?) {
+        clipboardClassifyTask?.cancel()
+        guard let clip, !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            pendingClipboardCapture = nil
+            return
+        }
+        clipboardClassifyTask = Task { [weak self] in
+            let reading = await IntentEngine.shared.classify(clip)
+            guard !Task.isCancelled, let self, self.pendingClipboard == clip else { return }
+            // Only a confident *note* read earns a capture chip; an Ask (or anything
+            // unsure) leaves the row as the existing preset-only Ask shortcuts.
+            let verdict: Panel?
+            if reading.confidence >= Self.intentActionFloor, reading.intent == .note {
+                let due = RemindersService.futureDate(in: clip)
+                    ?? RemindersService.recurrenceDate(in: clip)
+                verdict = due != nil ? .reminder : .note
+            } else {
+                verdict = nil
+            }
+            // The read lands ~10-20ms after the preset row is already on screen. The
+            // chip's appearance is animated by an `.animation(value:)` on the row itself
+            // (see clipboardPresetChips) — keying the spring there, not here, keeps the
+            // FlowLayout reflow and the chip's own transition on one transaction.
+            self.pendingClipboardCapture = verdict
+        }
     }
 
     /// File the *current answer* (the last settled assistant turn) into Apple Notes
@@ -575,7 +638,7 @@ final class NotchModel: ObservableObject {
                 self.lastSavedToReminders = false
                 completion(true)
             case .failure(let err):
-                self.noteError = err.errorDescription ?? "Couldn't save to Notes. Try again."
+                self.noteError = err.errorDescription ?? L("feedback.notesFailed")
                 completion(false)
             }
         }
@@ -707,6 +770,8 @@ final class NotchModel: ObservableObject {
         // Drop the preview so the resting panel stays minimal; the next open will
         // re-evaluate and surface anything fresh.
         pendingClipboard = nil
+        clipboardClassifyTask?.cancel()
+        pendingClipboardCapture = nil
     }
 
     /// "Back" / start a new conversation: drop the current Q&A from the screen and
@@ -1029,17 +1094,19 @@ final class NotchModel: ObservableObject {
 
         var id: String { rawValue }
 
-        /// The short chip label, in the copied text's script.
-        func label(cjk: Bool) -> String {
+        /// The short chip label, in the app's interface language. (The *phrase*
+        /// sent to the model still follows the copied text's script — see
+        /// `phrase(cjk:)` — but the chip the user reads tracks the UI language.)
+        var label: String {
             switch self {
-            case .summarize:    return cjk ? "总结"   : "Summarize"
-            case .keyPoints:    return cjk ? "要点"   : "Key Points"
-            case .proofread:    return cjk ? "校对"   : "Proofread"
-            case .rewrite:      return cjk ? "改写"   : "Rewrite"
-            case .friendly:     return cjk ? "更友好" : "Friendly"
-            case .professional: return cjk ? "更正式" : "Professional"
-            case .concise:      return cjk ? "更精炼" : "Concise"
-            case .translate:    return cjk ? "翻译"   : "Translate"
+            case .summarize:    return L("preset.summarize")
+            case .keyPoints:    return L("preset.keyPoints")
+            case .proofread:    return L("preset.proofread")
+            case .rewrite:      return L("preset.rewrite")
+            case .friendly:     return L("preset.friendly")
+            case .professional: return L("preset.professional")
+            case .concise:      return L("preset.concise")
+            case .translate:    return L("preset.translate")
             }
         }
 
@@ -1054,7 +1121,20 @@ final class NotchModel: ObservableObject {
             case .friendly:     return cjk ? "把这段改得更友好一些"     : "Rewrite this to sound more friendly"
             case .professional: return cjk ? "把这段改得更正式一些"     : "Rewrite this to sound more professional"
             case .concise:      return cjk ? "把这段改得更精炼"         : "Rewrite this to be more concise"
-            case .translate:    return cjk ? "翻译这段"               : "Translate this"
+            case .translate:
+                // Honor the user's preferred target language: `.auto` keeps the
+                // original object-less phrase (model infers the target); any
+                // explicit pick names it so the tap always lands in that
+                // language. The named form stays object-less ("把这段…"/"this")
+                // so `isReferentialQuery` still pairs it with the clipboard.
+                let lang = TranslationLanguage.current
+                if cjk {
+                    guard let name = lang.cjkName else { return "翻译这段" }
+                    return "把这段翻译成\(name)"
+                } else {
+                    guard let name = lang.englishName else { return "Translate this" }
+                    return "Translate this to \(name)"
+                }
             }
         }
 
@@ -1126,6 +1206,32 @@ final class NotchModel: ObservableObject {
         // can misjudge). `submit()` reads and clears the flag this turn.
         forceClipboardInjection = true
         submit()
+    }
+
+    /// Fire the leading capture chip: file the *copied text itself* straight into
+    /// Apple Notes or Reminders, the one-tap path for when you copied a jot rather
+    /// than something to ask about. Drops the clip into `text` and routes through the
+    /// existing `submitNote()`/`submitReminder()` so the write, the "Added to…" cue,
+    /// the Recent row, and (for reminders) `detectedDue` + the recurrence suffix all
+    /// come for free — `text.didSet` recomputes the due date from the clip we just
+    /// assigned, so the reminder lands at the time the copied line names. No-op if the
+    /// clipboard went stale between render and tap.
+    func runClipboardCapture(_ panel: Panel) {
+        // No-op if the clipboard went stale, or a save is already in flight — the chip
+        // vanishes the instant we fire (we clear the verdict below), but the Enter path
+        // could re-enter before the async write lands, which would file a duplicate.
+        guard let clip = pendingClipboard, !noteSaving else { return }
+        // Consume the verdict up front: the chip's whole purpose is this one tap, so it
+        // disappears immediately rather than lingering over already-filed text (where a
+        // second tap would file a duplicate). The clipboard preview itself stays — the
+        // copied text is still a valid Ask referent for the presets beside it.
+        manualPanelOverride = nil
+        pendingClipboardCapture = nil
+        text = clip
+        switch panel {
+        case .reminder: submitReminder()
+        case .note, .chat: submitNote()
+        }
     }
 
     func submit() {
@@ -1247,7 +1353,7 @@ final class NotchModel: ObservableObject {
                 // The error placeholder is only worth showing on screen — a
                 // detached round that failed is dropped, not filed into Recent.
                 if self.isOnScreen(answerID: answerID) {
-                    self.updateAnswer(id: answerID, text: "Something went wrong. Try again.")
+                    self.updateAnswer(id: answerID, text: L("error.generic"))
                     self.markFinished(id: answerID)
                     self.mode = .result
                 }
@@ -1342,13 +1448,13 @@ final class NotchModel: ObservableObject {
             case .success(let noteID):
                 self.lastSavedToReminders = false
                 self.persistCapture(line, source: .note, link: noteID)
-                self.flashSavedCue(usedClip ? "Added to Notes \u{00B7} with clipboard" : "Added to Notes")
+                self.flashSavedCue(usedClip ? L("feedback.addedNotesClip") : L("feedback.addedNotes"))
             case .failure(let err):
                 // Put the line back so the user can retry / copy it, but only if
                 // they haven't already started typing the next one — clobbering a
                 // fresh draft would be worse than losing the failed line to the cue.
                 if self.text.isEmpty { self.text = line }
-                self.noteError = err.errorDescription ?? "Couldn't save to Notes. Try again."
+                self.noteError = err.errorDescription ?? L("feedback.notesFailed")
             }
         }
     }
@@ -1389,7 +1495,7 @@ final class NotchModel: ObservableObject {
                 let suffix: String
                 switch RemindersService.recurrenceKind(in: line) {
                 case .daily:
-                    suffix = " \u{00B7} Daily"
+                    suffix = L("recur.daily")
                 case .weekly(let ekDay):
                     let dayIdx: Int
                     if let ekDay {
@@ -1401,19 +1507,19 @@ final class NotchModel: ObservableObject {
                     }
                     if dayIdx >= 0 {
                         let abbr = Calendar.current.shortWeekdaySymbols[dayIdx % 7]
-                        suffix = " \u{00B7} Weekly \u{00B7} \(abbr)"
+                        suffix = L("recur.weeklyOn", abbr)
                     } else {
-                        suffix = " \u{00B7} Weekly"
+                        suffix = L("recur.weekly")
                     }
                 case .monthly:
-                    suffix = " \u{00B7} Monthly"
+                    suffix = L("recur.monthly")
                 case nil:
                     suffix = ""
                 }
-                self.flashSavedCue("Added to Reminders\(suffix)")
+                self.flashSavedCue(L("feedback.addedReminders", suffix))
             case .failure(let err):
                 if self.text.isEmpty { self.text = line }
-                self.noteError = err.errorDescription ?? "Couldn't save to Reminders. Try again."
+                self.noteError = err.errorDescription ?? L("feedback.remindersFailed")
             }
         }
     }
@@ -1571,6 +1677,15 @@ final class NotchModel: ObservableObject {
         mode = .result
     }
 
+    /// Debug-only: seed a pending clipboard (bypassing the freshness/changeCount gate)
+    /// so the preset row — and the note/reminder capture chip — can be inspected at
+    /// launch without a real copy-then-hover. Runs the same async classification the
+    /// live path does. Used by the `NOTCH_DEMO_CLIP` env path in `AppDelegate`.
+    func seedDemoClipboard(_ text: String) {
+        pendingClipboard = text
+        classifyPendingClipboard(text)
+    }
+
     /// Debug-only: seed a long multi-turn thread so the result view's scrolling and
     /// edge fades can be inspected at launch without clicking. Used by the
     /// `NOTCH_DEMO_THREAD` env path in `AppDelegate`.
@@ -1709,6 +1824,17 @@ final class NotchModel: ObservableObject {
         return true
     }
 
+    /// Enter on an *empty* idle prompt while a capture chip is showing: file the copied
+    /// jot straight to Notes/Reminders, the keyboard twin of tapping the leading chip.
+    /// Only fires with nothing typed — once there's text, Enter belongs to that line
+    /// (routed by intent), so this never steals a real submit. Returns `true` when it
+    /// handled the key so the caller stops before the empty `submitCurrent()` no-op.
+    func confirmClipboardCaptureIfIdle() -> Bool {
+        guard !hasText, let capture = pendingClipboardCapture else { return false }
+        runClipboardCapture(capture)
+        return true
+    }
+
     /// Esc / outside-collapse for the list alone: fold it back to the input
     /// without closing the whole panel. Returns `false` when the list isn't
     /// open, letting Esc fall through to its usual full-close.
@@ -1778,8 +1904,8 @@ final class NotchModel: ObservableObject {
 /// Relative time strings ("just now", "12m ago"…) matching the prototype.
 func relativeTime(_ date: Date) -> String {
     let s = Int(Date().timeIntervalSince(date))
-    if s < 60 { return "just now" }
-    if s < 3600 { return "\(s / 60)m ago" }
-    if s < 86400 { return "\(s / 3600)h ago" }
-    return "\(s / 86400)d ago"
+    if s < 60 { return L("time.justNow") }
+    if s < 3600 { return L("time.minutesAgo", s / 60) }
+    if s < 86400 { return L("time.hoursAgo", s / 3600) }
+    return L("time.daysAgo", s / 86400)
 }

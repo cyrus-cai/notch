@@ -124,15 +124,17 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
     /// pasting a key (one-click OAuth connect, free models) — the default for
     /// fresh installs.
     case openrouter
-    case mimo
-    case deepseek
+    // International majors first, then domestic providers by familiarity —
+    // OpenRouter stays at the top as the keyless default for fresh installs.
     case openai
-    case gemini
     case anthropic
-    case minimax
-    case glm
+    case gemini
+    case deepseek
     case qwen
+    case glm
     case kimi
+    case minimax
+    case mimo
 
     var id: String { rawValue }
 
@@ -267,7 +269,7 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .openrouter:
             return ["HTTP-Referer": "https://github.com/\(UpdaterService.repo)",
-                    "X-Title": "NotchGlass"]
+                    "X-Title": "Notch"]
         default:
             return [:]
         }
@@ -295,8 +297,7 @@ struct StubAIService: AIService {
         let text = """
         \(contextNote)Here's a placeholder answer to **\(q)**.
 
-        No model connected yet — this is the offline stub. Open Settings (⌘,) and \
-        connect a free OpenRouter account (or paste an API key) to get live answers.
+        \(L("stub.noModel"))
         """
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -378,9 +379,9 @@ struct OpenAICompatAIService: AIService {
         var errorDescription: String? {
             switch self {
             case .http(let provider, let status, _):
-                return "\(provider) request failed (HTTP \(status))."
+                return L("service.error.http", provider, status)
             case .malformedResponse(let provider):
-                return "\(provider) returned an unexpected response."
+                return L("service.error.malformed", provider)
             }
         }
     }
@@ -708,12 +709,12 @@ enum ConnectivityTest {
         /// Short user-facing line for the Settings footer.
         var message: String {
             switch self {
-            case .ok:                 return "Key verified"
-            case .missingKey:         return "Enter a key"
-            case .unauthorized:       return "Invalid key"
-            case .http(let code):     return "Server error (\(code))"
-            case .offline:            return "No connection"
-            case .timedOut:           return "Timed out"
+            case .ok:                 return L("conn.ok")
+            case .missingKey:         return L("conn.missingKey")
+            case .unauthorized:       return L("conn.unauthorized")
+            case .http(let code):     return L("conn.serverError", code)
+            case .offline:            return L("conn.offline")
+            case .timedOut:           return L("conn.timedOut")
             case .failed(let why):    return why
             }
         }
@@ -728,7 +729,7 @@ enum ConnectivityTest {
         guard !key.isEmpty else { return .missingKey }
         guard let url = probeURL(for: provider) else {
             // No /models sibling we can derive — fall back to "we can't test this".
-            return .failed("Test unavailable for this provider")
+            return .failed(L("conn.unavailable"))
         }
 
         var req = URLRequest(url: url)
@@ -744,7 +745,7 @@ enum ConnectivityTest {
         do {
             let (_, response) = try await URLSession.shared.data(for: req)
             guard let http = response as? HTTPURLResponse else {
-                return .failed("Unexpected response")
+                return .failed(L("conn.unexpected"))
             }
             switch http.statusCode {
             case 200..<300:   return .ok

@@ -18,4 +18,7 @@ extension Notification.Name {
     /// Posted after the user changes the Display placement (Settings → Display),
     /// so `AppDelegate` can create/destroy per-screen panels immediately.
     static let displayPlacementChanged = Notification.Name("displayPlacementChanged")
+    /// Posted after the user toggles the Dock icon (Settings → General), so
+    /// `AppDelegate` can switch the app's activation policy live.
+    static let dockIconVisibilityChanged = Notification.Name("dockIconVisibilityChanged")
 }

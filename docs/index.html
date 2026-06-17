@@ -11,34 +11,61 @@
 <meta property="og:url" content="https://cyrus-cai.github.io/notch/">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://cyrus-cai.github.io/notch/og.png">
-<link rel="icon" href="icon.png">
+<link rel="icon" href="favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500&family=Prompt:wght@500&display=swap" rel="stylesheet">
 <script>document.documentElement.className = 'js';</script>
 <style>
   /* ================= page ================= */
 
   :root {
-    --bg: #050507;
+    /* The page reads light now — a warm off-white that echoes the Golden Gate
+       wallpaper's sand, never a clinical pure white. Text inverts to near-black;
+       the one thing that stays dark is the Mac on stage, because the product's
+       whole trick is a black panel that fuses into the notch. */
+    --bg: #f4f2ee;
+    /* Ink scale — near-black headline down to a soft grey, the light-mode
+       counterpart to the old white-on-black alpha ramp. */
+    --ink1: rgba(20,20,24,.92);   /* headline / primary text */
+    --ink2: rgba(28,28,34,.74);   /* secondary */
+    --ink3: rgba(40,40,48,.54);   /* lead paragraphs */
+    --ink4: rgba(48,48,56,.42);   /* fine print */
     /* Headlines now speak in the system's own display voice — SF Pro Display,
        tightened and weighted — instead of a decorative book serif. Clean,
        Apple-native, unmistakably a product page rather than an art piece. */
     --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Helvetica Neue", sans-serif;
     /* The wordmark keeps its serif voice — Fraunces, the one place a little
        character earns its keep: the name of the thing. */
-    --brand: "Fraunces", Georgia, serif;
+    --brand: "Prompt", -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
     --sf: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
     /* SwiftUI .spring(response: 0.42, dampingFraction: 0.72) ≈ slight overshoot */
     --spring: cubic-bezier(.32, 1.08, .35, 1);
+    /* Borrowed from Typeless: UI fragments don't sit flat — they float off the
+       page on a soft, wide, low-contrast shadow (their tokens were
+       0 12px 16px rgba(0,0,0,.08) over a grey ambient). Two tiers: a resting
+       lift and a hover lift. The accent is their leaf-green check, used only
+       on confirmations and the "+" affordances. */
+    --float: 0 1px 2px rgba(40,40,48,.04), 0 8px 18px -10px rgba(40,40,48,.16), 0 24px 40px -24px rgba(60,70,90,.18);
+    --float-hi: 0 2px 4px rgba(40,40,48,.06), 0 14px 28px -12px rgba(40,40,48,.22), 0 34px 56px -28px rgba(60,70,90,.24);
+    --accent: #5a9e2f;          /* Typeless leaf-green, slightly deepened for legibility on white */
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
 
   body {
-    background: var(--bg);
+    /* Typeless backdrops its illustrations in a soft wash — a cool blue-grey
+       field with a warm peach bleed, never a flat fill. We carry the same wash
+       across the whole page, sitting under the warm off-white so the floating
+       cards below have that same dreamy ground to lift off of. */
+    background:
+      radial-gradient(120% 80% at 82% 4%, rgba(120,150,210,.10), transparent 46%),
+      radial-gradient(120% 70% at 10% 30%, rgba(255,180,130,.07), transparent 50%),
+      radial-gradient(140% 90% at 50% 120%, rgba(120,150,210,.08), transparent 55%),
+      var(--bg);
+    background-attachment: fixed;
     font-family: var(--sf);
     -webkit-font-smoothing: antialiased;
   }
@@ -54,20 +81,23 @@
     overflow: hidden;
   }
 
-  ::selection { background: rgba(255,255,255,.85); color: #000; }
+  ::selection { background: rgba(20,20,24,.16); color: #1a1a1f; }
 
   /* Dim light source at the top of the page — the wallpaper's own light
-     bleeding past the screen edge: warm from the left, cool from the right. */
+     bleeding past the screen edge: warm from the left, cool from the right.
+     On the light page these read as gentle tints, not glows. */
   .glow {
     position: fixed; inset: 0; pointer-events: none; z-index: 0;
     background:
-      radial-gradient(42% 34% at 36% -8%, rgba(255,110,70,.07), transparent 70%),
-      radial-gradient(48% 38% at 66% -8%, rgba(64,92,255,.11), transparent 70%);
+      radial-gradient(46% 36% at 34% -8%, rgba(255,120,60,.10), transparent 70%),
+      radial-gradient(52% 40% at 68% -8%, rgba(70,110,255,.09), transparent 70%);
   }
 
   .grain {
     position: fixed; inset: 0; pointer-events: none; z-index: 50;
-    opacity: .05; mix-blend-mode: overlay;
+    /* multiply over a light field instead of overlay over a dark one, so the
+       noise reads as a faint paper tooth rather than glowing speckle */
+    opacity: .035; mix-blend-mode: multiply;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
   }
 
@@ -90,12 +120,31 @@
     font-family: var(--brand); font-weight: 500;
     font-variation-settings: 'opsz' 14;
     font-size: 22px; letter-spacing: 0;
-    color: rgba(255,255,255,.92);
+    color: var(--ink1);
     animation: fadein .9s ease .05s both;
+  }
+
+  /* The open-source badge, seated in the top-right corner as a counterweight
+     to the wordmark on the left — a quiet GitHub link, not a CTA. */
+  .corner-oss {
+    position: absolute; top: 30px; right: 32px; z-index: 20;
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--sf); font-size: 13px; letter-spacing: .01em;
+    color: rgba(40,40,48,.52);
+    text-decoration: none; white-space: nowrap;
+    transition: color .2s ease;
+    animation: fadein .9s ease .05s both;
+  }
+  .corner-oss svg { opacity: .7; transition: opacity .2s ease; }
+  .corner-oss:hover { color: rgba(20,20,24,.9); }
+  .corner-oss:hover svg { opacity: 1; }
+  @media (max-width: 600px) {
+    .corner-oss { font-size: 12px; top: 26px; right: 18px; }
+    .corner-oss span.lbl { display: none; }
   }
   .brand img {
     width: 34px; height: 34px;
-    filter: drop-shadow(0 2px 8px rgba(0,0,0,.5));
+    filter: drop-shadow(0 2px 8px rgba(0,0,0,.18));
   }
 
   /* The headline is the manifesto and the focal point of the screen: the
@@ -104,27 +153,41 @@
   h1 {
     margin: 0 auto;
     font-family: var(--display); font-weight: 600;
-    font-size: clamp(38px, 5vw, 68px);
-    line-height: 1.1; letter-spacing: -.028em;
-    color: rgba(255,255,255,.94);
+    font-size: clamp(46px, 6.4vw, 88px);
+    line-height: 1.05; letter-spacing: -.03em;
+    color: var(--ink1);
     animation: up .8s var(--spring) .15s both;
   }
-  h1 .dim { color: rgba(255,255,255,.42); }
+  h1 .dim { color: rgba(28,28,34,.40); }
+
+  /* One quiet line under the headline carrying the two selling points —
+     the speed and the craft. Sits in muted ink so the headline stays the
+     focal point; the two claims lift in near-full ink. */
+  .sub {
+    margin: 28px auto 0;
+    max-width: 52ch;
+    font-family: var(--sf);
+    font-size: clamp(16px, 1.7vw, 20px);
+    line-height: 1.7; letter-spacing: -.01em;
+    color: rgba(40,40,48,.56);
+    animation: up .8s var(--spring) .25s both;
+  }
+  .sub strong { font-weight: 600; color: var(--ink1); }
 
   /* The install capsule shares the island's material: glass refracting the
      page light, a gradient hairline rim, a top-lit body — and on copy, one
      specular sweep across the surface. */
   .install {
     position: relative;
-    margin-top: 52px;
+    margin-top: 60px;
     display: inline-grid;
     /* fluid type + a viewport-aware cap so the full command never overruns the
        screen edges on narrow widths */
     font-family: var(--mono); font-size: clamp(11px, 3.1vw, 15px);
     max-width: calc(100vw - 32px);
-    color: rgba(255,255,255,.78);
-    background-color: rgba(255,255,255,0);
-    background-image: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
+    color: rgba(28,28,34,.80);
+    background-color: rgba(255,255,255,.55);
+    background-image: linear-gradient(180deg, rgba(255,255,255,.65), rgba(255,255,255,.35));
     -webkit-backdrop-filter: blur(18px) saturate(1.5);
             backdrop-filter: blur(18px) saturate(1.5);
     border: none;
@@ -140,8 +203,10 @@
   .install::before {
     content: ""; position: absolute; inset: 0; border-radius: inherit;
     padding: 1px; pointer-events: none;
+    /* a darker dispersion rim so the capsule edge stays legible on the light
+       page — cool at the top, warm at the bottom, but in ink not white */
     background: linear-gradient(180deg,
-      rgba(190,210,255,.17), rgba(255,255,255,.05) 40%, rgba(255,234,210,.21));
+      rgba(80,110,180,.30), rgba(40,40,48,.10) 40%, rgba(170,120,70,.32));
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;
             mask-composite: exclude;
@@ -161,8 +226,8 @@
     from { opacity: 1; transform: translateX(0); }
     to   { opacity: 0; transform: translateX(430%); }
   }
-  .install:hover { background-color: rgba(255,255,255,.045); color: rgba(255,255,255,.92); }
-  .install:hover::before { filter: brightness(1.5); }
+  .install:hover { background-color: rgba(255,255,255,.78); color: rgba(20,20,24,.95); }
+  .install:hover::before { filter: brightness(1.15) saturate(1.3); }
   .install:active { transform: scale(.975); transition-duration: .12s; }
   /* two faces stacked in the same cell; the capsule morphs between them */
   .install .face {
@@ -171,49 +236,33 @@
     white-space: nowrap;
     transition: opacity .25s ease, transform .45s var(--spring), filter .25s ease;
   }
-  .install .face-done { opacity: 0; transform: translateY(6px); filter: blur(3px); color: rgba(255,255,255,.75); }
+  .install .face-done { opacity: 0; transform: translateY(6px); filter: blur(3px); color: rgba(28,28,34,.78); }
   .install.copied .face-cmd { opacity: 0; transform: translateY(-6px); filter: blur(3px); }
   .install.copied .face-done { opacity: 1; transform: translateY(0); filter: blur(0); }
-  .install .dollar { color: rgba(255,255,255,.32); }
+  .install .dollar { color: rgba(40,40,48,.40); }
   /* the displayed command is cosmetic — clicking copies the full CMD either way,
      so on narrow widths we swap in a compact form that fits on one line */
   .install .cmd-short { display: none; }
   /* the copy affordance reads as its own segment: a hairline divider sets it
      apart from the command so the two don't run together at the capsule edge */
   .install .copy-ic {
-    font-family: var(--sf); font-size: 11px; color: rgba(255,255,255,.38);
+    font-family: var(--sf); font-size: 11px; color: rgba(40,40,48,.40);
     padding-left: 14px; margin-left: 2px;
-    border-left: 1px solid rgba(255,255,255,.12);
+    border-left: 1px solid rgba(40,40,48,.16);
   }
-  .install:hover .copy-ic { color: rgba(255,255,255,.6); }
-  .install .check { color: rgba(255,255,255,.92); }
-
-  .meta {
-    margin-top: 20px;
-    font-size: 14px;
-    color: rgba(255,255,255,.50);
-    animation: up .8s var(--spring) .4s both;
+  .install:hover .copy-ic { color: rgba(28,28,34,.62); }
+  .install .check { color: rgba(20,20,24,.92); }
+  /* the macOS version now rides inside the capsule as a quiet trailing segment,
+     set off by the same hairline divider as the copy affordance */
+  .install .os {
+    font-family: var(--sf); font-size: 11px; color: rgba(40,40,48,.38);
+    padding-left: 14px; margin-left: 2px;
+    border-left: 1px solid rgba(40,40,48,.16);
   }
 
   /* Trust row — the honest credibility signals a real product leads with.
      No vanity metrics: every item here is a verifiable fact about the app,
      set in small-caps SF so it reads as a spec strip, not marketing. */
-  .trust {
-    margin: 26px auto 0;
-    display: flex; flex-wrap: wrap; justify-content: center;
-    align-items: center; gap: 10px 22px;
-    font-size: 12px; letter-spacing: .04em;
-    color: rgba(255,255,255,.50);
-    animation: up .8s var(--spring) .5s both;
-  }
-  .trust span { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-  .trust svg { display: block; opacity: .72; }
-  .trust .dot { width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,.22); }
-  @media (max-width: 480px) {
-    .trust { gap: 8px 16px; font-size: 11px; }
-    .trust .dot { display: none; }
-  }
-
   /* Entrances come into focus like something seen through the glass — an
      optical settle, not a slide. (No translate anywhere: Liquid Glass answers
      with light and focus, not position.) */
@@ -572,22 +621,24 @@
     font-family: var(--display); font-weight: 600;
     font-size: clamp(28px, 3.4vw, 38px);
     line-height: 1.1; letter-spacing: -.025em;
-    color: rgba(255,255,255,.92);
+    color: var(--ink1);
   }
   .lead {
     max-width: 56ch;
     margin: 28px auto 0;
     font-size: 15px; line-height: 1.55;
-    color: rgba(255,255,255,.50);
+    color: var(--ink3);
   }
 
   /* One hairline-rim recipe shared by every small glass piece below the fold —
      the same dispersion as the island and the install capsule. */
-  .card::before, .chip::before, .nav::before, .nav-cmd::before {
+  .chip::before, .nav::before, .nav-cmd::before {
     content: ""; position: absolute; inset: 0; border-radius: inherit;
     padding: 1px; pointer-events: none;
+    /* ink dispersion rim — the light-page counterpart to the island's edge:
+       a cool top, a warm foot, dark enough to define the glass on white */
     background: linear-gradient(180deg,
-      rgba(190,210,255,.15), rgba(255,255,255,.04) 40%, rgba(255,234,210,.18));
+      rgba(80,110,180,.26), rgba(40,40,48,.08) 40%, rgba(170,120,70,.26));
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite: xor;
             mask-composite: exclude;
@@ -607,41 +658,60 @@
   /* --------- act one: the three verbs --------- */
 
   .verbs {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
-    max-width: 1000px; margin: 60px auto 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
+    max-width: 1000px; margin: 64px auto 0;
     text-align: left;
   }
   .verb { display: flex; flex-direction: column; }
+  /* Each card is a piece of the notch's own panel — the same black Liquid Glass
+     as the live demo and the spec panel below. It must read as the product's
+     surface, not as page chrome, so it stays dark while the page is light. */
   .card {
     position: relative; flex: 1;
-    border-radius: 20px;
-    padding: 19px 20px;
-    background-image: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
-    transition: background-color .35s ease;
+    border-radius: 22px; overflow: hidden;
+    padding: 20px 20px 22px;
+    -webkit-backdrop-filter: blur(26px) saturate(1.6);
+            backdrop-filter: blur(26px) saturate(1.6);
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.05), transparent 40%),
+      linear-gradient(180deg, rgba(0,0,0,.90), rgba(0,0,0,.78));
+    box-shadow: 0 6px 16px -6px rgba(0,0,0,.34), 0 22px 44px -26px rgba(0,0,0,.40);
   }
-  /* hover answers with light — the body lifts a stop, the rim catches more —
-     the way glass responds to a hand near it, not by floating away */
-  .verb:hover .card { background-color: rgba(255,255,255,.035); }
-  .verb:hover .card::before { filter: brightness(1.7); }
-  /* a frozen frame of the panel: typed line, ghost route, what came back */
+  /* dispersion hairline rim — the same blue→peach edge the panel carries */
+  .card::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    padding: 1px; pointer-events: none;
+    background: linear-gradient(180deg,
+      rgba(190,210,255,.22) 0%, rgba(190,210,255,.07) 50%, rgba(255,234,210,.22) 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  /* the typed line, framed inside the glass the way the notch shows your input */
   .vrow {
+    position: relative;
     display: flex; align-items: baseline; gap: 8px;
     font-size: 14px;
     white-space: nowrap; overflow: hidden;
+    padding: 10px 13px; border-radius: 12px;
+    background: rgba(255,255,255,.07);
+    box-shadow: inset 0 0 0 .5px rgba(255,255,255,.10);
   }
-  .vt { color: rgba(255,255,255,.96); }
-  .vg { color: rgba(255,255,255,.38); flex: none; }
-  .vai { margin-top: 12px; font-size: 13px; line-height: 1.5; color: rgba(255,255,255,.96); }
-  .vfb { margin-top: 12px; font-size: 12px; color: rgba(255,255,255,.40);
-    display: flex; align-items: center; gap: 7px; }
-  /* the real macOS app it lands in — a recognizable anchor, not a claim */
-  .vfb .app { width: 15px; height: 15px; border-radius: 4px; flex: none;
-    display: grid; place-items: center; font-size: 9px; }
+  .vt { color: rgba(255,255,255,.92); }
+  .vg { color: rgba(255,255,255,.40); flex: none; }
+  /* the answer / confirmation sits just under it, the reply that dropped out */
+  .vai { position: relative; margin: 13px 4px 0; font-size: 13px; line-height: 1.5; color: rgba(255,255,255,.88); }
+  .vfb { position: relative; margin: 14px 4px 0; font-size: 12px; color: rgba(255,255,255,.52);
+    display: flex; align-items: center; gap: 8px; }
+  /* the real macOS app it lands in — a lifted icon tile glowing on the dark glass */
+  .vfb .app { width: 22px; height: 22px; border-radius: 6px; flex: none;
+    display: grid; place-items: center; font-size: 9px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 10px -4px rgba(0,0,0,.45); }
   .vfb .app-notes { background: linear-gradient(180deg,#ffe16b,#ffce3a); color: #5a4500; }
-  .vfb .app-rem { background: linear-gradient(180deg,#fdfdff,#eef0f5);
-    box-shadow: inset 0 0 0 .5px rgba(0,0,0,.10); }
+  .vfb .app-rem { background: linear-gradient(180deg,#fdfdff,#e8ebf2);
+    box-shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 10px -4px rgba(0,0,0,.45), inset 0 0 0 .5px rgba(0,0,0,.10); }
   .vfb .app svg { display: block; }
-  .verb .vd { margin: 16px 4px 0; font-size: 13.5px; line-height: 1.55; color: rgba(255,255,255,.50); }
+  .verb .vd { margin: 18px 4px 0; font-size: 13.5px; line-height: 1.55; color: var(--ink3); }
 
   /* --------- act two: the material, annotated --------- */
 
@@ -650,7 +720,7 @@
   .spec-edge {
     height: 1px; max-width: 760px; margin: 0 auto;
     background: linear-gradient(90deg,
-      transparent, rgba(255,255,255,.14) 18%, rgba(255,255,255,.14) 82%, transparent);
+      transparent, rgba(40,40,48,.16) 18%, rgba(40,40,48,.16) 82%, transparent);
   }
   .spec-stage { position: relative; }
   /* two pools of wallpaper-colored light kept fully inside the panel's
@@ -700,18 +770,18 @@
   .ann {
     position: absolute; z-index: 2; width: 196px;
     text-align: left;
-    font-size: 12px; line-height: 1.55; color: rgba(255,255,255,.45);
+    font-size: 12px; line-height: 1.55; color: rgba(40,40,48,.52);
   }
   .ann b {
     display: block; margin-bottom: 6px;
     font-size: 11px; font-weight: 500; letter-spacing: .18em; text-transform: uppercase;
-    color: rgba(255,255,255,.58);
+    color: rgba(28,28,34,.66);
   }
-  .ann i { position: absolute; height: 1px; background: rgba(255,255,255,.16); }
+  .ann i { position: absolute; height: 1px; background: rgba(40,40,48,.20); }
   .ann i::after {
     content: ""; position: absolute; top: -2px;
     width: 5px; height: 5px; border-radius: 50%;
-    background: rgba(255,255,255,.35);
+    background: rgba(40,40,48,.40);
   }
   .a1 { top: 2px; right: 4px; }
   .a1 i { left: -46px; top: 9px; width: 38px; }
@@ -723,22 +793,24 @@
   /* --------- act three: your model, your key --------- */
 
   .chips {
-    display: flex; flex-wrap: wrap; justify-content: center; gap: 10px;
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 11px;
     max-width: 560px; margin: 64px auto 0;
   }
+  /* provider chips — clean white floating tags, soft wide shadow */
   .chip {
     position: relative;
-    padding: 8px 16px; border-radius: 999px;
-    font-size: 12px; color: rgba(255,255,255,.66);
-    background-image: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.015));
+    padding: 9px 17px; border-radius: 999px;
+    font-size: 12px; color: rgba(28,28,34,.72);
+    background: linear-gradient(180deg, rgba(255,255,255,.94), rgba(255,255,255,.82));
+    box-shadow: 0 1px 2px rgba(40,40,48,.05), 0 6px 14px -9px rgba(40,40,48,.20);
   }
   .facts {
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 36px;
     max-width: 920px; margin: 64px auto 0;
     text-align: left;
   }
-  .fact h3 { font-size: 13.5px; font-weight: 600; color: rgba(255,255,255,.85); }
-  .fact p { margin-top: 7px; font-size: 13.5px; line-height: 1.55; color: rgba(255,255,255,.50); }
+  .fact h3 { font-size: 13.5px; font-weight: 600; color: var(--ink1); }
+  .fact p { margin-top: 7px; font-size: 13.5px; line-height: 1.55; color: var(--ink3); }
 
   /* --------- closing --------- */
 
@@ -750,39 +822,72 @@
     font-weight: 600;
     font-size: clamp(32px, 4vw, 50px);
     line-height: 1.08; letter-spacing: -.028em;
-    color: rgba(255,255,255,.95);
+    color: var(--ink1);
   }
   /* capsule and source link stack vertically, centered — without this the two
      inline boxes flow side-by-side and collide at wide widths */
   .cta .r { display: flex; flex-direction: column; align-items: center; }
   .src {
     margin-top: 22px;
-    font-size: 12px; color: rgba(255,255,255,.45); text-decoration: none;
-    border-bottom: 1px solid rgba(255,255,255,.14); padding-bottom: 1px;
+    font-size: 12px; color: rgba(40,40,48,.50); text-decoration: none;
+    border-bottom: 1px solid rgba(40,40,48,.18); padding-bottom: 1px;
     transition: color .2s ease, border-color .2s ease;
   }
-  .src:hover { color: rgba(255,255,255,.9); border-color: rgba(255,255,255,.4); }
+  .src:hover { color: rgba(20,20,24,.9); border-color: rgba(40,40,48,.5); }
 
-  footer { position: relative; z-index: 10; border-top: 1px solid rgba(255,255,255,.07); }
+  footer { position: relative; z-index: 10; border-top: 1px solid rgba(40,40,48,.10); }
   .ft {
     max-width: 1100px; margin: 0 auto;
     padding: 26px 24px 30px;
     display: flex; align-items: center; justify-content: space-between; gap: 14px;
-    font-size: 12px; color: rgba(255,255,255,.38);
+    font-size: 12px; color: rgba(40,40,48,.42);
   }
   .ft-brand {
     display: flex; align-items: center; gap: 8px;
     font-family: var(--brand); font-weight: 500;
     font-variation-settings: 'opsz' 14;
-    font-size: 15px; color: rgba(255,255,255,.65);
+    font-size: 15px; color: rgba(28,28,34,.68);
   }
   .ft-brand img { width: 16px; height: 16px; }
   .ft-dim {
-    color: rgba(255,255,255,.32); font-weight: 400;
+    color: rgba(40,40,48,.34); font-weight: 400;
     font-family: var(--sf); font-size: 12px;
   }
-  .ft a { color: rgba(255,255,255,.38); text-decoration: none; margin-left: 18px; transition: color .2s ease; }
-  .ft a:hover { color: rgba(255,255,255,.9); }
+  .ft a { color: rgba(40,40,48,.42); text-decoration: none; margin-left: 18px; transition: color .2s ease; }
+  .ft a:hover { color: rgba(20,20,24,.9); }
+
+  /* Language picker — a small floating glass dropdown seated next to the
+     wordmark, the same material vocabulary as the install capsule and nav.
+     A real <select> drives it, so it scales to any number of languages. */
+  .lang {
+    position: relative; display: inline-flex; align-items: center; margin-left: 12px;
+    border-radius: 999px;
+    background-color: rgba(255,255,255,.55);
+    background-image: linear-gradient(180deg, rgba(255,255,255,.65), rgba(255,255,255,.35));
+    box-shadow: 0 1px 2px rgba(40,40,48,.05), 0 6px 14px -10px rgba(40,40,48,.22);
+    -webkit-backdrop-filter: blur(12px) saturate(1.4);
+            backdrop-filter: blur(12px) saturate(1.4);
+    transition: box-shadow .2s ease;
+  }
+  .lang:hover { box-shadow: 0 1px 2px rgba(40,40,48,.08), 0 8px 18px -10px rgba(40,40,48,.30); }
+  .lang-select {
+    -webkit-appearance: none; appearance: none; border: 0; outline: 0; cursor: pointer;
+    font-family: var(--sf); font-size: 11px; line-height: 1; letter-spacing: .02em;
+    color: rgba(28,28,34,.78); background: transparent;
+    padding: 6px 26px 6px 12px; border-radius: 999px;
+    transition: color .2s ease;
+  }
+  .lang-select:hover { color: rgba(20,20,24,.92); }
+  .lang-select:focus-visible { box-shadow: 0 0 0 2px rgba(80,110,180,.4); }
+  .lang-caret {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    color: rgba(40,40,48,.5); pointer-events: none;
+  }
+  /* lighter, more generous line-height when the page is set in Chinese */
+  html[lang^="zh"] .lead,
+  html[lang^="zh"] .fact p,
+  html[lang^="zh"] .verb .vd,
+  html[lang^="zh"] .ann { line-height: 1.7; }
 
   /* --------- floating nav, surfaces once the hero is behind you --------- */
 
@@ -790,8 +895,9 @@
     position: fixed; top: 14px; left: 50%; z-index: 45;
     display: flex; align-items: center; gap: 18px;
     padding: 8px 9px 8px 16px; border-radius: 999px;
-    background-color: rgba(8,8,12,.55);
-    background-image: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+    background-color: rgba(255,255,255,.62);
+    background-image: linear-gradient(180deg, rgba(255,255,255,.7), rgba(255,255,255,.45));
+    box-shadow: 0 1px 3px rgba(40,40,48,.06), 0 12px 30px -18px rgba(40,40,48,.30);
     -webkit-backdrop-filter: blur(18px) saturate(1.5);
             backdrop-filter: blur(18px) saturate(1.5);
     opacity: 0; transform: translate(-50%, -14px); pointer-events: none;
@@ -802,22 +908,22 @@
     display: flex; align-items: center; gap: 8px;
     font-family: var(--brand); font-weight: 500;
     font-variation-settings: 'opsz' 14;
-    font-size: 15px; color: rgba(255,255,255,.88);
+    font-size: 15px; color: var(--ink1);
     text-decoration: none;
   }
   .nav-brand img { width: 16px; height: 16px; }
-  .nav-link { font-size: 12px; color: rgba(255,255,255,.50); text-decoration: none; transition: color .2s ease; }
-  .nav-link:hover { color: rgba(255,255,255,.95); }
+  .nav-link { font-size: 12px; color: rgba(40,40,48,.52); text-decoration: none; transition: color .2s ease; }
+  .nav-link:hover { color: rgba(20,20,24,.95); }
   .nav-cmd {
     position: relative; display: grid;
     border: 0; cursor: pointer;
     padding: 7px 14px; border-radius: 999px;
-    font-family: var(--mono); font-size: 11.5px; color: rgba(255,255,255,.8);
-    background-color: rgba(255,255,255,.05);
-    background-image: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+    font-family: var(--mono); font-size: 11.5px; color: rgba(28,28,34,.82);
+    background-color: rgba(40,40,48,.06);
+    background-image: linear-gradient(180deg, rgba(255,255,255,.5), rgba(255,255,255,.2));
     transition: background-color .25s ease, transform .35s var(--spring);
   }
-  .nav-cmd:hover { background-color: rgba(255,255,255,.09); }
+  .nav-cmd:hover { background-color: rgba(40,40,48,.10); }
   .nav-cmd:active { transform: scale(.96); }
   .nav-cmd .f {
     grid-area: 1 / 1; white-space: nowrap;
@@ -855,9 +961,11 @@
   @media (max-width: 640px) {
     .ft { flex-direction: column; gap: 10px; text-align: center; }
     .ft a { margin: 0 9px; }
-    /* the long command no longer fits on one line — show the compact form */
+    /* the long command no longer fits on one line — show the compact form,
+       and drop the trailing macOS segment so the capsule stays one tidy line */
     .install .cmd-long { display: none; }
     .install .cmd-short { display: inline; }
+    .install .os { display: none; }
   }
 
   @media (max-width: 480px) {
@@ -885,42 +993,31 @@
   <a class="nav-link" href="https://github.com/cyrus-cai/notch">GitHub</a>
   <button class="nav-cmd" id="navCmd" title="Copy install command">
     <span class="f f1">$ install</span>
-    <span class="f f2" aria-hidden="true">copied ✓</span>
+    <span class="f f2" aria-hidden="true" data-i18n="nav.copied">copied ✓</span>
   </button>
 </nav>
 
 <section class="hero">
 <header>
   <div class="brand"><img src="icon.png" alt="" width="30" height="30">Notch</div>
-  <h1 id="h1"><span class="dim">Most thoughts seem too small <br>to open an app for.</span> <br>They aren't.</h1>
+  <a class="corner-oss" href="https://github.com/cyrus-cai/notch" title="Every line is public on GitHub">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    <span data-i18n="hero.oss">Fully open source</span>
+  </a>
+  <h1 id="h1" data-i18n-html="hero.h1"><span class="dim">Your notch,</span> always ready.</h1>
+  <p class="sub" data-i18n-html="hero.sub">Ask AI, take a note, or set a reminder right from your Mac's notch — without opening an app. <strong style="white-space:nowrap">5× faster</strong>, and <strong style="white-space:nowrap">design-first</strong>.</p>
   <button class="install" id="install" title="Copy install command">
     <span class="face face-cmd">
       <span class="dollar">$</span>
       <span id="cmdText"><span class="cmd-long">curl -fsSL github.com/cyrus-cai/notch/…/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
-      <span class="copy-ic">copy</span>
+      <span class="copy-ic" data-i18n="install.copy">copy</span>
+      <span class="os" data-i18n="install.os">macOS 14+</span>
     </span>
     <span class="face face-done" aria-hidden="true">
       <span class="check">✓</span>
-      <span>copied — paste in Terminal</span>
+      <span data-i18n="install.done">copied — paste in Terminal</span>
     </span>
   </button>
-  <p class="meta">macOS 14+</p>
-  <div class="trust" aria-label="What you can trust">
-    <span title="No account, no server of ours">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l4.5 1.8v3.4c0 3-2 5-4.5 5.8C4.5 11.2 2.5 9.2 2.5 6.2V2.8L7 1z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5 6.9 6.5 8.4 9.2 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      No account, no telemetry
-    </span>
-    <span class="dot" aria-hidden="true"></span>
-    <span title="Your key, your provider — nothing in between">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="5" cy="7" r="3" stroke="currentColor" stroke-width="1.2"/><path d="M8 7h5M11 7v2.4M13 7v2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-      Bring your own key
-    </span>
-    <span class="dot" aria-hidden="true"></span>
-    <span title="Every line is public on GitHub">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4.6 9.5 2 7l2.6-2.5M9.4 4.5 12 7 9.4 9.5M7.8 3.2 6.2 10.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      Fully open source
-    </span>
-  </div>
 </header>
 
 <div class="scene">
@@ -931,9 +1028,9 @@
     <div class="menubar">
       <div class="mb-left">
         <span class="mb-app">Notch</span>
-        <span class="mb-item mb-menus">File</span>
-        <span class="mb-item mb-menus">Edit</span>
-        <span class="mb-item mb-menus">View</span>
+        <span class="mb-item mb-menus" data-i18n="menu.file">File</span>
+        <span class="mb-item mb-menus" data-i18n="menu.edit">Edit</span>
+        <span class="mb-item mb-menus" data-i18n="menu.view">View</span>
       </div>
       <div class="mb-right">
         <a class="mb-item" href="https://github.com/cyrus-cai/notch">GitHub ↗</a>
@@ -969,7 +1066,7 @@
       </div>
       <div class="rim"></div>
     </div>
-    <div class="hint" id="hint">hover the notch</div>
+    <div class="hint" id="hint" data-i18n="demo.hint">hover the notch</div>
     <div class="pointer" id="pointer">
       <svg width="17" height="22" viewBox="0 0 17 22" fill="none"><path d="M1 1l0 16.2 4.3-3.6 2.8 6.1 3-1.4-2.8-5.9 6.3-.6L1 1z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/></svg>
     </div>
@@ -983,38 +1080,38 @@
 
 <section class="sec" id="verbs">
   <div class="r">
-    <h2>You type. It sorts.</h2>
-    <p class="lead">Type the thought the way it arrived — half-formed is fine. The grey hint tells you where it's headed.</p>
+    <h2 data-i18n="verbs.h2">You type. It sorts.</h2>
+    <p class="lead" data-i18n="verbs.lead">Type the thought the way it arrived — half-formed is fine. Notch reads it and routes it: a question to AI, a note to keep, or a reminder with a time.</p>
   </div>
   <div class="verbs">
     <div class="verb r">
       <div class="card">
-        <div class="vrow"><span class="vt">is a fortnight two weeks?</span><span class="vg">— Ask</span></div>
-        <div class="vai">Yes — fourteen nights, exactly two weeks. British English, mostly.</div>
+        <div class="vrow"><span class="vt" data-i18n="verbs.ask.q">is a fortnight two weeks?</span><span class="vg" data-i18n="verbs.ask.tag">— Ask</span></div>
+        <div class="vai" data-i18n="verbs.ask.a">Yes — fourteen nights, exactly two weeks. British English, mostly.</div>
       </div>
-      <p class="vd">The answer appears in the panel, without leaving what you're doing.</p>
+      <p class="vd" data-i18n="verbs.ask.d">The answer appears in the panel, without leaving what you're doing.</p>
     </div>
     <div class="verb r" style="--d:.08s">
       <div class="card">
-        <div class="vrow"><span class="vt">sarah: prefers async standups</span><span class="vg">— Note</span></div>
-        <div class="vfb"><span class="app app-notes" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2.1 3.4h6.8M2.1 5.5h6.8M2.1 7.6h4.2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></span>Added to Apple Notes</div>
+        <div class="vrow"><span class="vt" data-i18n="verbs.note.q">sarah: prefers async standups</span><span class="vg" data-i18n="verbs.note.tag">— Note</span></div>
+        <div class="vfb"><span class="app app-notes" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2.1 3.4h6.8M2.1 5.5h6.8M2.1 7.6h4.2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></span><span data-i18n="verbs.note.fb">Added to Apple Notes</span></div>
       </div>
-      <p class="vd">Anything that reads like something to keep — a name, an idea, a number — lands in Apple Notes.</p>
+      <p class="vd" data-i18n="verbs.note.d">Anything that reads like something to keep — a name, an idea, a number — lands in Apple Notes.</p>
     </div>
     <div class="verb r" style="--d:.16s">
       <div class="card">
-        <div class="vrow"><span class="vt">call mum tomorrow 9am</span><span class="vg">— Remind</span></div>
-        <div class="vfb"><span class="app app-rem" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 11 11" fill="none"><circle cx="3" cy="3.2" r="1.15" fill="#fc5c65"/><circle cx="3" cy="7" r="1.15" fill="#fd9426"/><path d="M5.4 3.2h3.2M5.4 7h3.2" stroke="#c9ccd6" stroke-width="1" stroke-linecap="round"/></svg></span>Added to Apple Reminders</div>
+        <div class="vrow"><span class="vt" data-i18n="verbs.remind.q">call mum tomorrow 9am</span><span class="vg" data-i18n="verbs.remind.tag">— Remind</span></div>
+        <div class="vfb"><span class="app app-rem" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 11 11" fill="none"><circle cx="3" cy="3.2" r="1.15" fill="#fc5c65"/><circle cx="3" cy="7" r="1.15" fill="#fd9426"/><path d="M5.4 3.2h3.2M5.4 7h3.2" stroke="#c9ccd6" stroke-width="1" stroke-linecap="round"/></svg></span><span data-i18n="verbs.remind.fb">Added to Apple Reminders</span></div>
       </div>
-      <p class="vd">Anything with a time in it lands in Apple Reminders — due date already set.</p>
+      <p class="vd" data-i18n="verbs.remind.d">Anything with a time in it lands in Apple Reminders — due date already set.</p>
     </div>
   </div>
 </section>
 
 <section class="sec" id="craft">
   <div class="r">
-    <h2>Native, not bolted on.</h2>
-    <p class="lead">Most notch utilities are floating windows wearing a disguise. Notch is drawn with the same Liquid Glass material that paints the rest of macOS — same blur, same edge light, same spring.</p>
+    <h2 data-i18n="craft.h2">Native, not bolted on.</h2>
+    <p class="lead" data-i18n="craft.lead">Design-first, in practice. Notch is drawn with the same Liquid Glass material as the rest of macOS — same blur, same edge light, same spring — so it reads as part of the system, not stuck on top of it.</p>
   </div>
   <div class="spec r">
     <div class="spec-edge"></div>
@@ -1025,20 +1122,20 @@
         </div>
         <div class="thread-gap"></div>
         <div class="turns">
-          <div class="turn-user"><span class="you">You</span><span class="q">what exactly is liquid glass?</span></div>
-          <div class="turn-ai">Apple's translucent material language — blurred, layered, a little dramatic. You're looking at it.</div>
+          <div class="turn-user"><span class="you" data-i18n="craft.you">You</span><span class="q" data-i18n="craft.q">what exactly is liquid glass?</span></div>
+          <div class="turn-ai" data-i18n="craft.a">Apple's translucent material language — blurred, layered, a little dramatic. You're looking at it.</div>
         </div>
       </div>
-      <div class="ann a1"><i></i><b>Part of the notch</b>Solid black at the top, so the panel and the bezel read as one piece.</div>
-      <div class="ann a2"><i></i><b>Real glass</b>It blurs what's behind it and catches light at the edges — cool above, warm below.</div>
+      <div class="ann a1"><i></i><b data-i18n="craft.a1.t">Part of the notch</b><span data-i18n="craft.a1.b">Solid black at the top, so the panel and the bezel read as one piece.</span></div>
+      <div class="ann a2"><i></i><b data-i18n="craft.a2.t">Real glass</b><span data-i18n="craft.a2.b">It blurs what's behind it and catches light at the edges — cool above, warm below.</span></div>
     </div>
   </div>
 </section>
 
 <section class="sec" id="byok">
   <div class="r">
-    <h2>Your model. Your key.</h2>
-    <p class="lead">Sorting happens on your Mac; nothing is sent until you press Return. Then your question goes to the provider you picked, signed with your own key.</p>
+    <h2 data-i18n="byok.h2">Your model. Your key.</h2>
+    <p class="lead" data-i18n="byok.lead">Sorting happens on your Mac. Then your question goes to the provider you picked, signed with your own key.</p>
   </div>
   <div class="chips r">
     <span class="chip">OpenAI</span><span class="chip">Anthropic</span><span class="chip">Google Gemini</span><span class="chip">DeepSeek</span><span class="chip">Qwen</span><span class="chip">Kimi</span><span class="chip">GLM</span><span class="chip">MiniMax</span><span class="chip">MiMo</span>
@@ -1047,26 +1144,36 @@
 
 <section class="sec cta" id="install-cta">
   <div class="r">
-    <h2>Put it on your Mac.</h2>
-    <p class="lead">Free and open source. One command to install — no account, no sign-up.</p>
+    <h2 data-i18n="cta.h2">Put it on your Mac.</h2>
+    <p class="lead" data-i18n="cta.lead">Free and open source. One command to install — no account, no sign-up.</p>
     <button class="install" title="Copy install command">
       <span class="face face-cmd">
         <span class="dollar">$</span>
         <span><span class="cmd-long">curl -fsSL github.com/cyrus-cai/notch/…/install.sh | bash</span><span class="cmd-short">curl …/install.sh | bash</span></span>
-        <span class="copy-ic">copy</span>
+        <span class="copy-ic" data-i18n="install.copy">copy</span>
+        <span class="os" data-i18n="install.os">macOS 14+</span>
       </span>
       <span class="face face-done" aria-hidden="true">
         <span class="check">✓</span>
-        <span>copied — paste in Terminal</span>
+        <span data-i18n="install.done">copied — paste in Terminal</span>
       </span>
     </button>
-    <a class="src" href="https://github.com/cyrus-cai/notch">Browse the source ↗</a>
+    <a class="src" href="https://github.com/cyrus-cai/notch" data-i18n="cta.src">Browse the source ↗</a>
   </div>
 </section>
 
 <footer>
   <div class="ft">
-    <span class="ft-brand"><img src="icon.png" alt="">Notch</span>
+    <span class="ft-brand"><img src="icon.png" alt="">Notch
+      <span class="lang">
+        <select class="lang-select" id="langSelect" aria-label="Language / 语言">
+          <option value="en">English</option>
+          <option value="zh">简体中文</option>
+          <option value="zh-Hant">繁體中文</option>
+        </select>
+        <svg class="lang-caret" width="9" height="6" viewBox="0 0 9 6" fill="none" aria-hidden="true"><path d="M1 1l3.5 3.5L8 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+    </span>
     <span class="ft-links">
       <a href="https://github.com/cyrus-cai/notch">GitHub</a>
       <a href="https://github.com/cyrus-cai/notch/issues">Issues</a>
@@ -1094,14 +1201,125 @@
   // Open widths per state — Tokens.openWidthIdle / Load / Result.
   var W_IDLE = 540, W_LOAD = 560, W_RESULT = 600;
 
-  var BEATS = [
-    { kind: 'ask', text: 'what exactly is liquid glass?',
-      answer: "Apple's translucent material language — blurred, layered, a little dramatic. You're looking at it." },
-    { kind: 'note', text: 'sarah: api keys rotate monthly', flipAt: 14, label: 'Note',
-      confirm: 'Added to Notes' },
-    { kind: 'remind', text: 'dentist 3pm friday', flipAt: 11, label: 'Remind',
-      confirm: 'Added to Reminders' }
-  ];
+  /* ============ i18n ============
+     EN is the source of truth in the markup; ZH lives here. The demo strings
+     (placeholder, the auto-play beats, route tags, confirmations) also live in
+     JS, so they get their own DEMO table per language — switching language
+     reskins the next demo run as well as the static copy. The ZH voice is
+     lightly playful — natural spoken Chinese with a little spark, never stiff. */
+  var DEMO = {
+    en: {
+      placeholder: 'Type anything...',
+      you: 'You',
+      tags: { Ask: 'Ask', Note: 'Note', Remind: 'Remind' },
+      saving: 'Saving…',
+      addedNote: 'Added to Notes',
+      addedRemind: 'Added to Reminders',
+      answer: 'Here, you get this sentence. In the installed app, this goes to your model.',
+      beats: [
+        { kind: 'ask', text: 'what exactly is liquid glass?',
+          answer: "Apple's translucent material language — blurred, layered, a little dramatic. You're looking at it." },
+        { kind: 'note', text: 'sarah: api keys rotate monthly', flipAt: 14, label: 'Note',
+          confirm: 'Added to Notes' },
+        { kind: 'remind', text: 'dentist 3pm friday', flipAt: 11, label: 'Remind',
+          confirm: 'Added to Reminders' }
+      ]
+    },
+    zh: {
+      placeholder: '随便打点什么…',
+      you: '你',
+      tags: { Ask: '问问', Note: '记下', Remind: '提醒' },
+      saving: '保存中…',
+      addedNote: '已存入备忘录',
+      addedRemind: '已加入提醒事项',
+      answer: '这句是 demo 给你看的。装好之后，问题会发给你自己的模型。',
+      beats: [
+        { kind: 'ask', text: '液态玻璃到底是什么？',
+          answer: '苹果的半透明材质语言——模糊、有层次、带点光影。你现在看到的就是。' },
+        { kind: 'note', text: 'sarah：API 密钥每月轮换一次', flipAt: 14, label: 'Note',
+          confirm: '已存入备忘录' },
+        { kind: 'remind', text: '周五下午三点看牙', flipAt: 5, label: 'Remind',
+          confirm: '已加入提醒事项' }
+      ]
+    },
+    'zh-Hant': {
+      placeholder: '隨便打點什麼…',
+      you: '你',
+      tags: { Ask: '問問', Note: '記下', Remind: '提醒' },
+      saving: '儲存中…',
+      addedNote: '已存入備忘錄',
+      addedRemind: '已加入提醒事項',
+      answer: '這句是 demo 給你看的。裝好之後，問題會發給你自己的模型。',
+      beats: [
+        { kind: 'ask', text: '液態玻璃到底是什麼？',
+          answer: '蘋果的半透明材質語言——模糊、有層次、帶點光影。你現在看到的就是。' },
+        { kind: 'note', text: 'sarah：API 金鑰每月輪換一次', flipAt: 14, label: 'Note',
+          confirm: '已存入備忘錄' },
+        { kind: 'remind', text: '週五下午三點看牙', flipAt: 5, label: 'Remind',
+          confirm: '已加入提醒事項' }
+      ]
+    }
+  };
+
+  /* Static copy: key → { zh, hant }. EN values are read from the DOM on first
+     run (the markup is the source), so this table only carries the two
+     Chinese variants — `zh` = 简体, `hant` = 繁體. */
+  var I18N = {
+    'nav.copied':   { zh: '已复制 ✓', hant: '已複製 ✓' },
+    'hero.oss':     { zh: '完全开源', hant: '完全開源' },
+    'hero.h1':      { zh: '<span class="dim">你的刘海，</span>随时待命。', hant: '<span class="dim">你的瀏海，</span>隨時待命。' },
+    'hero.sub':     { zh: '问 AI、记笔记、设提醒，全都在 Mac 的刘海里完成——连 App 都不用开。<strong style="white-space:nowrap">快 5 倍</strong>，<strong style="white-space:nowrap">颜值在线</strong>。',
+                      hant: '問 AI、記筆記、設提醒，全都在 Mac 的瀏海裡完成——連 App 都不用開。<strong style="white-space:nowrap">快 5 倍</strong>，<strong style="white-space:nowrap">顏值在線</strong>。' },
+    'install.copy': { zh: '复制', hant: '複製' },
+    'install.os':   { zh: 'macOS 14+', hant: 'macOS 14+' },
+    'install.done': { zh: '已复制，去终端里粘贴', hant: '已複製，去終端機裡貼上' },
+    'menu.file':    { zh: '文件', hant: '檔案' },
+    'menu.edit':    { zh: '编辑', hant: '編輯' },
+    'menu.view':    { zh: '显示', hant: '顯示' },
+    'demo.hint':    { zh: '把鼠标移到刘海上', hant: '把游標移到瀏海上' },
+    'verbs.h2':     { zh: '你只管打字，它帮你归类。', hant: '你只管打字，它幫你歸類。' },
+    'verbs.lead':   { zh: '想到什么就敲什么，没想清楚也没关系。Notch 看一眼就帮你分流：问题交给 AI，要记的存成笔记，带时间的设成提醒。',
+                      hant: '想到什麼就敲什麼，沒想清楚也沒關係。Notch 看一眼就幫你分流：問題交給 AI，要記的存成筆記，帶時間的設成提醒。' },
+    'verbs.ask.q':  { zh: '一刻钟是十五分钟吗？', hant: '一刻鐘是十五分鐘嗎？' },
+    'verbs.ask.tag':{ zh: '— 问问', hant: '— 問問' },
+    'verbs.ask.a':  { zh: '是的，一刻钟正好十五分钟。', hant: '是的，一刻鐘正好十五分鐘。' },
+    'verbs.ask.d':  { zh: '答案就显示在面板里，不打断你手上的事。', hant: '答案就顯示在面板裡，不打斷你手上的事。' },
+    'verbs.note.q': { zh: 'sarah：习惯异步站会', hant: 'sarah：習慣非同步站會' },
+    'verbs.note.tag':{ zh: '— 记下', hant: '— 記下' },
+    'verbs.note.fb':{ zh: '已存入备忘录', hant: '已存入備忘錄' },
+    'verbs.note.d': { zh: '看起来需要留存的内容——名字、想法、数字——都会存进「备忘录」。', hant: '看起來需要留存的內容——名字、想法、數字——都會存進「備忘錄」。' },
+    'verbs.remind.q':{ zh: '明天上午九点给妈妈打电话', hant: '明天上午九點給媽媽打電話' },
+    'verbs.remind.tag':{ zh: '— 提醒', hant: '— 提醒' },
+    'verbs.remind.fb':{ zh: '已加入提醒事项', hant: '已加入提醒事項' },
+    'verbs.remind.d':{ zh: '只要带上时间，就会进「提醒事项」，截止时间也帮你填好了。', hant: '只要帶上時間，就會進「提醒事項」，截止時間也幫你填好了。' },
+    'craft.h2':     { zh: '原生的，不是硬贴上去的。', hant: '原生的，不是硬貼上去的。' },
+    'craft.lead':   { zh: '设计优先，落到实处。Notch 用的是和 macOS 一致的液态玻璃材质——一样的模糊、一样的边缘光、一样的回弹——所以它看上去就是系统的一部分，而不是浮在最上层的小工具。',
+                      hant: '設計優先，落到實處。Notch 用的是和 macOS 一致的液態玻璃材質——一樣的模糊、一樣的邊緣光、一樣的回彈——所以它看上去就是系統的一部分，而不是浮在最上層的小工具。' },
+    'craft.you':    { zh: '你', hant: '你' },
+    'craft.q':      { zh: '液态玻璃到底是什么？', hant: '液態玻璃到底是什麼？' },
+    'craft.a':      { zh: '苹果的半透明材质语言——模糊、有层次、带点光影。你现在看到的就是。', hant: '蘋果的半透明材質語言——模糊、有層次、帶點光影。你現在看到的就是。' },
+    'craft.a1.t':   { zh: '刘海的一部分', hant: '瀏海的一部分' },
+    'craft.a1.b':   { zh: '顶部是纯黑，所以面板和黑边看上去是一整块。', hant: '頂部是純黑，所以面板和黑邊看上去是一整塊。' },
+    'craft.a2.t':   { zh: '真正的玻璃', hant: '真正的玻璃' },
+    'craft.a2.b':   { zh: '它会模糊背后的画面，边缘还会接光——上冷下暖。', hant: '它會模糊背後的畫面，邊緣還會接光——上冷下暖。' },
+    'byok.h2':      { zh: '你的模型，你的密钥。', hant: '你的模型，你的金鑰。' },
+    'byok.lead':    { zh: '归类全在你的 Mac 本地完成。发出去时，问题只会送到你选定的服务商，并用你自己的密钥签名。', hant: '歸類全在你的 Mac 本機完成。發出去時，問題只會送到你選定的服務商，並用你自己的金鑰簽名。' },
+    'cta.h2':       { zh: '装到你的 Mac 上。', hant: '裝到你的 Mac 上。' },
+    'cta.lead':     { zh: '免费、开源。一行命令即可安装——无需账号，无需注册。', hant: '免費、開源。一行命令即可安裝——無需帳號，無需註冊。' },
+    'cta.src':      { zh: '查看源码 ↗', hant: '查看原始碼 ↗' }
+  };
+
+  var ENCACHE = {};   // key → original EN text, captured before first swap
+  var lang = 'en';    // 'en' | 'zh' | 'zh-Hant'
+  // resolve a static-copy key for the active language; EN falls back to the DOM cache
+  function tr(key) {
+    if (lang === 'en') return ENCACHE[key];
+    var v = I18N[key];
+    if (v == null) return ENCACHE[key];
+    return (lang === 'zh-Hant' ? v.hant : v.zh) || ENCACHE[key];
+  }
+  function t(key) { return tr(key); }
+  function demo() { return DEMO[lang] || DEMO.en; }
 
   var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   var canHover = matchMedia('(hover: hover)').matches;
@@ -1109,6 +1327,14 @@
   var userMode = false, userRun = 0, ghostLabel = 'Ask';
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /* Stream the answer the way a model emits it: by space-delimited word where
+     there are spaces (English), and per character where there aren't (Chinese
+     has no word spaces, so splitting on ' ' would dump it all at once). */
+  function tokenize(s) {
+    if (s.indexOf(' ') === -1) return s.split('');
+    return s.match(/\s*\S+/g) || [s];
+  }
 
   /* The headline used to be the demo's subtitle track; it's a manifesto now.
      The beat hooks stay as no-ops so the demo's pacing code reads unchanged. */
@@ -1162,9 +1388,10 @@
   function resetIdle() {
     typed.textContent = '';
     realInput.value = '';
+    ph.textContent = demo().placeholder;
     ph.classList.remove('off');
     ghost.classList.remove('show');
-    ghost.textContent = '— Ask';
+    ghost.textContent = '— ' + demo().tags.Ask;
     ghostLabel = 'Ask';
     feedback.classList.remove('on');
     feedback.textContent = '';
@@ -1172,9 +1399,10 @@
   }
 
   function setGhost(label) {
+    var text = demo().tags[label] || label;   // accept a canonical key or raw text
     ghost.classList.add('swap');
     setTimeout(function () {
-      ghost.textContent = '— ' + label;
+      ghost.textContent = '— ' + text;
       ghost.classList.remove('swap');
     }, 125);
   }
@@ -1209,16 +1437,17 @@
       if (!alive()) return;
       // load → result: width 600, "You" echo + streaming answer
       turns.innerHTML =
-        '<div class="turn-user"><span class="you">You</span><span class="q"></span></div>' +
+        '<div class="turn-user"><span class="you"></span><span class="q"></span></div>' +
         '<div class="turn-ai"></div>';
+      turns.querySelector('.you').textContent = demo().you;
       turns.querySelector('.q').textContent = b.text;
       stateWidth = W_RESULT;
       layout();
       var ai = turns.querySelector('.turn-ai');
-      var words = b.answer.split(' ');
-      for (var w = 0; w < words.length; w++) {
+      var toks = tokenize(b.answer);
+      for (var w = 0; w < toks.length; w++) {
         if (!alive()) return;
-        ai.textContent += (w ? ' ' : '') + words[w];
+        ai.textContent += toks[w];
         layout();
         await sleep(46);
       }
@@ -1235,12 +1464,12 @@
       typed.textContent = '';
       ph.classList.remove('off');
       ghost.classList.remove('show');
-      feedback.textContent = 'Saving…';
+      feedback.textContent = demo().saving;
       feedback.classList.add('on');
       layout();
       await sleep(750);
       if (!alive()) return;
-      feedback.textContent = b.confirm;
+      feedback.textContent = b.kind === 'note' ? demo().addedNote : demo().addedRemind;
       beat(3);
       await sleep(1500);
       if (!alive()) return;
@@ -1257,9 +1486,10 @@
     openPanel();
     await sleep(620);
     do {
-      for (var i = 0; i < BEATS.length; i++) {
+      var beats = demo().beats;
+      for (var i = 0; i < beats.length; i++) {
         if (!alive()) return;
-        await runBeat(BEATS[i], alive);
+        await runBeat(beats[i], alive);
       }
     } while (alive() && !once);
     if (alive() && once && !hovering) { closePanel(); scheduleAttract(9000); }
@@ -1291,11 +1521,72 @@
     attractTimer = setTimeout(attract, delay);
   }
 
+  /* ============ apply a language ============ */
+
+  var langSelect = document.getElementById('langSelect');
+
+  // normalize any incoming value to one of the three supported languages
+  function normLang(v) {
+    if (v === 'zh-Hant' || v === 'zh-TW' || v === 'zh-HK' || v === 'zh-MO') return 'zh-Hant';
+    if (v === 'zh' || (typeof v === 'string' && v.indexOf('zh') === 0)) return 'zh';
+    return 'en';
+  }
+
+  function applyLang(next, opts) {
+    lang = normLang(next);
+    document.documentElement.setAttribute('lang', lang);
+
+    // static copy — text nodes and innerHTML fragments
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n');
+      if (ENCACHE[key] === undefined) ENCACHE[key] = el.textContent;
+      el.textContent = t(key);
+    });
+    document.querySelectorAll('[data-i18n-html]').forEach(function (el) {
+      var key = el.getAttribute('data-i18n-html');
+      if (ENCACHE[key] === undefined) ENCACHE[key] = el.innerHTML;
+      el.innerHTML = tr(key);
+    });
+
+    // keep the dropdown in sync (init / programmatic changes)
+    if (langSelect && langSelect.value !== lang) langSelect.value = lang;
+
+    // the resting idle surface (placeholder + ghost tag) lives in JS, so swap it
+    // whenever it's the visible state and not mid-type
+    if (!userMode && !typed.textContent) {
+      ph.textContent = demo().placeholder;
+      if (!ghost.classList.contains('show')) ghost.textContent = '— ' + demo().tags.Ask;
+    }
+
+    // refresh the demo's idle surface in the new language. If a run is in
+    // flight, halt it and fall back to attract so the next play is localized.
+    if (opts && opts.live) {
+      runId++; userRun++; userMode = false;
+      realInput.blur();
+      if (isOpen) { closePanel(); scheduleAttract(2600); }
+      else { resetIdle(); showState(stIdle, false); }
+    }
+
+    try { localStorage.setItem('notch-lang', lang); } catch (e) {}
+  }
+
+  if (langSelect) {
+    langSelect.addEventListener('change', function () {
+      applyLang(langSelect.value, { live: true });
+    });
+  }
+
+  // first-visit language: saved choice → browser preference → English
+  var saved = null;
+  try { saved = localStorage.getItem('notch-lang'); } catch (e) {}
+  var initial = saved || normLang(navigator.language || 'en');
+  applyLang(initial);
+
   if (reduced) {
     isOpen = true;
     notch.classList.add('open');
     stage.classList.add('opened');
-    typed.textContent = BEATS[0].text;
+    typed.textContent = demo().beats[0].text;
     ph.classList.add('off');
     ghost.classList.add('show');
     hint.style.display = 'none';
@@ -1328,14 +1619,22 @@
   /* ============ the driver's seat — visitors can type in it ============ */
 
   /* A pocket version of the app's IntentEngine: enough to flip the ghost
-     hint live while the visitor types, which is the product's one trick. */
-  function classify(t) {
-    var s = t.toLowerCase();
+     hint live while the visitor types, which is the product's one trick.
+     It reads both English and Chinese cues so the trick survives translation. */
+  function classify(input) {
+    var s = input.toLowerCase();
+    // — Remind: a time or a recurrence, in either language
     if (/\b(remind|tomorrow|tonight|later|next (week|month)|every (day|week|morning))\b/.test(s) ||
         /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/.test(s) ||
         /\b(mon|tues|wednes|thurs|fri|satur|sun)day\b/.test(s) ||
-        /\bin \d+\s?(m|min|mins|minutes|h|hr|hrs|hours|days?)\b/.test(s)) return 'Remind';
-    if (/^note[: ]/.test(s) || /^[\w@.'-]{1,24}:\s\S/.test(s)) return 'Note';
+        /\bin \d+\s?(m|min|mins|minutes|h|hr|hrs|hours|days?)\b/.test(s) ||
+        /(提醒|今晚|今天|明天|[后後]天|大[后後]天|下[周週]|下个?月|下個?月|每天|每[周週]|每个?早上|每個?早上)/.test(input) ||
+        /([周週]|星期|礼拜|禮拜)[一二三四五六日天]/.test(input) ||
+        /(上午|下午|中午|早上|晚上|凌晨)?\s*\d{1,2}\s*[:：点點]/.test(input) ||
+        /\d+\s*(分钟|分鐘|小时|小時|天)[后後]/.test(input)) return 'Remind';
+    // — Note: a "label:" prefix, half- or full-width colon
+    if (/^note[:： ]/.test(s) ||
+        /^[\w@.'一-鿿-]{1,24}\s*[:：]\s*\S/.test(input)) return 'Note';
     return 'Ask';
   }
 
@@ -1384,8 +1683,6 @@
     scheduleAttract(8000);
   }
 
-  var DEMO_ANSWER = 'Here, you get this sentence. In the installed app, this goes to your model.';
-
   async function submitUser() {
     var text = realInput.value.trim();
     if (!text) return;
@@ -1401,16 +1698,17 @@
       await sleep(1100);
       if (!live()) return;
       turns.innerHTML =
-        '<div class="turn-user"><span class="you">You</span><span class="q"></span></div>' +
+        '<div class="turn-user"><span class="you"></span><span class="q"></span></div>' +
         '<div class="turn-ai"></div>';
+      turns.querySelector('.you').textContent = demo().you;
       turns.querySelector('.q').textContent = text;
       stateWidth = W_RESULT;
       layout();
       var ai = turns.querySelector('.turn-ai');
-      var words = DEMO_ANSWER.split(' ');
-      for (var w = 0; w < words.length; w++) {
+      var toks = tokenize(demo().answer);
+      for (var w = 0; w < toks.length; w++) {
         if (!live()) return;
-        ai.textContent += (w ? ' ' : '') + words[w];
+        ai.textContent += toks[w];
         layout();
         await sleep(46);
       }
@@ -1418,12 +1716,12 @@
     } else {
       realInput.value = '';
       mirror();
-      feedback.textContent = 'Saving…';
+      feedback.textContent = demo().saving;
       feedback.classList.add('on');
       layout();
       await sleep(700);
       if (!live()) return;
-      feedback.textContent = kind === 'Note' ? 'Added to Notes' : 'Added to Reminders';
+      feedback.textContent = kind === 'Note' ? demo().addedNote : demo().addedRemind;
       beat(3);
       await sleep(1600);
       if (!live()) return;
