@@ -83,6 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             UpdaterService.shared.checkIfDue()
+            // Touch the What's New service so it resolves the "unseen version"
+            // cue (and records the first-launch baseline) off the launch path.
+            // Notes are bundled into the app — there's nothing to fetch.
+            _ = WhatsNewService.shared
         }
 
         rebuildPanels()

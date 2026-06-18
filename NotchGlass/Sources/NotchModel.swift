@@ -450,6 +450,10 @@ final class NotchModel: ObservableObject {
     /// Replaces the old native Settings window — the gear (and ⌘,) flip this, and
     /// the idle view swaps the RECENT block for the settings form when it's true.
     @Published var showSettings = false
+    /// The "What's New" release-notes panel — ⌘↵ (and the input-row cue) flip this.
+    /// Like settings, it owns the whole idle body when true and the back chevron /
+    /// Esc returns to the prompt. Mutually exclusive with `showSettings`.
+    @Published var showWhatsNew = false
     /// Arms the destructive "Clear recent history?" confirmation. Lives on the
     /// model (not the view) so the Clear pill can raise it while the centered
     /// confirmation card is mounted on the *island* — so it sits in the middle of
@@ -600,50 +604,6 @@ final class NotchModel: ObservableObject {
         }
     }
 
-    /// File the *current answer* (the last settled assistant turn) into Apple Notes
-    /// from the result view — the one-tap archive path for AI output, so a good
-    /// answer doesn't dead-end at "select the text and switch apps yourself".
-    ///
-    /// Reuses the exact `NotesService.writeNote` off-thread path `submitNote` uses,
-    /// and the same `noteSaving`/`noteError` state, but deliberately does NOT call
-    /// `persistCapture` or `flashSavedCue`: this isn't a one-line jot. Stamping a
-    /// "→ Notes" Recent row would pre-fill the input with hundreds of words of LLM
-    /// prose on reopen (`openHistory` pre-fills capture rows), and the idle-only
-    /// "Added to Notes" cue never shows from the result view anyway. The caller
-    /// drives all confirmation animation from `success`, so the model stays clean.
-    ///
-    /// Guards: no-op while a write is already in flight (`noteSaving`) so a double
-    /// tap can't fire two AppleScripts, and no-op when the target turn has no text.
-    ///
-    /// `turnID` names *which* assistant answer to file: each answer in the thread now
-    /// carries its own save button beneath it (see `turnView`), so a save targets that
-    /// specific segment rather than always the latest. A nil id falls back to the last
-    /// finished assistant turn (the historical behaviour).
-    func saveAnswerToNotes(turnID: Turn.ID? = nil,
-                           completion: @escaping @MainActor (Bool) -> Void) {
-        guard !noteSaving else { return }
-        let target = turnID.flatMap { id in turns.first { $0.id == id } }
-            ?? turns.last { $0.role == "assistant" && !$0.streaming }
-        let answer = target.flatMap { $0.role == "assistant" && !$0.streaming ? $0 : nil }?
-            .text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let content = answer, !content.isEmpty else { return }
-
-        noteError = nil
-        noteSaving = true
-        NotesService.writeNote(content) { [weak self] result in
-            guard let self else { return }
-            self.noteSaving = false
-            switch result {
-            case .success:
-                self.lastSavedToReminders = false
-                completion(true)
-            case .failure(let err):
-                self.noteError = err.errorDescription ?? L("feedback.notesFailed")
-                completion(false)
-            }
-        }
-    }
-
     // MARK: - Open / collapse
 
     /// Whether the island on `display` should render expanded. A `nil` active
@@ -684,6 +644,7 @@ final class NotchModel: ObservableObject {
     func toggleSettings() {
         showSettings.toggle()
         if showSettings {
+            showWhatsNew = false
             showHistory = false
             highlightedHistoryIndex = nil
         }
@@ -708,6 +669,7 @@ final class NotchModel: ObservableObject {
         refreshPendingClipboard()
         mode = .idle
         showSettings = true
+        showWhatsNew = false
         showHistory = false
         highlightedHistoryIndex = nil
     }
@@ -715,6 +677,33 @@ final class NotchModel: ObservableObject {
     /// Leave settings and return to the idle prompt (panel stays open).
     func closeSettings() {
         showSettings = false
+    }
+
+    /// Open the panel straight into the "What's New" release notes — the path ⌘↵,
+    /// the input-row cue, and the once-per-version auto-show all take. Mirrors
+    /// `openSettings`: works whether the panel was resting or already open, clears
+    /// any stale entry vector so the keyboard summon doesn't kick the unfurl, and
+    /// folds the recent list / settings away (they share the same body slot).
+    /// Marks the running version as seen so the cue and auto-show don't re-fire.
+    func openWhatsNew(on display: CGDirectDisplayID? = nil) {
+        entryVelocity = .zero
+        if let display { activeDisplay = display }
+        if !open {
+            pasteboardChangeCountAtOpen = pasteboardChangeCountAtRest
+        }
+        open = true
+        refreshPendingClipboard()
+        mode = .idle
+        showWhatsNew = true
+        showSettings = false
+        showHistory = false
+        highlightedHistoryIndex = nil
+        WhatsNewService.shared.markSeen()
+    }
+
+    /// Leave What's New and return to the idle prompt (panel stays open).
+    func closeWhatsNew() {
+        showWhatsNew = false
     }
 
     /// Auto-retract once the pointer leaves — but ONLY when nothing has been
@@ -738,6 +727,9 @@ final class NotchModel: ObservableObject {
         // Never fold while settings are open — the user may be mid-way through
         // pasting a key or picking a model.
         if showSettings { return }
+        // Likewise keep the panel open while the user is reading What's New — a
+        // cursor that slips off the island shouldn't snatch the notes away.
+        if showWhatsNew { return }
         fullClose()
     }
 
@@ -756,6 +748,7 @@ final class NotchModel: ObservableObject {
         text = ""; turns = []
         showHistory = false
         showSettings = false
+        showWhatsNew = false
         confirmingClear = false
         highlightedHistoryIndex = nil
         // Drop any lingering note-save feedback so a fresh open starts clean.
@@ -1122,18 +1115,23 @@ final class NotchModel: ObservableObject {
             case .professional: return cjk ? "把这段改得更正式一些"     : "Rewrite this to sound more professional"
             case .concise:      return cjk ? "把这段改得更精炼"         : "Rewrite this to be more concise"
             case .translate:
-                // Honor the user's preferred target language: `.auto` keeps the
-                // original object-less phrase (model infers the target); any
-                // explicit pick names it so the tap always lands in that
-                // language. The named form stays object-less ("把这段…"/"this")
-                // so `isReferentialQuery` still pairs it with the clipboard.
+                // Honor the user's preferred language as one half of a *pair*,
+                // not a fixed destination: `.auto` keeps the original object-less
+                // phrase (model infers the target); any explicit pick makes the
+                // tap bidirectional — if the copied text is already in that
+                // language, translate it back to its source language; otherwise
+                // translate it into the picked language. This is what users mean
+                // by "translate" on a clip they can't read: paste A get B, paste
+                // B get A. The model decides the direction. The phrase stays
+                // object-less ("把这段…"/"this…") so `isReferentialQuery` still
+                // pairs it with the clipboard.
                 let lang = TranslationLanguage.current
                 if cjk {
                     guard let name = lang.cjkName else { return "翻译这段" }
-                    return "把这段翻译成\(name)"
+                    return "把这段翻译一下：如果是\(name)就翻译成它的原文语言，否则翻译成\(name)"
                 } else {
                     guard let name = lang.englishName else { return "Translate this" }
-                    return "Translate this to \(name)"
+                    return "Translate this: if it is in \(name), translate it to its original language; otherwise translate it to \(name)"
                 }
             }
         }
@@ -1890,6 +1888,9 @@ final class NotchModel: ObservableObject {
         // Settings needs a touch more room for the provider/model rows; it only
         // ever shows over the idle view, so it wins regardless of `mode`.
         if showSettings { return Tokens.openWidthSettings }
+        // What's New is a reading surface — give it the same comfortable column
+        // as the result view. Also shows only over idle, so it wins like settings.
+        if showWhatsNew { return Tokens.openWidthWhatsNew }
         switch mode {
         case .result: return Tokens.openWidthResult
         // A follow-up loads with the thread already on screen (shown via the result

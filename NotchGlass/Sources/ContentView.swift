@@ -44,6 +44,22 @@ struct ContentView: View {
         .frame(width: metrics.canvasWidth, alignment: .top)
         .ignoresSafeArea()
         .background(KeyEventCatcher { event in
+            // ⌘↵ opens (or toggles shut) the What's New release-notes panel — the
+            // keyboard path that matches the input-row cue. keyCode 36 is Return.
+            // Only over the idle prompt: mid-thread (result/load) ⌘↵ has no meaning
+            // here and shouldn't snatch a streaming answer away. Settings yields to
+            // it (opening What's New folds settings, like the gear folds the list).
+            if event.keyCode == 36, event.modifierFlags.contains(.command),
+               model.mode == .idle {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                    if model.showWhatsNew {
+                        model.closeWhatsNew()
+                    } else {
+                        model.openWhatsNew(on: metrics.displayID)
+                    }
+                }
+                return true
+            }
             // ⌘F summons the recent-list filter. The chip is gone — this is the only
             // way in. Only meaningful when there's a list worth filtering (matches the
             // field's own > 6 render gate). If the list is collapsed, open it first so
@@ -75,6 +91,13 @@ struct ContentView: View {
                 if model.showSettings {
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                         model.closeSettings()
+                    }
+                    return true
+                }
+                // What's New open → same step-out: first Esc returns to the prompt.
+                if model.showWhatsNew {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                        model.closeWhatsNew()
                     }
                     return true
                 }
@@ -267,6 +290,21 @@ struct NotchIsland: View {
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteSaving)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.lastSavedNote)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteError)
+        // Expanding / collapsing the Recent list changes the body's intrinsic
+        // height. Like the note-save line above, that height change must drive the
+        // island's frame, glass background AND clip shape on ONE spring — otherwise
+        // the inner `moduleTransition` animates the list's own fade/slide while the
+        // outer shell resizes on a mismatched (or no) transaction. The visible
+        // symptom was exactly that desync: the black notch cap and the glass veil
+        // (whose gradient stops are derived from the live, animating height) redrew
+        // out of step with the growing form, so the black zone and frost appeared to
+        // "jump" as the list opened. Keying the island here — same spring the clock
+        // toggle uses — makes the whole form grow as one piece, so the glass reads
+        // as one continuous surface unfurling rather than a stack snapping open.
+        // `showHistoryFilter` is included because revealing the ⌘F field also nudges
+        // the height, and it should ride the same coherent motion.
+        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: model.showHistory)
+        .animation(.spring(response: 0.42, dampingFraction: 0.78), value: model.showHistoryFilter)
         .onHover { inside in
             if inside {
                 model.openPanel(on: metrics.displayID,

@@ -43,6 +43,7 @@ enum Tokens {
     static let openWidthLoad: CGFloat = 560
     static let openWidthResult: CGFloat = 600
     static let openWidthSettings: CGFloat = 580   // inline settings form
+    static let openWidthWhatsNew: CGFloat = 600   // release-notes reading column
 }
 
 extension Font {
@@ -135,5 +136,187 @@ extension View {
     /// actually overflows, so a short list/thread stays crisp.
     func scrollEdgeFade(top: Bool, bottom: Bool, fade: CGFloat = 64) -> some View {
         modifier(ScrollEdgeFade(top: top, bottom: bottom, fade: fade))
+    }
+}
+
+// MARK: - Progressive top blur
+
+/// A variable ("progressive") blur on the TOP band of a view — sharp at the
+/// bottom, blurring harder the closer a pixel sits to the top edge. SwiftUI has
+/// no native variable blur on the 14.0 baseline, so we approximate the smooth
+/// ramp by stacking a few uniformly-blurred copies of the same content, each
+/// masked to a gradient band: the strongest blur is masked to the very top, the
+/// gentlest reaches further down, and the un-blurred original shows through
+/// below. Composited together they read as one continuous frost that deepens
+/// upward — the look of rows dissolving *behind* the floating input header.
+///
+/// This is the partner to `ScrollEdgeFade`: that mask handles *opacity* (rows
+/// thin out toward the top), this handles *focus* (rows frost out toward the
+/// top). Used together, content scrolling up under the input stays faintly
+/// perceivable — present, but pushed back — instead of hard-clipping.
+///
+/// Kept to a small fixed layer count: each layer is another render of the
+/// content, so this is only worth applying to a region that actually overflows
+/// and scrolls under a header. A short list that fits needs neither.
+struct ProgressiveTopBlur: ViewModifier {
+    /// Height of the blur band, in points, measured from the top edge down.
+    /// Below this the content is fully sharp.
+    var height: CGFloat
+    /// Peak blur radius at the very top edge. Each layer steps up toward this.
+    var maxRadius: CGFloat = 7
+
+    /// Four frost layers plus the sharp original read as a smooth ramp without the
+    /// cost of a dozen renders. Each layer's blur radius and the depth its mask
+    /// reaches are paced so the strongest frost hugs the top and the lightest blends
+    /// into the sharp content below. Four (vs three) keeps the ramp smooth at the
+    /// heavier radius the immersive prompt now uses, without banding.
+    private let layers = 4
+
+    func body(content: Content) -> some View {
+        content.overlay(
+            GeometryReader { geo in
+                let h = max(geo.size.height, 1)
+                // The blur band as a fraction of the view height, clamped so it
+                // never swallows the whole region on a short view.
+                let band = min(height / h, 0.9)
+                ZStack {
+                    ForEach(0..<layers, id: \.self) { i in
+                        // i = 0 is the gentlest, reaching deepest; the last layer
+                        // is the strongest, hugging the very top. Step the radius
+                        // up and the mask depth in toward the top edge.
+                        let t = CGFloat(i + 1) / CGFloat(layers)   // 0…1
+                        let radius = maxRadius * t
+                        // This layer's frost is visible from the top down to
+                        // `depth`, then fades out — deeper layers (gentle) reach
+                        // further, shallow layers (strong) stay near the top.
+                        let depth = band * (1 - t) + band * 0.34
+                        content
+                            .blur(radius: radius)
+                            .mask(
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: .black, location: 0),
+                                        .init(color: .black, location: max(depth - band * 0.34, 0)),
+                                        .init(color: .clear, location: depth),
+                                        .init(color: .clear, location: 1),
+                                    ],
+                                    startPoint: .top, endPoint: .bottom
+                                )
+                            )
+                    }
+                }
+                // The frost overlay must not intercept clicks — the live, sharp
+                // scroll content beneath owns all hit-testing (taps on rows).
+                .allowsHitTesting(false)
+            }
+        )
+    }
+}
+
+extension View {
+    /// Frost the top band of a scrolling region so rows passing behind a floating
+    /// header blur out progressively (see `ProgressiveTopBlur`). Pair with
+    /// `scrollEdgeFade(top:)` for the matching opacity taper.
+    func progressiveTopBlur(height: CGFloat, maxRadius: CGFloat = 7) -> some View {
+        modifier(ProgressiveTopBlur(height: height, maxRadius: maxRadius))
+    }
+}
+
+/// Apply `ProgressiveTopBlur` only when `active` — and, crucially, mount/unmount
+/// the blur stack rather than just zeroing its radius, so the compact list never
+/// pays for the extra renders. A plain `if active` inside a `ViewModifier` would
+/// change the view's identity; wrapping the toggle here keeps it contained.
+struct ConditionalTopBlur: ViewModifier {
+    var active: Bool
+    var height: CGFloat
+    var maxRadius: CGFloat = 7
+
+    func body(content: Content) -> some View {
+        if active {
+            content.progressiveTopBlur(height: height, maxRadius: maxRadius)
+        } else {
+            content
+        }
+    }
+}
+
+// MARK: - Scroll offset observer
+
+/// Reports a SwiftUI `ScrollView`'s live vertical scroll offset by reaching the
+/// AppKit `NSScrollView` underneath it. The pure-SwiftUI routes (a GeometryReader
+/// preference probe, or an onAppear/onDisappear sentinel) are unreliable on the
+/// classic macOS 14 `ScrollView` — it neither exposes a stable offset nor recycles
+/// off-screen children — so we observe the real clip view's bounds instead, which
+/// is exact and immune to how SwiftUI composes (e.g. the blur overlay's content
+/// copies). Drop this as a zero-size `background` on the scroll *content*; it finds
+/// its enclosing scroll view at runtime and calls `onChange` with `bounds.origin.y`
+/// (0 at the top, growing as the user scrolls down).
+struct ScrollOffsetObserver: NSViewRepresentable {
+    var onChange: (CGFloat) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        // Defer the hookup: the view isn't in the window's hierarchy yet during
+        // make, so the enclosing NSScrollView can't be found until the next runloop.
+        DispatchQueue.main.async { context.coordinator.attach(from: view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onChange = onChange
+        // Re-attach if the scroll view wasn't ready at make time (or got replaced).
+        if context.coordinator.clipView == nil {
+            DispatchQueue.main.async { context.coordinator.attach(from: nsView) }
+        }
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class Coordinator {
+        var onChange: (CGFloat) -> Void
+        weak var clipView: NSClipView?
+
+        init(onChange: @escaping (CGFloat) -> Void) { self.onChange = onChange }
+
+        func attach(from view: NSView) {
+            guard let scrollView = view.enclosingScrollView else { return }
+            let clip = scrollView.contentView
+            clip.postsBoundsChangedNotifications = true
+            clipView = clip
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(boundsChanged(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: clip
+            )
+            // Report the initial offset so a list that opens already-scrolled is
+            // classified correctly on first paint.
+            report(clip)
+        }
+
+        func detach() {
+            NotificationCenter.default.removeObserver(self)
+            clipView = nil
+        }
+
+        @objc private func boundsChanged(_ note: Notification) {
+            guard let clip = note.object as? NSClipView else { return }
+            report(clip)
+        }
+
+        private func report(_ clip: NSClipView) {
+            onChange(clip.bounds.origin.y)
+        }
+    }
+}
+
+extension View {
+    /// Observe the enclosing scroll view's vertical offset (see `ScrollOffsetObserver`).
+    func onScrollOffsetChange(_ action: @escaping (CGFloat) -> Void) -> some View {
+        background(ScrollOffsetObserver(onChange: action))
     }
 }

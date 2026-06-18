@@ -154,7 +154,6 @@ struct InlineSettingsView: View {
                         translationFooter
                     case .general:
                         appLanguageRow
-                        appLanguageFooter
                         placementRow
                         dockIconRow
                     case .about:
@@ -713,14 +712,6 @@ struct InlineSettingsView: View {
         // Drives the live switch: republishing `language` re-renders every view
         // reading `L(_:)` (and rebuilds the panel subtree via `.id(loc.language)`).
         Localization.shared.language = newValue
-    }
-
-    private var appLanguageFooter: some View {
-        Text(L("appLang.footer"))
-            .font(.sf(11))
-            .foregroundStyle(Tokens.text4)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 2)
     }
 
     // MARK: - Translation

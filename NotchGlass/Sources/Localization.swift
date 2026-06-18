@@ -131,7 +131,6 @@ enum Strings {
     static let en: [String: String] = [
         // App Language picker
         "appLang.system": "System",
-        "appLang.footer": "Sets the language Notch's own interface is shown in. System follows your Mac.",
 
         // Settings shell
         "settings.title": "SETTINGS",
@@ -177,7 +176,7 @@ enum Strings {
 
         // Translation section
         "translation.language": "Language",
-        "translation.footer": "Sets the language the Translate chip aims for. Auto lets the model pick a target from the copied text.",
+        "translation.footer": "The language the Translate chip pairs with. Tap it on text already in this language and it translates back to the source; tap it on anything else and it translates into this language. Auto lets the model pick a target from the copied text.",
         "translation.auto": "Auto",
 
         // General section
@@ -185,7 +184,7 @@ enum Strings {
         "general.placement.footer": "External monitors get a menu-bar-height island.",
         "general.dockIcon": "Dock icon",
         "general.dockIcon.footer": "Hidden keeps it a pure overlay — summon with ⌘, or by hovering the notch.",
-        "general.appLanguage": "App Language",
+        "general.appLanguage": "Language",
         "placement.all": "All displays",
         "placement.builtIn": "Built-in display",
         "dock.hidden": "Hidden",
@@ -197,6 +196,15 @@ enum Strings {
         "about.updateFailed": "Update failed — get it from the releases page",
         "about.github": "GitHub",
         "about.releases": "Releases",
+
+        // What's New
+        "whatsnew.title": "WHAT'S NEW",
+        "whatsnew.back": "Back to prompt",
+        "whatsnew.cue": "what's new",
+        "whatsnew.section.features": "FEATURES",
+        "whatsnew.section.fixes": "FIXES",
+        "whatsnew.empty": "Release notes aren't available right now.",
+        "whatsnew.viewReleases": "View on Releases",
 
         // Idle / input
         "input.placeholder": "Type anything...",
@@ -251,9 +259,6 @@ enum Strings {
         "result.copiedToClipboard": "Copied to clipboard",
         "result.copyToContinue": "Copy chat to continue in ChatGPT or Claude",
         "result.followUp": "Ask a follow-up…",
-        "result.saveToNotes": "Save to Notes",
-        "result.savedToNotes": "Saved",
-        "result.saveHint": "Save this answer to Notes",
 
         // Feedback / errors
         "feedback.addedNotesClip": "Added to Notes · with clipboard",
@@ -297,7 +302,6 @@ enum Strings {
     // MARK: 简体中文
     static let zhHans: [String: String] = [
         "appLang.system": "跟随系统",
-        "appLang.footer": "设置 Notch 界面本身显示的语言。「跟随系统」会跟着你的 Mac 走。",
 
         "settings.title": "设置",
         "settings.back": "返回输入",
@@ -339,14 +343,14 @@ enum Strings {
         "conn.unexpected": "响应异常",
 
         "translation.language": "语言",
-        "translation.footer": "设置「翻译」按钮的目标语言。选「自动」时，由模型从复制的文本里推断目标语言。",
+        "translation.footer": "「翻译」按钮配对的语言。点在已是该语言的文本上，会译回原文语言；点在其他文本上，则译成该语言。选「自动」时，由模型从复制的文本里推断目标语言。",
         "translation.auto": "自动",
 
         "general.showOn": "显示于",
         "general.placement.footer": "外接显示器会得到一个菜单栏高度的小岛。",
         "general.dockIcon": "程序坞图标",
         "general.dockIcon.footer": "隐藏后它就是个纯浮层——用 ⌘, 或把鼠标移到刘海上来唤出。",
-        "general.appLanguage": "App 语言",
+        "general.appLanguage": "语言",
         "placement.all": "所有显示器",
         "placement.builtIn": "内建显示器",
         "dock.hidden": "隐藏",
@@ -357,6 +361,14 @@ enum Strings {
         "about.updateFailed": "更新失败——请到发布页手动下载",
         "about.github": "GitHub",
         "about.releases": "发布页",
+
+        "whatsnew.title": "新功能",
+        "whatsnew.back": "返回输入",
+        "whatsnew.cue": "新功能",
+        "whatsnew.section.features": "新功能",
+        "whatsnew.section.fixes": "问题修复",
+        "whatsnew.empty": "暂时无法获取更新说明。",
+        "whatsnew.viewReleases": "查看发布页",
 
         "input.placeholder": "随便打点什么…",
         "input.saving": "保存中…",
@@ -405,9 +417,6 @@ enum Strings {
         "result.copiedToClipboard": "已复制到剪贴板",
         "result.copyToContinue": "复制对话，去 ChatGPT 或 Claude 接着聊",
         "result.followUp": "继续追问…",
-        "result.saveToNotes": "存到备忘录",
-        "result.savedToNotes": "已保存",
-        "result.saveHint": "把这条回答存到「备忘录」",
 
         "feedback.addedNotesClip": "已存入备忘录 · 含剪贴板内容",
         "feedback.addedNotes": "已存入备忘录",
@@ -445,7 +454,6 @@ enum Strings {
     // MARK: 繁體中文
     static let zhHant: [String: String] = [
         "appLang.system": "跟隨系統",
-        "appLang.footer": "設定 Notch 介面本身顯示的語言。「跟隨系統」會跟著你的 Mac 走。",
 
         "settings.title": "設定",
         "settings.back": "返回輸入",
@@ -487,14 +495,14 @@ enum Strings {
         "conn.unexpected": "回應異常",
 
         "translation.language": "語言",
-        "translation.footer": "設定「翻譯」按鈕的目標語言。選「自動」時，由模型從複製的文字裡推斷目標語言。",
+        "translation.footer": "「翻譯」按鈕配對的語言。點在已是該語言的文字上，會譯回原文語言；點在其他文字上，則譯成該語言。選「自動」時，由模型從複製的文字裡推斷目標語言。",
         "translation.auto": "自動",
 
         "general.showOn": "顯示於",
         "general.placement.footer": "外接螢幕會得到一個選單列高度的小島。",
         "general.dockIcon": "Dock 圖示",
         "general.dockIcon.footer": "隱藏後它就是個純浮層——用 ⌘, 或把游標移到瀏海上來喚出。",
-        "general.appLanguage": "App 語言",
+        "general.appLanguage": "語言",
         "placement.all": "所有螢幕",
         "placement.builtIn": "內建螢幕",
         "dock.hidden": "隱藏",
@@ -505,6 +513,14 @@ enum Strings {
         "about.updateFailed": "更新失敗——請到發佈頁手動下載",
         "about.github": "GitHub",
         "about.releases": "發佈頁",
+
+        "whatsnew.title": "新功能",
+        "whatsnew.back": "返回輸入",
+        "whatsnew.cue": "新功能",
+        "whatsnew.section.features": "新功能",
+        "whatsnew.section.fixes": "問題修復",
+        "whatsnew.empty": "暫時無法取得更新說明。",
+        "whatsnew.viewReleases": "查看發佈頁",
 
         "input.placeholder": "隨便打點什麼…",
         "input.saving": "儲存中…",
@@ -553,9 +569,6 @@ enum Strings {
         "result.copiedToClipboard": "已複製到剪貼簿",
         "result.copyToContinue": "複製對話，去 ChatGPT 或 Claude 接著聊",
         "result.followUp": "繼續追問…",
-        "result.saveToNotes": "存到備忘錄",
-        "result.savedToNotes": "已儲存",
-        "result.saveHint": "把這則回答存到「備忘錄」",
 
         "feedback.addedNotesClip": "已存入備忘錄 · 含剪貼簿內容",
         "feedback.addedNotes": "已存入備忘錄",

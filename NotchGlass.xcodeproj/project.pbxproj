@@ -28,6 +28,8 @@
 		A1000074 /* MouseVelocityTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000075 /* MouseVelocityTracker.swift */; };
 		A1000076 /* OpenRouterAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000077 /* OpenRouterAuth.swift */; };
 		A1000078 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000079 /* Localization.swift */; };
+		A1000080 /* WhatsNewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000081 /* WhatsNewService.swift */; };
+		A1000082 /* WhatsNewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000083 /* WhatsNewView.swift */; };
 		A1000066 /* IntentExamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000067 /* IntentExamples.swift */; };
 		A1000071 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000070 /* Assets.xcassets */; };
 		A10004A1 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = A10004A0 /* Fonts */; };
@@ -47,6 +49,8 @@
 		A1000075 /* MouseVelocityTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseVelocityTracker.swift; sourceTree = "<group>"; };
 		A1000077 /* OpenRouterAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAuth.swift; sourceTree = "<group>"; };
 		A1000079 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
+		A1000081 /* WhatsNewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewService.swift; sourceTree = "<group>"; };
+		A1000083 /* WhatsNewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewView.swift; sourceTree = "<group>"; };
 		A1000067 /* IntentExamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentExamples.swift; sourceTree = "<group>"; };
 		A1000007 /* GlassBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassBackground.swift; sourceTree = "<group>"; };
 		A1000008 /* NotchBody.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchBody.swift; sourceTree = "<group>"; };
@@ -105,6 +109,8 @@
 				A1000075 /* MouseVelocityTracker.swift */,
 				A1000077 /* OpenRouterAuth.swift */,
 				A1000079 /* Localization.swift */,
+				A1000081 /* WhatsNewService.swift */,
+				A1000083 /* WhatsNewView.swift */,
 				A1000065 /* IntentEngine.swift */,
 				A1000067 /* IntentExamples.swift */,
 				A1000007 /* GlassBackground.swift */,
@@ -219,6 +225,8 @@
 				A1000074 /* MouseVelocityTracker.swift in Sources */,
 				A1000076 /* OpenRouterAuth.swift in Sources */,
 				A1000078 /* Localization.swift in Sources */,
+				A1000080 /* WhatsNewService.swift in Sources */,
+				A1000082 /* WhatsNewView.swift in Sources */,
 				A1000064 /* IntentEngine.swift in Sources */,
 				A1000066 /* IntentExamples.swift in Sources */,
 				A1000016 /* GlassBackground.swift in Sources */,

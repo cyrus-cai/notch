@@ -7,6 +7,9 @@ struct NotchBody: View {
     /// Self-update state — read here only to badge the settings gear with a dot
     /// when a newer release is available (the action itself lives in settings).
     @ObservedObject private var updater = UpdaterService.shared
+    /// Release-notes state — read here to surface the "what's new" cue in the idle
+    /// input row once, on the first launch after an update (see `unseenVersion`).
+    @ObservedObject private var whatsNew = WhatsNewService.shared
     /// Drives the custom field's first-responder. Set shortly after the panel
     /// opens so the caret lands without a click (the AppDelegate has just made
     /// the panel key; a tiny delay lets that settle first).
@@ -44,16 +47,12 @@ struct NotchBody: View {
     /// filter icon is tapped so the caret lands in the expanded field without a
     /// second click; reset when the filter collapses so it can re-arm next time.
     @State private var filterFocused = false
-
-    /// Save-to-Notes confirmation state, keyed by the assistant turn being saved —
-    /// every answer in the thread carries its own save button beneath it (see
-    /// `assistantTurnFooter`), so the check and any error belong to one specific
-    /// segment, not the whole row. `savedNoteTurn` holds the id of the turn whose
-    /// button is currently showing its post-save check (cleared after a beat);
-    /// `noteSaveError` holds the id + message of the most recent failure, shown as a
-    /// brief inline line under that answer and auto-clearing after a few seconds.
-    @State private var savedNoteTurn: NotchModel.Turn.ID? = nil
-    @State private var noteSaveError: (turn: NotchModel.Turn.ID, message: String)? = nil
+    /// Whether the immersive recent list is resting at its top. Drives the floating
+    /// header's "manage" controls: RECENT + gear + Clear show while the list is at
+    /// the top, then fade out the moment it scrolls, so rows sliding up behind the
+    /// input meet only the prompt — no control row to collide with. Flipped by a 1pt
+    /// sentinel at the top of the scroll content (see `setHistoryAtTop`).
+    @State private var historyAtTop = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -132,18 +131,27 @@ struct NotchBody: View {
             if model.showSettings {
                 InlineSettingsView(model: model)
                     .transition(moduleTransition)
+            } else if model.showWhatsNew {
+                // What's New owns the whole body, like settings — the idle prompt is
+                // hidden while the user reads the release notes. Its own back chevron
+                // (and Esc) carries the way home.
+                WhatsNewView(model: model)
+                    .transition(moduleTransition)
+            } else if useImmersiveHistory {
+                // Immersive recent list: the input floats as a translucent header
+                // over a tall scroll surface that reaches UP behind it. Rows scroll
+                // under the input and frost + fade out — present but pushed back —
+                // so the panel reads as one continuous surface, not a stack of
+                // blocks. Only taken once the list overflows (`useImmersiveHistory`);
+                // a short list keeps the calm compact layout below.
+                immersiveHistoryView
             } else {
                 if let clip = model.pendingClipboard {
                     clipboardPreviewLine(clip)
                         .transition(moduleTransition)
                 }
 
-                inputRow(placeholder: L("input.placeholder"), followUp: false)
-                    .onChange(of: model.text) { _, _ in
-                        // Editing the field clears a stale note-save error so the cue
-                        // doesn't linger over a line the user is actively rewriting.
-                        if model.noteError != nil { model.noteError = nil }
-                    }
+                idleInputRow
 
                 // The one-tap action chips for the pending clipboard sit *below* the
                 // prompt — the field stays the focus, with the shortcuts as a quiet
@@ -161,6 +169,7 @@ struct NotchBody: View {
                 }
 
                 // The recent list expands below the prompt once the clock is tapped.
+                // (The immersive variant above handles the overflowing case.)
                 if !model.hasText && !model.history.isEmpty && model.showHistory {
                     historySection
                         .transition(moduleTransition)
@@ -183,6 +192,81 @@ struct NotchBody: View {
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteSaving)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.lastSavedNote)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteError)
+    }
+
+    /// The idle prompt field, with the live note-error reset wired in. Shared by
+    /// the flat idle layout and the immersive history header so the field — and
+    /// all its focus/IME plumbing — exists exactly once, never duplicated.
+    private var idleInputRow: some View {
+        inputRow(placeholder: L("input.placeholder"), followUp: false)
+            .onChange(of: model.text) { _, _ in
+                // Editing the field clears a stale note-save error so the cue
+                // doesn't linger over a line the user is actively rewriting.
+                if model.noteError != nil { model.noteError = nil }
+            }
+    }
+
+    /// Take the immersive (input-floats-over-scroll) layout only when the recent
+    /// list is both open and long enough to scroll. A short list that fits has
+    /// nothing to flow under the input, so it keeps the calm compact layout —
+    /// matching the same `> 6` overflow calibration the list itself uses.
+    private var useImmersiveHistory: Bool {
+        !model.hasText
+            && model.showHistory
+            && model.pendingClipboard == nil
+            && noteFeedbackContent == nil
+            && model.recentVisible.count > 6
+    }
+
+    // MARK: - Immersive history
+
+    /// The immersive recent layout: a tall scroll surface with the prompt floating
+    /// over its top as a translucent header. The list's content reaches up behind
+    /// the header (`immersiveTopReach`), so rows scroll under the input and frost +
+    /// fade out rather than ending on a hard cut — the panel reads as one
+    /// continuous surface. The header (input + RECENT controls) draws ON TOP of the
+    /// scroll via z-order, but a soft scrim under it (not an opaque fill) keeps the
+    /// prompt legible while the rows behind stay perceivable.
+    private var immersiveHistoryView: some View {
+        ZStack(alignment: .top) {
+            // Back: the tall list, its top runway tucked behind the header.
+            historyList(immersive: true)
+        }
+        .overlay(alignment: .top) {
+
+            // Front: the floating header — NO background of its own. The glass shell
+            // must read identically whether the panel is collapsed or expanded, so the
+            // prompt sits directly on the same translucent material as the resting
+            // state; a dark scrim here repainted the top into an opaque black slab and
+            // broke that. Legibility of the rows passing behind comes entirely from the
+            // list's own top fade + blur (see `historyList(immersive:)`), and the
+            // manage controls (RECENT + gear + Clear) simply lift away once the list
+            // scrolls, so nothing they could collide with stays on screen.
+            VStack(alignment: .leading, spacing: 0) {
+                idleInputRow
+                if !historyScrolled {
+                    recentHeaderRow
+                        .padding(.top, 6)
+                        // Fade + slide up as it leaves, so dismissing the controls
+                        // reads as them lifting away behind the prompt.
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .padding(.bottom, 6)
+        }
+        .transition(moduleTransition)
+    }
+
+    /// True once the immersive list has scrolled away from its top.
+    private var historyScrolled: Bool { !historyAtTop }
+
+    /// Flip the at-top flag on the standard module spring so the manage controls
+    /// fade/collapse rather than snap. Driven by the top sentinel's appear/disappear.
+    private func setHistoryAtTop(_ atTop: Bool) {
+        guard historyAtTop != atTop else { return }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            historyAtTop = atTop
+        }
     }
 
     // MARK: - Note save feedback
@@ -362,34 +446,40 @@ struct NotchBody: View {
         }
     }
 
+    /// The "RECENT" label + its manage controls (gear, Clear). Shared by the
+    /// compact `historySection` header and the immersive floating header, so the
+    /// row reads the same in both layouts. Both controls only exist while the
+    /// recent list is expanded, so the idle panel stays minimal.
+    private var recentHeaderRow: some View {
+        HStack(spacing: 6) {
+            Text(L("recent.header"))
+                .font(.sf(10, weight: .semibold))
+                .tracking(0.8)
+                .foregroundStyle(Tokens.text4)
+            Spacer()
+            // The filter has no chip of its own — it's summoned with ⌘F (handled in
+            // ContentView's key catcher) and unfurls the field below the header.
+            settingsEntry
+            // Clear is destructive, so it arms a confirmation rather than wiping
+            // history on first tap. The card itself is rendered centered over the
+            // whole island (see NotchIsland) — not anchored here — so it lands in
+            // the middle of the panel instead of down by the pill.
+            GlassTextButton(title: L("recent.clear")) {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                    model.confirmingClear = true
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+    }
+
     /// RECENT header + the scrollable list, as one block so the open animation
     /// moves the whole module together.
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Text(L("recent.header"))
-                    .font(.sf(10, weight: .semibold))
-                    .tracking(0.8)
-                    .foregroundStyle(Tokens.text4)
-                Spacer()
-                // Settings + Clear share this "manage" row; both only exist while the
-                // recent list is expanded, so the idle panel stays minimal. The filter
-                // has no chip of its own anymore — it's summoned with ⌘F (handled in
-                // ContentView's key catcher) and unfurls the field below the header.
-                settingsEntry
-                // Clear is destructive, so it arms a confirmation rather than wiping
-                // history on first tap. The card itself is rendered centered over the
-                // whole island (see NotchIsland) — not anchored here — so it lands in
-                // the middle of the panel instead of down by the pill.
-                GlassTextButton(title: L("recent.clear")) {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                        model.confirmingClear = true
-                    }
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.top, 12)
-            .padding(.bottom, 4)
+            recentHeaderRow
+                .padding(.top, 12)
+                .padding(.bottom, 4)
 
             // Live filter — hidden behind the filter icon by default. Only shown
             // once the list is long enough to be worth searching (matches historyList's
@@ -431,16 +521,40 @@ struct NotchBody: View {
                 }
             }
 
-            historyList
+            historyList()
         }
     }
 
-    private var historyList: some View {
-        // More rows than fit the window → the list scrolls. The first row sits right
-        // under the (non-scrolling) RECENT header, so the TOP never needs a fade — a
-        // fixed top pad there would just open a dead gap below the header. Only the
-        // bottom taper earns its keep, telling the user there's more below.
-        // The list frame holds ~6 rows (~35pt each in 220pt); the fade + scroll
+    /// How far the immersive list's content reaches UP behind the floating header
+    /// (input + RECENT row). The scroll viewport extends this many points above
+    /// the first row's resting position; rows scroll up into it and frost out
+    /// behind the input rather than clipping at a hard edge. Sized to clear the
+    /// 48pt input + the RECENT controls row above the list.
+    private let immersiveTopReach: CGFloat = 84
+
+    /// Height of the top frost band, in points — independent of `immersiveTopReach`
+    /// (the layout runway) so the blur can be tuned without moving any rows. Taller
+    /// than the runway on purpose: the heavy frost then extends a little BELOW the
+    /// prompt's lower edge, so a row sitting just under "Type anything…" is clearly
+    /// behind glass rather than merely faded.
+    private let immersiveBlurReach: CGFloat = 130
+
+    /// Total height of the immersive scroll region — deliberately taller than the
+    /// compact 220 so the recent list fills the panel and reads as one continuous
+    /// surface flowing under the header. Older rows are a scroll (or ↓) away.
+    private let immersiveListHeight: CGFloat = 320
+
+    /// The recent list. `immersive` swaps the compact, below-the-header list for
+    /// the tall variant whose content scrolls UP behind the floating input —
+    /// frosting and fading as it goes (see `immersiveTopReach`). Only used once
+    /// the list overflows; a short list stays compact under the header.
+    private func historyList(immersive: Bool = false) -> some View {
+        // More rows than fit the window → the list scrolls. In the compact layout
+        // the first row sits right under the (non-scrolling) RECENT header, so the
+        // TOP never needs a fade — a fixed top pad there would just open a dead gap
+        // below the header. The immersive layout is the opposite: its top reaches
+        // up behind the floating input, so it DOES taper (fade + frost) there.
+        // The compact frame holds ~6 rows (~35pt each in 220pt); the fade + scroll
         // only earn their keep past that. Calibrated to the current height so the
         // bottom taper turns on right when the list actually overflows.
         let overflowing = model.recentVisible.count > 6
@@ -525,18 +639,40 @@ struct NotchBody: View {
                 }
             }
             // Breathing room only BELOW the last row, so the bottom fade tapers over
-            // this gap rather than slicing a row. The top stays tight under the
-            // header — no dead space between "RECENT" and the first entry.
+            // this gap rather than slicing a row. In the immersive layout the TOP
+            // also gets an inset (`immersiveTopReach`): it's the runway the rows
+            // scroll up into, behind the floating input, so the first row rests
+            // *below* the input at idle but can travel up under it. The compact
+            // layout keeps its top tight under the (non-floating) RECENT header.
+            .padding(.top, immersive ? immersiveTopReach : 0)
             .padding(.bottom, overflowing ? edgeFade : 0)
+            // Immersive only: watch the real scroll offset (via the AppKit clip view)
+            // so the floating header can hide its manage controls the moment the list
+            // leaves the top. A few points of slack absorbs rest-state jitter.
+            .background {
+                if immersive {
+                    ScrollOffsetObserver { y in setHistoryAtTop(y <= 6) }
+                }
+            }
         }
-        // Compact window: ~6 rows show before the list scrolls, so a short Recent
-        // list doesn't reserve a tall empty band under the header. Older rows are a
-        // scroll (or ↓) away.
-        .frame(maxHeight: 220)
+        // Immersive: a tall surface that fills the panel and flows under the header.
+        // Compact: ~6 rows before the list scrolls, so a short Recent list doesn't
+        // reserve a tall empty band under the header. Older rows are a scroll (↓) away.
+        .frame(maxHeight: immersive ? immersiveListHeight : 220)
         .scrollIndicators(.never)
-        // Only the bottom edge fades (the header caps the top), and only once the
-        // list overflows — a short list that fits stays crisp.
-        .scrollEdgeFade(top: false, bottom: overflowing, fade: edgeFade)
+        // Compact: only the bottom fades (the RECENT header caps the top). Immersive:
+        // BOTH edges taper — the top dissolves the rows sliding up behind the input,
+        // the bottom tells the user there's more below. Gated on overflow either way.
+        .scrollEdgeFade(top: immersive, bottom: overflowing, fade: edgeFade)
+        // Immersive only: frost the rows passing behind the floating input so they
+        // read as pushed back — present but soft — not hard-clipped. The frost band
+        // is taller than the scroll runway and the radius heavier, so the deep blur
+        // reaches down past the prompt's lower edge — a row sitting right under
+        // "Type anything…" is firmly behind glass, not merely dimmed. Kept decoupled
+        // from `immersiveTopReach` (which is layout: where rows rest) so tuning the
+        // blur never shifts the list. Glass translucency is untouched — this only
+        // softens focus, never darkens.
+        .modifier(ConditionalTopBlur(active: immersive, height: immersiveBlurReach, maxRadius: 26))
         // Keep the keyboard-highlighted row visible: stepping ↓/↑ past the visible
         // window would otherwise leave the selection offscreen. Mirrors the
         // streaming tail-follow in `conversationScroll` — a reactive scroll in its
@@ -598,11 +734,6 @@ struct NotchBody: View {
                 }
             }
             .padding(.top, 24)
-
-            // Save-to-Notes failures from the per-answer save button surface inline
-            // beneath that specific answer now (see `assistantTurnFooter`), not here —
-            // so this slot only carries the note/reminder cue for lines filed FROM the
-            // result view's follow-up field.
 
             // Note/Reminder save feedback for lines filed FROM the result view (now
             // that the follow-up field routes by intent). The idle prompt shows this
@@ -794,26 +925,7 @@ struct NotchBody: View {
                     MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
-                    assistantTurnFooter(turn)
                 }
-            }
-        }
-    }
-
-    /// The action row beneath a settled assistant answer: an icon-only "save to
-    /// Notes" button, plus a brief inline error line if that save failed. Kept faint
-    /// and small so it reads as a quiet caption on the answer, not a call to action —
-    /// the same whisper weight the affordance had in the input row, just relocated to
-    /// sit with the text it saves.
-    @ViewBuilder
-    private func assistantTurnFooter(_ turn: NotchModel.Turn) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            saveToNotesButton(for: turn)
-            if let err = noteSaveError, err.turn == turn.id {
-                Text(err.message)
-                    .font(.sf(11))
-                    .foregroundStyle(Tokens.text4)
-                    .transition(.opacity)
             }
         }
     }
@@ -928,14 +1040,45 @@ struct NotchBody: View {
             // With the destination now spelled out inline beside the caret, the
             // trailing send pill would just repeat it — so while there's text the
             // inline hint owns that job and the trailing slot stays empty. When the
-            // field is empty the faint clock entry tucks in there to toggle Recent.
-            if !model.hasText && !model.history.isEmpty {
-                recentEntry
-                    .transition(.opacity)
+            // field is empty the faint clock entry tucks in there to toggle Recent,
+            // and — on the first launch after an update — a "what's new" cue leads
+            // it, the one-tap (or ⌘↵) way into the release notes.
+            if !model.hasText && !followUp {
+                HStack(spacing: 8) {
+                    if whatsNew.unseenVersion != nil {
+                        whatsNewCue
+                            .transition(.opacity)
+                    }
+                    if !model.history.isEmpty {
+                        recentEntry
+                            .transition(.opacity)
+                    }
+                }
             }
         }
         .frame(height: followUp ? 30 : 48)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: model.hasText)
+    }
+
+    /// The first-launch-after-update cue: a quiet "what's new" pill in the idle
+    /// input's trailing slot. Tapping it (or ⌘↵) opens the release-notes panel;
+    /// either way `openWhatsNew` marks this version seen, so the cue shows once.
+    private var whatsNewCue: some View {
+        Button {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                model.openWhatsNew(on: nil)
+            }
+        } label: {
+            Text(L("whatsnew.cue"))
+                .font(.sf(12, weight: .medium))
+                .lineLimit(1)
+                .foregroundStyle(Tokens.text3)
+                .padding(.horizontal, 9)
+                .frame(height: 26)
+                .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(L("whatsnew.title"))
     }
 
     /// The minimal clock entry that opens / closes the recent list.
@@ -1028,8 +1171,6 @@ struct NotchBody: View {
                 //  • hovering the continue-elsewhere button → a one-line hint for
                 //    what that button does, in place of a tooltip;
                 //  • otherwise → the usual "Ask a follow-up…" prompt.
-                // (Save-to-Notes confirmation no longer lands here — it's the per-answer
-                // button's own icon check now, see `saveToNotesButton`.)
                 if !model.hasText && followUpCaretWidth == 0 {
                     Group {
                         if handoffCopied {
@@ -1054,9 +1195,7 @@ struct NotchBody: View {
                 SendButton(compact: true) { model.submitCurrent() }
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
             } else {
-                // Save-to-Notes used to sit here too; it now lives beneath each answer
-                // (see `assistantTurnFooter`), so the input row keeps only the
-                // "continue elsewhere" escape hatch.
+                // The input row keeps only the "continue elsewhere" escape hatch.
                 continueElsewhereButton
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
@@ -1161,35 +1300,6 @@ struct NotchBody: View {
         .onHover { hoveringContinue = $0 }
     }
 
-    /// One-tap "file this answer in Apple Notes" button, sitting just beneath the
-    /// assistant answer it saves (one per answer). Faint and text-only so it reads as
-    /// a quiet caption on the text, not a call to action. Flips to "Saved" for a beat
-    /// on success — its own confirmation now that it no longer borrows the field's
-    /// placeholder shimmer.
-    private func saveToNotesButton(for turn: NotchModel.Turn) -> some View {
-        let saved = savedNoteTurn == turn.id
-        return Button { runNoteSave(turn) } label: {
-            Text(saved ? L("result.savedToNotes") : L("result.saveToNotes"))
-                .font(.sf(11.5, weight: .semibold))
-                .foregroundStyle(saved ? Tokens.text2 : Tokens.text3)
-                .lineLimit(1)
-                .contentTransition(.opacity)
-                .padding(.horizontal, 6)
-                .frame(height: 24)
-                .contentShape(Rectangle())
-        }
-        // No hover capsule — this caption brightens on hover instead, so there's
-        // no background plate to collide with the neighbouring UI. (Don't reuse
-        // RecentEntryStyle here; that one draws the capsule.)
-        .buttonStyle(BrightenOnHoverStyle())
-        // The label carries 6pt of internal horizontal padding for breathing room.
-        // That also insets the text; cancel it on the leading edge so "Save to
-        // Notes" sits flush-left with the answer text above.
-        .padding(.leading, -6)
-        .help(L("result.saveHint"))
-        .animation(.easeOut(duration: 0.2), value: saved)
-    }
-
     /// Copy the conversation and play the in-field confirmation: the placeholder
     /// becomes "Copied to clipboard", a light sweeps once across those glyphs, the
     /// message holds for a beat, then the whole label fades back to "Ask a
@@ -1211,37 +1321,6 @@ struct NotchBody: View {
         }
     }
 
-    /// Save one specific answer to Apple Notes, driven ONLY by confirmed success (the
-    /// write is an async AppleScript round-trip, so the check follows the model's
-    /// completion bool, not an optimistic flip). On success the button's icon shows a
-    /// check for ~2s, then reverts. On failure no check plays; instead a brief inline
-    /// error line fades in beneath that answer and auto-clears after ~4s, so a
-    /// permission denial isn't silent. Both confirmations are keyed to `turn.id`, so a
-    /// save in a long thread lands on the right answer's button.
-    private func runNoteSave(_ turn: NotchModel.Turn) {
-        model.saveAnswerToNotes(turnID: turn.id) { success in
-            if success {
-                withAnimation(.easeOut(duration: 0.18)) { savedNoteTurn = turn.id }
-                Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    withAnimation(.easeOut(duration: 0.35)) {
-                        if savedNoteTurn == turn.id { savedNoteTurn = nil }
-                    }
-                }
-            } else {
-                let message = model.noteError ?? "Couldn't save to Notes. Try again."
-                withAnimation(.easeOut(duration: 0.25)) {
-                    noteSaveError = (turn: turn.id, message: message)
-                }
-                Task {
-                    try? await Task.sleep(nanoseconds: 4_000_000_000)
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        if noteSaveError?.turn == turn.id { noteSaveError = nil }
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// History row highlight — a *hint* of glass, not a slab of it. The earlier
@@ -1321,20 +1400,6 @@ struct SetupModelButtonStyle: ButtonStyle {
     }
 }
 
-/// A text-only caption button with no background plate: it simply lifts from
-/// faint to full opacity on hover and dips on press. Used for the per-answer
-/// "Save to Notes" caption, where a hover capsule would bleed left into the
-/// neighbouring UI — here the brighten alone signals the affordance.
-struct BrightenOnHoverStyle: ButtonStyle {
-    @State private var hovering = false
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.5 : (hovering ? 1 : 0.85))
-            .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.15), value: hovering)
-    }
-}
-
 /// The faint clock entry: brightens slightly on hover, dims on press.
 struct RecentEntryStyle: ButtonStyle {
     @State private var hovering = false
@@ -1342,9 +1407,9 @@ struct RecentEntryStyle: ButtonStyle {
         configuration.label
             // A Capsule, not a Circle: it collapses to a perfect circle behind a
             // square icon button (e.g. the 27×27 continue-elsewhere icon) but reads
-            // as a proper pill behind a wide text label like "Save to Notes". A
-            // Circle stretched to the label's wide rectangular bounds rendered as an
-            // oversized ellipse that bled above and below the text.
+            // as a proper pill behind a wide text label. A Circle stretched to the
+            // label's wide rectangular bounds rendered as an oversized ellipse that
+            // bled above and below the text.
             .background(
                 Capsule().fill(.white.opacity(hovering ? 0.08 : 0))
             )
