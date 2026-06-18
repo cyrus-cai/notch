@@ -158,6 +158,22 @@ extension View {
 /// Kept to a small fixed layer count: each layer is another render of the
 /// content, so this is only worth applying to a region that actually overflows
 /// and scrolls under a header. A short list that fits needs neither.
+///
+/// **The band must end ABOVE the first resting row, or its blurred glyphs halo.**
+/// This frost works by blurring the content itself — there is no separate material
+/// layer between the rows and the panel glass to blur instead (the rows draw
+/// straight onto the whole-panel glass). So the only way to keep the row text out
+/// of the blur is geometric: the band reaches only across the *runway* — the empty
+/// inset above the first row (`immersiveTopReach`) that rows scroll up into behind
+/// the floating input — and tapers fully to clear before it touches the first row's
+/// resting position. At idle no row is inside the band, so nothing white is sampled
+/// into a blurred copy and there is no halo. As the user scrolls, rows travel up
+/// into the runway band and frost on the way out — which is the whole point. The
+/// earlier bug was a band (`immersiveBlurReach = 130` over a 320pt viewport) that
+/// reached ~140pt down, well past the first row at ~84pt, so the light-grey glyphs
+/// (`Tokens.text2`, white@0.74) blurred at radius 26 stacked into a bright text-shaped
+/// wash parked behind the top rows. Keep the band's deepest reach short of the
+/// runway height; see `immersiveBlurReach` for the exact budget.
 struct ProgressiveTopBlur: ViewModifier {
     /// Height of the blur band, in points, measured from the top edge down.
     /// Below this the content is fully sharp.
@@ -165,14 +181,19 @@ struct ProgressiveTopBlur: ViewModifier {
     /// Peak blur radius at the very top edge. Each layer steps up toward this.
     var maxRadius: CGFloat = 7
 
-    /// Four frost layers plus the sharp original read as a smooth ramp without the
-    /// cost of a dozen renders. Each layer's blur radius and the depth its mask
-    /// reaches are paced so the strongest frost hugs the top and the lightest blends
-    /// into the sharp content below. Four (vs three) keeps the ramp smooth at the
-    /// heavier radius the immersive prompt now uses, without banding.
+    /// Four frost layers read as a smooth ramp without the cost of a dozen renders.
+    /// Each layer's blur radius and the depth its mask reaches are paced so the
+    /// strongest frost hugs the top and the lightest blends into the sharp content
+    /// below. Four (vs three) keeps the ramp smooth at the heavier radius the
+    /// immersive prompt now uses, without banding.
     private let layers = 4
 
     func body(content: Content) -> some View {
+        // `.overlay` (taking the content's own size, so it never disturbs layout)
+        // lays the blurred copies on top, so a row scrolling up INTO the band reads
+        // as frosting out. That only haloes if a resting row sits inside the band —
+        // which the caller prevents by keeping the band above the first row (see the
+        // doc comment). Within the runway there is no text to brighten.
         content.overlay(
             GeometryReader { geo in
                 let h = max(geo.size.height, 1)
@@ -205,8 +226,8 @@ struct ProgressiveTopBlur: ViewModifier {
                             )
                     }
                 }
-                // The frost overlay must not intercept clicks — the live, sharp
-                // scroll content beneath owns all hit-testing (taps on rows).
+                // The frost base must not intercept clicks — the live, sharp content
+                // on top owns all hit-testing (taps on rows).
                 .allowsHitTesting(false)
             }
         )

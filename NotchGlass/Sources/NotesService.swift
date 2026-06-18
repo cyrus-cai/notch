@@ -76,10 +76,26 @@ enum NotesService {
         // Notes' `body` is HTML, so the Swift side escapes the text and turns
         // newlines into <br> before this ever sees it. Setting only `body`
         // (no `name`) makes Notes use the first line as the title automatically.
+        // Note target, in order of preference:
+        //   1. The default account's *first* folder — robust against the top-level
+        //      folder being localized ("备忘录" on a zh system) or not literally
+        //      named "Notes". Hard-coding `folder "Notes"` was the main source of
+        //      the intermittent "AppleEvent handler failed" (-10000): on iCloud
+        //      accounts that reference often doesn't resolve, and it momentarily
+        //      vanishes mid-sync.
+        //   2. If that fails (no account/folder ready, e.g. mid-launch or mid-sync),
+        //      create the note **unanchored** — `make new note with properties …`
+        //      lets Notes file it in its own default location. This is the path that
+        //      survives the transient states that used to throw.
         let source = """
         on notchCreateNote(noteBody)
             tell application "Notes"
-                set newNote to make new note at folder "Notes" of default account with properties {body:noteBody}
+                try
+                    set targetFolder to folder 1 of default account
+                    set newNote to make new note at targetFolder with properties {body:noteBody}
+                on error
+                    set newNote to make new note with properties {body:noteBody}
+                end try
                 return id of newNote
             end tell
         end notchCreateNote
@@ -163,7 +179,19 @@ enum NotesService {
         let event = subroutineEvent(named: "notchcreatenote", arg: body)
 
         var error: NSDictionary?
-        let result = script.executeAppleEvent(event, error: &error)
+        var result = script.executeAppleEvent(event, error: &error)
+
+        // A generic "AppleEvent handler failed" (-10000) is usually transient —
+        // Notes was mid-launch or mid-iCloud-sync when the event landed. Pause
+        // briefly and try exactly once more before giving up; a stuck permission
+        // (-1743/-1744) or a missing target won't be retried by mapError's
+        // classification, only this generic case is.
+        if let firstError = error, (firstError[NSAppleScript.errorNumber] as? Int) == -10000 {
+            Thread.sleep(forTimeInterval: 0.6)
+            error = nil
+            result = script.executeAppleEvent(event, error: &error)
+        }
+
         if let error { return .failure(mapError(error)) }
         // The handler returns `id of newNote`; pull it out as the deep-link token.
         // An empty/absent string is fine — the note was still created.

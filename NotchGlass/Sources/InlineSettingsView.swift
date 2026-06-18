@@ -846,10 +846,21 @@ struct InlineSettingsView: View {
         .animation(.easeOut(duration: 0.2), value: updater.phase)
     }
 
-    /// Quiet text-button links — source on GitHub, the releases page — in the
-    /// same understated language as the Model footer's signup host.
+    /// Quiet text-button links — the release notes, source on GitHub, the
+    /// releases page — in the same understated language as the Model footer's
+    /// signup host. "What's New" lives here as the fixed, always-available way
+    /// into the notes, independent of the once-per-version idle cue.
     private var aboutLinks: some View {
         HStack(spacing: 14) {
+            Button(L("about.whatsNew")) {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                    model.openWhatsNew(on: nil)
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.sf(11.5, weight: .medium))
+            .foregroundStyle(Tokens.text2)
+
             Button(L("about.github")) {
                 NSWorkspace.shared.open(URL(string: "https://github.com/\(UpdaterService.repo)")!)
             }

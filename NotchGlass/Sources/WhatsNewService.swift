@@ -59,6 +59,19 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
+            version: "1.0.5",
+            date: "2026-06-19",
+            features: [
+                "When you copy something, the quote now rides right inside the prompt while the recent list stays open below — no more collapsing back to the compact view.",
+                "Clipboard actions stay tidy: just one chip at rest, with the rest unfurling when you hover the row.",
+                "\"What's New\" is now a permanent link in Settings, so you can revisit the release notes any time.",
+            ],
+            fixes: [
+                "Saving to Apple Notes is more reliable — it no longer fails intermittently while Notes is launching or syncing, and works when your Notes folder isn't named in English.",
+                "Recent rows scrolling up behind the prompt frost cleanly, with no faint text halo lingering at the top.",
+            ]
+        ),
+        Entry(
             version: "1.0.4",
             date: "2026-06-18",
             features: [

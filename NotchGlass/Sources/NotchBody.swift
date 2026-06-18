@@ -54,6 +54,14 @@ struct NotchBody: View {
     /// sentinel at the top of the scroll content (see `setHistoryAtTop`).
     @State private var historyAtTop = true
 
+    /// Measured height of the immersive floating header (input, plus the quote
+    /// preview and action chips when a clipboard quote is pending). The list's top
+    /// runway and frost band are derived from this so the first row always rests
+    /// clear of the header no matter how tall it gets — a plain input is short, a
+    /// quote-with-chips header is tall. Seeded to the plain-input baseline so the
+    /// first frame (before the preference lands) already clears a no-quote header.
+    @State private var measuredImmersiveHeaderHeight: CGFloat = NotchBody.immersiveHeaderBaseline
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             switch model.mode {
@@ -210,10 +218,14 @@ struct NotchBody: View {
     /// list is both open and long enough to scroll. A short list that fits has
     /// nothing to flow under the input, so it keeps the calm compact layout —
     /// matching the same `> 6` overflow calibration the list itself uses.
+    ///
+    /// A pending clipboard quote no longer forces the compact fallback: the quote
+    /// preview and its action chips ride inside the immersive floating header (above
+    /// and below the input), and the runway grows to clear that taller header — so the
+    /// frosted immersive surface stays consistent whether or not a quote is present.
     private var useImmersiveHistory: Bool {
         !model.hasText
             && model.showHistory
-            && model.pendingClipboard == nil
             && noteFeedbackContent == nil
             && model.recentVisible.count > 6
     }
@@ -243,7 +255,24 @@ struct NotchBody: View {
             // manage controls (RECENT + gear + Clear) simply lift away once the list
             // scrolls, so nothing they could collide with stays on screen.
             VStack(alignment: .leading, spacing: 0) {
+                // A pending clipboard quote rides INSIDE the floating header: the
+                // preview line above the prompt (the context the query folds in) and
+                // the one-tap action chips below it. Unlike the RECENT controls these
+                // stay put while scrolling — they belong to the input, not to list
+                // management — and the runway (`immersiveTopReach`, measured from this
+                // header's real height) grows to keep the first row clear of them.
+                if let clip = model.pendingClipboard {
+                    clipboardPreviewLine(clip)
+                }
                 idleInputRow
+                // No preset chips here: this header IS the expanded Recent state, and
+                // the list owns the space directly below the prompt. The flat layout
+                // suppresses the chips whenever `showHistory` is open for exactly this
+                // reason (a visible collision with the RECENT rows); the immersive
+                // variant is that same open list, just tall enough to scroll — so the
+                // chips fold away here too, matching the flat path. The clipboard
+                // quote preview above still rides along (it's context for the query,
+                // not a shortcut menu), only the action chips drop.
                 if !historyScrolled {
                     recentHeaderRow
                         .padding(.top, 6)
@@ -253,6 +282,23 @@ struct NotchBody: View {
                 }
             }
             .padding(.bottom, 6)
+            // Measure the header's real height so the runway/frost band below track it
+            // (a quote+chips header is much taller than a bare input). Mirror the
+            // `AnswerHeightKey` pattern: report via preference, store in @State.
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: ImmersiveHeaderHeightKey.self, value: geo.size.height
+                    )
+                }
+            )
+        }
+        .onPreferenceChange(ImmersiveHeaderHeightKey.self) { h in
+            // Animate the runway shift so a quote appearing/clearing slides the list
+            // rather than snapping it.
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                measuredImmersiveHeaderHeight = max(h, NotchBody.immersiveHeaderBaseline)
+            }
         }
         .transition(moduleTransition)
     }
@@ -368,24 +414,58 @@ struct NotchBody: View {
                 ClipboardPresetChip(title: preset.label) {
                     model.runClipboardPreset(preset)
                 }
+                // The overflow chips (everything past the primary set) unfurl from the
+                // leading edge — scaling up and fading in as they push out to the right
+                // on hover, and collapsing back the same way. The primary chip is always
+                // present, so it carries no transition (identity stays put). Asymmetric
+                // so the fold-back reads as a tuck-in rather than a mirror of the reveal.
+                .transition(
+                    .asymmetric(
+                        insertion: .scale(scale: 0.55, anchor: .leading)
+                            .combined(with: .opacity),
+                        removal: .scale(scale: 0.7, anchor: .leading)
+                            .combined(with: .opacity)
+                    )
+                )
+                .zIndex(NotchModel.ClipboardPreset.primary.contains(preset) ? 1 : 0)
             }
-            // The "⋯"/"⌃" toggle: reveals the rest of the actions, or collapses
-            // back to the primary few. Only shown when there's actually more to
-            // reveal than the primary set.
-            if model.clipboardPresets.count > NotchModel.ClipboardPreset.primary.count {
-                ClipboardPresetChip(title: model.clipboardPresetsExpanded ? "⌃" : "⋯") {
+            // The "⋯" affordance: only shown when there's actually more to reveal
+            // than the primary set. Unlike a button, it expands on *hover* — the
+            // whole row's `onHover` below drives `clipboardPresetsExpanded`, so the
+            // extra chips unfurl in place when the pointer is over the row and fold
+            // back when it leaves. Collapsed, it's just a quiet "⋯" hint; expanded,
+            // the trailing chips have replaced it, so it disappears on its own. It
+            // fades rather than snaps as the overflow chips take its place.
+            if !model.clipboardPresetsExpanded
+                && model.clipboardPresets.count > NotchModel.ClipboardPreset.primary.count {
+                ClipboardPresetChip(title: "⋯") {
+                    // Tap still works as a fallback for non-hover input.
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                        model.clipboardPresetsExpanded.toggle()
+                        model.clipboardPresetsExpanded = true
                     }
                 }
+                .transition(.opacity.combined(with: .scale(scale: 0.7)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 10)
-        // Drive the row's reflow when the capture chip appears/disappears: ties the
-        // FlowLayout's re-place to an animation transaction so the preset chips glide to
-        // their new positions rather than snapping (custom Layout has no Animatable
-        // inputs of its own to carry the motion).
+        // Hover anywhere over the chip row to unfurl the overflow actions in place;
+        // leaving the row folds them back to the single primary chip. Driving the
+        // expansion off the *row's* hover (not the tiny "⋯" chip's) means the pointer
+        // can travel onto the newly-revealed chips without collapsing them.
+        .onHover { hovering in
+            guard model.clipboardPresets.count > NotchModel.ClipboardPreset.primary.count else { return }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                model.clipboardPresetsExpanded = hovering
+            }
+        }
+        // Drive the row's reflow as chips appear/disappear: the capture chip landing,
+        // AND the overflow set unfurling on hover. Both change `visibleClipboardPresets`,
+        // so keying the animation on its count (plus the capture chip) ties the
+        // FlowLayout's re-place — which has no Animatable inputs of its own — to the same
+        // spring that carries the per-chip insert/remove transitions, so the existing
+        // chips glide to their new x-positions while the new ones scale in beside them.
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.visibleClipboardPresets.count)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.pendingClipboardCapture)
     }
 
@@ -446,16 +526,13 @@ struct NotchBody: View {
         }
     }
 
-    /// The "RECENT" label + its manage controls (gear, Clear). Shared by the
+    /// The manage controls (gear, Clear) for the recent list. Shared by the
     /// compact `historySection` header and the immersive floating header, so the
     /// row reads the same in both layouts. Both controls only exist while the
-    /// recent list is expanded, so the idle panel stays minimal.
+    /// recent list is expanded, so the idle panel stays minimal. No "RECENT"
+    /// label — the list speaks for itself, so the heading would just be noise.
     private var recentHeaderRow: some View {
         HStack(spacing: 6) {
-            Text(L("recent.header"))
-                .font(.sf(10, weight: .semibold))
-                .tracking(0.8)
-                .foregroundStyle(Tokens.text4)
             Spacer()
             // The filter has no chip of its own — it's summoned with ⌘F (handled in
             // ContentView's key catcher) and unfurls the field below the header.
@@ -525,19 +602,35 @@ struct NotchBody: View {
         }
     }
 
-    /// How far the immersive list's content reaches UP behind the floating header
-    /// (input + RECENT row). The scroll viewport extends this many points above
-    /// the first row's resting position; rows scroll up into it and frost out
-    /// behind the input rather than clipping at a hard edge. Sized to clear the
-    /// 48pt input + the RECENT controls row above the list.
-    private let immersiveTopReach: CGFloat = 84
+    /// Plain-input header baseline: the height the floating header measures with just
+    /// the input + RECENT controls row (no quote). Seeds `measuredImmersiveHeaderHeight`
+    /// so the very first frame already reserves the right runway, and combined with
+    /// `immersiveHeaderGap` reproduces the original 84pt reach for the no-quote case.
+    private static let immersiveHeaderBaseline: CGFloat = 72
 
-    /// Height of the top frost band, in points — independent of `immersiveTopReach`
-    /// (the layout runway) so the blur can be tuned without moving any rows. Taller
-    /// than the runway on purpose: the heavy frost then extends a little BELOW the
-    /// prompt's lower edge, so a row sitting just under "Type anything…" is clearly
-    /// behind glass rather than merely faded.
-    private let immersiveBlurReach: CGFloat = 130
+    /// Breathing room between the bottom of the floating header and the first row's
+    /// resting top. `baseline (72) + gap (12) = 84`, the runway the no-quote layout
+    /// always used; a quote/chips header measures taller and the runway grows with it.
+    private let immersiveHeaderGap: CGFloat = 12
+
+    /// How far the immersive list's content reaches UP behind the floating header so
+    /// the first row rests just clear of it. Derived from the *measured* header height
+    /// (`measuredImmersiveHeaderHeight`) rather than a constant, because the header is
+    /// not fixed: a plain input is short, but a pending clipboard quote adds a preview
+    /// line above the input and a row of action chips below it. Tracking the real
+    /// height keeps the first row clear whether or not a quote is present.
+    private var immersiveTopReach: CGFloat { measuredImmersiveHeaderHeight + immersiveHeaderGap }
+
+    /// Height of the top frost band, in points. Kept SHORTER than the layout runway
+    /// (`immersiveTopReach`) on purpose: the band must taper fully to clear before it
+    /// reaches the first row's resting position, or the blurred light-grey glyphs of
+    /// that row stack into a bright halo (see `ProgressiveTopBlur`). A 4pt margin under
+    /// the runway is the tuned ceiling — over the 320pt viewport the deepest frost layer
+    /// is also the faintest, so its tail grazing the runway edge stays imperceptible
+    /// while the opaque bulk of the frost sits above. Derived from the runway (not a
+    /// constant) so the band tracks the header: it grows when a quote raises the header
+    /// and shrinks back for a plain input, always ending just above the first row.
+    private var immersiveBlurReach: CGFloat { max(immersiveTopReach - 4, 0) }
 
     /// Total height of the immersive scroll region — deliberately taller than the
     /// compact 220 so the recent list fills the panel and reads as one continuous
@@ -664,15 +757,15 @@ struct NotchBody: View {
         // BOTH edges taper — the top dissolves the rows sliding up behind the input,
         // the bottom tells the user there's more below. Gated on overflow either way.
         .scrollEdgeFade(top: immersive, bottom: overflowing, fade: edgeFade)
-        // Immersive only: frost the rows passing behind the floating input so they
-        // read as pushed back — present but soft — not hard-clipped. The frost band
-        // is taller than the scroll runway and the radius heavier, so the deep blur
-        // reaches down past the prompt's lower edge — a row sitting right under
-        // "Type anything…" is firmly behind glass, not merely dimmed. Kept decoupled
-        // from `immersiveTopReach` (which is layout: where rows rest) so tuning the
-        // blur never shifts the list. Glass translucency is untouched — this only
-        // softens focus, never darkens.
-        .modifier(ConditionalTopBlur(active: immersive, height: immersiveBlurReach, maxRadius: 26))
+        // Immersive only: frost the rows as they scroll UP into the runway behind the
+        // floating input, so they read as pushed back — present but soft — not
+        // hard-clipped. The band is kept SHORTER than the runway (`immersiveBlurReach`
+        // < `immersiveTopReach`) so it tapers out before the first resting row: idle
+        // rows stay crisp (no blurred-glyph halo), only rows travelling up under
+        // "Type anything…" frost. Decoupled from `immersiveTopReach` (which is layout:
+        // where rows rest) so tuning the blur never shifts the list. Glass translucency
+        // is untouched — this only softens focus, never darkens.
+        .modifier(ConditionalTopBlur(active: immersive, height: immersiveBlurReach, maxRadius: 36))
         // Keep the keyboard-highlighted row visible: stepping ↓/↑ past the visible
         // window would otherwise leave the selection offscreen. Mirrors the
         // streaming tail-follow in `conversationScroll` — a reactive scroll in its
@@ -1091,11 +1184,17 @@ struct NotchBody: View {
                 model.highlightedHistoryIndex = nil
             }
         } label: {
-            Image(systemName: "clock")
-                .font(.system(size: 14, weight: .regular))
+            // A downward chevron reads as "pull the recent list down"; it flips to
+            // point up once the list is open, so the same control says "close" on
+            // the way back — the natural disclosure direction for a panel that
+            // unfurls below the prompt.
+            Image(systemName: "chevron.down")
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(model.showHistory ? Tokens.text2 : Tokens.text4)
+                .rotationEffect(.degrees(model.showHistory ? 180 : 0))
                 .frame(width: 26, height: 26)
                 .contentShape(Rectangle())
+                .animation(.spring(response: 0.32, dampingFraction: 0.8), value: model.showHistory)
         }
         .buttonStyle(RecentEntryStyle())
         .help(L("recent.recent"))
@@ -1370,6 +1469,19 @@ private struct AnswerHeightKey: PreferenceKey {
         // transient layout pass), so when a short answer replaced a long one the
         // scroll frame stayed tall and left a dead band under the text. Last-value
         // lets the frame track the real content up and down.
+        let next = nextValue()
+        if next > 0 { value = next }
+    }
+}
+
+/// Carries the immersive floating header's measured height up to `NotchBody` so the
+/// list's top runway and frost band can be sized to whatever the header actually
+/// holds — a bare input, or an input flanked by a clipboard quote and its chips.
+private struct ImmersiveHeaderHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        // Single reader; last value wins so the runway can SHRINK back when the quote
+        // clears, not just grow (same rationale as `AnswerHeightKey`).
         let next = nextValue()
         if next > 0 { value = next }
     }

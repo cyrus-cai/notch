@@ -1136,10 +1136,12 @@ final class NotchModel: ObservableObject {
             }
         }
 
-        /// The handful of presets shown by default — the rest stay tucked behind the
-        /// "⋯" chip. This block is auxiliary to the prompt, so only the most common
-        /// reaches on copied text get a chip up front; everything else is one tap away.
-        static let primary: [ClipboardPreset] = [.summarize, .proofread, .translate]
+        /// The single preset shown by default — everything else stays tucked behind
+        /// the "⋯" chip until hovered. This block is auxiliary to the prompt, so we
+        /// keep the resting row to one chip (the most common reach on copied text)
+        /// and let the rest unfurl on hover, so the panel stays uncluttered next to
+        /// the Recent list.
+        static let primary: [ClipboardPreset] = [.summarize]
     }
 
     /// The presets to offer for the currently-pending clipboard, or `[]` when there's

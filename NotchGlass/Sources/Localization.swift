@@ -196,6 +196,7 @@ enum Strings {
         "about.updateFailed": "Update failed — get it from the releases page",
         "about.github": "GitHub",
         "about.releases": "Releases",
+        "about.whatsNew": "What's New",
 
         // What's New
         "whatsnew.title": "WHAT'S NEW",
@@ -234,7 +235,6 @@ enum Strings {
 
         // Recent list
         "recent.settings": "Settings (⌘,)",
-        "recent.header": "RECENT",
         "recent.clear": "Clear",
         "recent.filter": "Filter…",
         "recent.badge.notes": "Notes",
@@ -361,6 +361,7 @@ enum Strings {
         "about.updateFailed": "更新失败——请到发布页手动下载",
         "about.github": "GitHub",
         "about.releases": "发布页",
+        "about.whatsNew": "新功能",
 
         "whatsnew.title": "新功能",
         "whatsnew.back": "返回输入",
@@ -394,7 +395,6 @@ enum Strings {
         "capture.remind": "提醒",
 
         "recent.settings": "设置（⌘,）",
-        "recent.header": "最近",
         "recent.clear": "清空",
         "recent.filter": "筛选…",
         "recent.badge.notes": "备忘录",
@@ -513,6 +513,7 @@ enum Strings {
         "about.updateFailed": "更新失敗——請到發佈頁手動下載",
         "about.github": "GitHub",
         "about.releases": "發佈頁",
+        "about.whatsNew": "新功能",
 
         "whatsnew.title": "新功能",
         "whatsnew.back": "返回輸入",
@@ -546,7 +547,6 @@ enum Strings {
         "capture.remind": "提醒",
 
         "recent.settings": "設定（⌘,）",
-        "recent.header": "最近",
         "recent.clear": "清空",
         "recent.filter": "篩選…",
         "recent.badge.notes": "備忘錄",
