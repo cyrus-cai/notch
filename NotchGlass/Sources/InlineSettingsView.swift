@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 /// Settings rendered *inside* the notch panel, in place of the recent list —
@@ -120,6 +121,16 @@ struct InlineSettingsView: View {
     /// policy immediately.
     @State private var dockIconVisibility: DockIconVisibility = .current
 
+    /// The global summon shortcut — mirrors the persisted value; writes go through
+    /// `commitSummonHotKey` so `AppDelegate` re-registers the Carbon hot key.
+    @State private var summonHotKey: SummonHotKey = .current
+    /// True while the recorder is armed and listening for the next chord. Drives
+    /// the "Recording…" affordance and gates the local `NSEvent` monitor.
+    @State private var recordingHotKey = false
+    /// A transient hint shown under the row when a chord is rejected (e.g. no
+    /// modifier), cleared on the next successful record or when recording ends.
+    @State private var hotKeyHint: String?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -154,6 +165,7 @@ struct InlineSettingsView: View {
                         translationFooter
                     case .general:
                         appLanguageRow
+                        shortcutRow
                         placementRow
                         dockIconRow
                     case .about:
@@ -684,6 +696,104 @@ struct InlineSettingsView: View {
         NotificationCenter.default.post(name: .dockIconVisibilityChanged, object: nil)
     }
 
+    /// The global summon shortcut. Click the chip to record a new chord; the
+    /// adjacent menu toggles it off (hover-only summon) or back to ⌥Space. A
+    /// rejected chord (no modifier, or a reserved combo) surfaces a one-line hint
+    /// rather than silently doing nothing.
+    private var shortcutRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            settingRow(label: L("general.shortcut")) {
+                HStack(spacing: 6) {
+                    Button(action: toggleRecording) {
+                        Text(recordingHotKey
+                             ? L("general.shortcut.recording")
+                             : (summonHotKey.enabled ? summonHotKey.displayString
+                                                     : L("general.shortcut.off")))
+                            .font(.sf(13, weight: recordingHotKey ? .semibold : .regular))
+                            .foregroundStyle(recordingHotKey ? Tokens.text1 : Tokens.text2)
+                            .frame(minWidth: 64)
+                            .padding(.horizontal, 11)
+                            .frame(height: 30)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9)
+                                    .fill(.white.opacity(recordingHotKey ? 0.12 : 0.06))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 9)
+                                    .strokeBorder(
+                                        .white.opacity(recordingHotKey ? 0.45 : 0.12),
+                                        lineWidth: recordingHotKey ? 1 : 0.5
+                                    )
+                            )
+                            .contentShape(RoundedRectangle(cornerRadius: 9))
+                    }
+                    .buttonStyle(.plain)
+
+                    GlassMenu(title: "") {
+                        Button(L("general.shortcut.reset")) { resetSummonHotKey() }
+                        Button(L("general.shortcut.disable")) { disableSummonHotKey() }
+                    }
+                    .fixedSize()
+                }
+            }
+            if let hint = hotKeyHint {
+                Text(hint)
+                    .font(.sf(11))
+                    .foregroundStyle(Tokens.text3)
+                    .padding(.leading, 76)
+            }
+        }
+        // The recorder grabs the next chord via a local event monitor; tear it
+        // down if the view goes away mid-recording so it never leaks.
+        .background(HotKeyRecorder(active: recordingHotKey, onCapture: captureChord))
+    }
+
+    private func toggleRecording() {
+        hotKeyHint = nil
+        recordingHotKey.toggle()
+    }
+
+    /// Validate and commit a recorded chord. Requires a "real" modifier (⌘/⌥/⌃) —
+    /// a bare key or shift-only chord would fire far too easily — and refuses the
+    /// ⌘, that already opens Settings.
+    private func captureChord(keyCode: UInt32, flags: NSEvent.ModifierFlags) {
+        let mods = SummonHotKey.carbonModifiers(from: flags)
+        let realModifierMask = UInt32(cmdKey) | UInt32(optionKey) | UInt32(controlKey)
+        let hasRealModifier = (mods & realModifierMask) != 0
+        guard hasRealModifier else {
+            hotKeyHint = L("general.shortcut.needModifier")
+            return
+        }
+        // Don't let the user shadow ⌘, (opens Settings).
+        if keyCode == UInt32(kVK_ANSI_Comma), mods == UInt32(cmdKey) {
+            hotKeyHint = L("general.shortcut.reserved")
+            return
+        }
+        recordingHotKey = false
+        hotKeyHint = nil
+        commitSummonHotKey(SummonHotKey(keyCode: keyCode, modifiers: mods, enabled: true))
+    }
+
+    private func resetSummonHotKey() {
+        recordingHotKey = false
+        hotKeyHint = nil
+        commitSummonHotKey(.defaultConfig)
+    }
+
+    private func disableSummonHotKey() {
+        recordingHotKey = false
+        hotKeyHint = nil
+        var off = summonHotKey
+        off.enabled = false
+        commitSummonHotKey(off)
+    }
+
+    private func commitSummonHotKey(_ newValue: SummonHotKey) {
+        summonHotKey = newValue
+        SummonHotKey.current = newValue
+        NotificationCenter.default.post(name: .summonHotKeyChanged, object: nil)
+    }
+
     /// The interface language. `System` follows the Mac; the explicit picks
     /// (English / 简体中文 / 繁體中文) each named in their own script. Switching
     /// republishes `Localization.shared`, so the whole app — this panel included —
@@ -1042,5 +1152,56 @@ struct GlassMenu<Content: View>: View {
         .fixedSize()
         .onHover { hovering = $0 }
         .animation(.easeOut(duration: 0.15), value: hovering)
+    }
+}
+
+/// An invisible helper that captures the next key chord while `active` is true.
+/// Installs a local `.keyDown` monitor (scoped to this app's own key window, so
+/// it can't see other apps' input) and hands the virtual key code + modifier
+/// flags to `onCapture`. Swallowing the event while recording keeps Esc/Space
+/// from leaking into the panel underneath. The monitor is torn down the moment
+/// `active` flips false or the view disappears — no global tap, no leak.
+private struct HotKeyRecorder: NSViewRepresentable {
+    var active: Bool
+    var onCapture: (UInt32, NSEvent.ModifierFlags) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.onCapture = onCapture
+        return NSView(frame: .zero)
+    }
+
+    func updateNSView(_: NSView, context: Context) {
+        context.coordinator.onCapture = onCapture
+        context.coordinator.setActive(active)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    static func dismantleNSView(_: NSView, coordinator: Coordinator) {
+        coordinator.setActive(false)
+    }
+
+    final class Coordinator {
+        var onCapture: ((UInt32, NSEvent.ModifierFlags) -> Void)?
+        private var monitor: Any?
+
+        func setActive(_ active: Bool) {
+            if active, monitor == nil {
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                    // Esc cancels recording without committing anything.
+                    guard event.keyCode != UInt16(kVK_Escape) else { return nil }
+                    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                    self?.onCapture?(UInt32(event.keyCode), flags)
+                    return nil // swallow — don't let the chord reach the panel
+                }
+            } else if !active, let m = monitor {
+                NSEvent.removeMonitor(m)
+                monitor = nil
+            }
+        }
+
+        deinit {
+            if let m = monitor { NSEvent.removeMonitor(m) }
+        }
     }
 }

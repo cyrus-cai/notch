@@ -10,6 +10,9 @@ struct ContentView: View {
     /// relaunch, without each child view having to observe the store itself.
     @EnvironmentObject private var loc: Localization
     @Environment(\.notchMetrics) private var metrics
+    /// Reduce-motion skips the close dissolve (the content fade beat), collapsing in
+    /// one step — mirrors how the open spring already degrades to a plain settle.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -29,7 +32,7 @@ struct ContentView: View {
                                 model.confirmingClear = false
                             }
                         } else {
-                            model.fullClose()
+                            model.beginClose(sequenced: !reduceMotion)
                         }
                     }
             }
@@ -123,7 +126,7 @@ struct ContentView: View {
                     }
                     return true
                 }
-                model.fullClose()
+                model.beginClose(sequenced: !reduceMotion)
                 return true
             }
             // ← goes "back" to a fresh conversation from the thread view — also
@@ -204,9 +207,18 @@ struct NotchIsland: View {
             }
             .frame(height: metrics.restHeight + topBleed)
 
-            // The glass body unfurls below the notch zone when open.
+            // The glass body unfurls below the notch zone when open. On the way out
+            // it fades FIRST (driven by `model.closing`), while the shell holds its
+            // expanded size — then `beginClose` drops `open`, this view leaves, and
+            // the shell retracts. So content dissolves, then the form collapses,
+            // instead of both clamping shut on one transaction. The `.opacity`
+            // transition still carries the open fade-in (and the final unmount).
             if isOpen {
                 NotchBody(model: model)
+                    .opacity(model.closing ? 0 : 1)
+                    // Ease the dissolve over the model's content-fade window so it
+                    // completes just as `beginClose` fires the shell retract.
+                    .animation(.easeOut(duration: NotchModel.closeContentFade), value: model.closing)
                     .transition(.opacity)
             }
         }
@@ -310,7 +322,7 @@ struct NotchIsland: View {
                 model.openPanel(on: metrics.displayID,
                                 velocity: MouseVelocityTracker.shared.entryVelocity())
             } else {
-                model.collapseOnLeave(from: metrics.displayID)
+                model.collapseOnLeave(from: metrics.displayID, sequenced: !reduceMotion)
             }
         }
         .frame(maxWidth: .infinity, alignment: .center)   // center within canvas

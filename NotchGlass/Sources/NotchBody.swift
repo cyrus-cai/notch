@@ -334,7 +334,7 @@ struct NotchBody: View {
                 Text(err)
                     .font(.sf(12))
                     .foregroundStyle(Tokens.text2)
-                    .lineLimit(2)
+                    .lineLimit(4)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             )
@@ -994,31 +994,28 @@ struct NotchBody: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-        } else if turn.text.isEmpty && turn.streaming {
-            ThinkingDots()
+        } else if turn.streaming {
+            // The whole streaming life of the bubble — thinking dots, then the
+            // live answer — lives in one view so the dots → first-token handoff
+            // can cross-fade instead of hard-cutting (see `StreamingTurnContent`).
+            // Selection stays off while it streams: the per-token tail-follow
+            // scroll (onChange → scrollTo(.bottom)) would collapse an in-progress
+            // drag-selection. The settled branch below re-enables it the instant
+            // the stream finishes.
+            StreamingTurnContent(text: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
                 .padding(.vertical, 2)
                 .padding(.horizontal, 2)
+                .textSelection(.disabled)
         } else {
-            // Selection stays off while the answer streams: the per-token
-            // tail-follow scroll (onChange → scrollTo(.bottom)) would collapse
-            // any in-progress drag-selection. The instant the stream finishes,
-            // every prose block becomes selectable/copyable. `.disabled` and
-            // `.enabled` are distinct types, so this branches at the view level
-            // rather than ternary-ing the modifier's argument.
-            if turn.streaming {
+            // A settled answer carries its own quiet "file this in Notes" button
+            // directly beneath it — one per answer, so a long thread can save any
+            // segment, not just the latest. (It lived in the input row before, where
+            // it read as a property of the field rather than of this answer.) Its
+            // text is fully selectable now that the tail-follow scroll has stopped.
+            VStack(alignment: .leading, spacing: 6) {
                 MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.disabled)
-            } else {
-                // A settled answer carries its own quiet "file this in Notes" button
-                // directly beneath it — one per answer, so a long thread can save any
-                // segment, not just the latest. (It lived in the input row before, where
-                // it read as a property of the field rather than of this answer.)
-                VStack(alignment: .leading, spacing: 6) {
-                    MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                }
+                    .textSelection(.enabled)
             }
         }
     }

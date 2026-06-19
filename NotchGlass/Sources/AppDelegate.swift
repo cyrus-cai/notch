@@ -48,6 +48,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.isConfigured = AppDelegate.isConfigured()
     }
     private var settingsHotKey: HotKey?
+    /// The user-configurable global shortcut that toggles the panel open/closed
+    /// (default ⌥Space). Held strongly so it stays live; rebuilt whenever the
+    /// Settings → General recorder changes it. `nil` while disabled.
+    private var summonHotKey: HotKey?
 
     /// The panel is wider/taller than the resting notch so the glass has room to
     /// unfurl downward. The SwiftUI view draws the notch at the top-center of
@@ -128,8 +132,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         UpdaterService.shared.checkIfDue()
                     }
                 } else {
-                    for p in self.panels.values where p.isKeyWindow {
-                        p.resignKey()
+                    for p in self.panels.values {
+                        if p.isKeyWindow { p.resignKey() }
+                        // Closing mid-composition can skip the field's end-editing
+                        // notification, which would strand the panel at its lowered
+                        // (editing) level. Force every panel back to resting on close.
+                        p.restRestingLevel()
                     }
                 }
             }
@@ -246,6 +254,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsHotKey = HotKey(keyCode: UInt32(kVK_ANSI_Comma),
                                 modifiers: UInt32(cmdKey)) {
             NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
+        }
+
+        // The configurable global summon shortcut (default ⌥Space). Same Carbon
+        // mechanism as ⌘, — fires from anywhere, no accessibility permission — but
+        // user-editable in Settings → General, so it re-registers on change.
+        registerSummonHotKey()
+        NotificationCenter.default.addObserver(
+            forName: .summonHotKeyChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.registerSummonHotKey()
+            }
+        }
+    }
+
+    /// (Re)register the global summon hot key from the persisted config. Dropping
+    /// the old `HotKey` unregisters it (deinit), so this is also how "disabled"
+    /// takes effect: when the config is off we just clear the reference.
+    private func registerSummonHotKey() {
+        summonHotKey = nil
+        let config = SummonHotKey.current
+        guard config.enabled else { return }
+        summonHotKey = HotKey(keyCode: config.keyCode, modifiers: config.modifiers) { [weak self] in
+            guard let self else { return }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                self.model.toggleSummon(on: self.displayForSummon())
+            }
         }
     }
 

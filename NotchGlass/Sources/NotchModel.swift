@@ -2,6 +2,40 @@ import SwiftUI
 import Combine
 import AppKit   // NSWorkspace — opening Notes/Reminders for a Recent capture
 
+/// Decodes a JSON array element-by-element, dropping any element that fails to
+/// decode instead of failing the whole array. Used for persisted history so one
+/// corrupt or future-incompatible row can't wipe every Recent item (see
+/// `loadHistory`). A single `try? decode([T].self …)` is all-or-nothing; this
+/// isolates each element behind its own `try?`.
+private struct LossyArray<T: Decodable>: Decodable {
+    let elements: [T]
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        var result: [T] = []
+        while !container.isAtEnd {
+            // Decode each element into a throwaway wrapper so a failure advances the
+            // container past the bad element (a bare `try? container.decode(T.self)`
+            // leaves the cursor stuck and loops forever). The wrapper swallows the
+            // error and yields nil; the element is then skipped.
+            if let decoded = try container.decode(LossyElement<T>.self).value {
+                result.append(decoded)
+            }
+        }
+        elements = result
+    }
+}
+
+/// One element of a `LossyArray`: decodes a `T`, or captures the failure as `nil`
+/// while still consuming the element so the parent container can advance.
+private struct LossyElement<T: Decodable>: Decodable {
+    let value: T?
+
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+    }
+}
+
 /// The notch's interaction state. Mirrors the prototype's `mode` plus the
 /// open/closed state, and owns the history list + AI calls.
 @MainActor
@@ -151,6 +185,15 @@ final class NotchModel: ObservableObject {
 
     // Open / closed drives the grow-out-of-the-notch animation.
     @Published var open = false
+    /// The brief "content dissolving" beat between a close request and the shell
+    /// actually retracting. Closing used to be one snap — `open` flipped false and
+    /// the glass body and its content collapsed on the same transaction, reading as
+    /// a clamp. Now `beginClose()` raises this first: the content fades out while the
+    /// shell holds its expanded size, and only once it's gone does `fullClose()` drop
+    /// `open` and let the shell retract — so closing mirrors the staged feel of the
+    /// open. `open` stays true through this beat, so window key-handoff and the
+    /// expanded geometry hold until the real close lands.
+    @Published var closing = false
     /// Which screen's island is unfurled. With one panel per display sharing this
     /// model, `open` alone would unfurl every screen at once — views gate on
     /// `isOpen(on:)` so only the hovered screen expands while the others keep
@@ -634,8 +677,25 @@ final class NotchModel: ObservableObject {
         if !open {
             pasteboardChangeCountAtOpen = pasteboardChangeCountAtRest
         }
+        // Re-entering during the close dissolve cancels it: clear the flag so the
+        // content (held mounted while `open` is true) springs back to full opacity
+        // instead of completing its fade, and the pending `beginClose` timer no-ops.
+        closing = false
         open = true
         refreshPendingClipboard()
+    }
+
+    /// Toggle the panel from a global hot key: open it on `display` if resting,
+    /// or close it if it's already showing. Summoned by keyboard, so it routes
+    /// through `openPanel` (idle prompt, clipboard baseline preserved) on the open
+    /// edge and a hard `fullClose` on the close edge — no hover required.
+    func toggleSummon(on display: CGDirectDisplayID?) {
+        if open {
+            fullClose()
+        } else {
+            mode = .idle
+            openPanel(on: display)
+        }
     }
 
     /// Toggle the inline settings panel. Opening it folds the recent list away
@@ -665,6 +725,8 @@ final class NotchModel: ObservableObject {
         if !open {
             pasteboardChangeCountAtOpen = pasteboardChangeCountAtRest
         }
+        // Cancel any in-flight close dissolve (see `openPanel`).
+        closing = false
         open = true
         refreshPendingClipboard()
         mode = .idle
@@ -691,6 +753,8 @@ final class NotchModel: ObservableObject {
         if !open {
             pasteboardChangeCountAtOpen = pasteboardChangeCountAtRest
         }
+        // Cancel any in-flight close dissolve (see `openPanel`).
+        closing = false
         open = true
         refreshPendingClipboard()
         mode = .idle
@@ -713,7 +777,7 @@ final class NotchModel: ObservableObject {
     ///   · keep open while the user is mid-way through typing
     ///   · keep open while the Recent list is expanded — moving the mouse away
     ///     must never fold a notch that has recent content on screen
-    func collapseOnLeave(from display: CGDirectDisplayID? = nil) {
+    func collapseOnLeave(from display: CGDirectDisplayID? = nil, sequenced: Bool = true) {
         // The pointer leaving a *resting* notch on a screen that isn't hosting
         // the open panel has nothing to fold — and must never close the island
         // that's actually in use on another display.
@@ -730,7 +794,40 @@ final class NotchModel: ObservableObject {
         // Likewise keep the panel open while the user is reading What's New — a
         // cursor that slips off the island shouldn't snatch the notes away.
         if showWhatsNew { return }
-        fullClose()
+        // Hover-leave folds an empty idle prompt — exactly the case that read as a
+        // clamp before. Route through the two-beat dissolve so the (admittedly
+        // minimal) content fades before the shell retracts, matching Esc/click-out.
+        beginClose(sequenced: sequenced)
+    }
+
+    /// How long the content lingers, fading, before the shell retracts. Kept short
+    /// — this is a dissolve to soften the snap, not a second animation the user
+    /// waits through; the shell's own `easeOut(0.30)` collapse picks up right after.
+    static let closeContentFade: TimeInterval = 0.13
+
+    /// The two-beat close. The first beat fades the content out while the shell
+    /// holds its expanded size (`closing = true`, `open` still true); the second,
+    /// once the content is gone, drops `open` so the shell retracts. This makes the
+    /// close symmetric with the open — content and shell move in sequence rather
+    /// than clamping shut on one transaction.
+    ///
+    /// `sequenced` is the caller's reduce-motion gate (the views own that
+    /// environment value): when motion is reduced — or when there's nothing to fade
+    /// because the panel is already resting — it collapses straight away. Re-entrancy
+    /// is safe: a second close request while already `closing` is a no-op, and any
+    /// open (`openPanel`/`openSettings`/…) clears `closing` so an interrupted close
+    /// that reopens starts clean.
+    func beginClose(sequenced: Bool = true) {
+        guard open, sequenced else { fullClose(); return }
+        guard !closing else { return }
+        closing = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + NotchModel.closeContentFade) { [weak self] in
+            // The close may have been overtaken — a hover re-opened the island, or a
+            // full close already fired — in which case `closing` was cleared and this
+            // stale beat must not yank the panel shut.
+            guard let self, self.closing else { return }
+            self.fullClose()
+        }
     }
 
     /// Hard close from Esc / click-outside — always collapses regardless of mode,
@@ -743,6 +840,10 @@ final class NotchModel: ObservableObject {
         // supersede-cancel can't reach the detached round.
         task = nil
         open = false
+        // The two-beat close has landed (or this was a direct hard close): the shell
+        // is retracting now, so drop the dissolve flag. Clearing it here also disarms
+        // any in-flight `beginClose` timer — its `guard self.closing` then no-ops.
+        closing = false
         activeDisplay = nil
         mode = .idle
         text = ""; turns = []
@@ -1323,8 +1424,11 @@ final class NotchModel: ObservableObject {
         task = Task { [weak self] in
             guard let self else { return }
             var thread = seedThread
+            // Hoisted out of `do` so the error `catch` can read whatever streamed
+            // before the failure — a mid-stream drop that already produced text must
+            // persist that partial round, not discard it (see the catch below).
+            var acc = ""
             do {
-                var acc = ""
                 for try await chunk in self.ai.stream(system: system, messages: context) {
                     if Task.isCancelled { return }
                     acc += chunk
@@ -1350,9 +1454,32 @@ final class NotchModel: ObservableObject {
                 // superseded by a newer round on the same screen; nothing to persist
             } catch {
                 if Task.isCancelled { return }
-                // The error placeholder is only worth showing on screen — a
-                // detached round that failed is dropped, not filed into Recent.
-                if self.isOnScreen(answerID: answerID) {
+                let partial = acc.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !partial.isEmpty {
+                    // A mid-stream drop *after* the first chunk: we already have a real
+                    // partial answer. Persist it to Recent exactly like a completed
+                    // round — crucially this runs whether or not the thread is still on
+                    // screen, so backing out / closing mid-answer over a flaky network
+                    // no longer makes the question vanish from Recent. Settle the
+                    // snapshot's streaming flag and tag the saved answer as interrupted,
+                    // in both the assistant turn and the answer field so the reopened
+                    // thread and the collapsed row agree.
+                    let saved = acc + L("error.interrupted")
+                    if let i = thread.firstIndex(where: { $0.id == answerID }) {
+                        thread[i].text = saved
+                        thread[i].streaming = false
+                    }
+                    self.persistThread(thread, threadID: threadID, answer: saved)
+                    // Only touch the screen when this round still owns it.
+                    if self.isOnScreen(answerID: answerID) {
+                        self.updateAnswer(id: answerID, text: saved)
+                        self.markFinished(id: answerID)
+                        self.mode = .result
+                    }
+                } else if self.isOnScreen(answerID: answerID) {
+                    // Failed before any text arrived (refused connection, bad key): no
+                    // partial round worth saving. Show the generic error on screen; a
+                    // detached pre-text failure is simply dropped.
                     self.updateAnswer(id: answerID, text: L("error.generic"))
                     self.markFinished(id: answerID)
                     self.mode = .result
@@ -1450,11 +1577,7 @@ final class NotchModel: ObservableObject {
                 self.persistCapture(line, source: .note, link: noteID)
                 self.flashSavedCue(usedClip ? L("feedback.addedNotesClip") : L("feedback.addedNotes"))
             case .failure(let err):
-                // Put the line back so the user can retry / copy it, but only if
-                // they haven't already started typing the next one — clobbering a
-                // fresh draft would be worse than losing the failed line to the cue.
-                if self.text.isEmpty { self.text = line }
-                self.noteError = err.errorDescription ?? L("feedback.notesFailed")
+                self.reportCaptureFailure(line, message: err.errorDescription ?? L("feedback.notesFailed"))
             }
         }
     }
@@ -1518,9 +1641,23 @@ final class NotchModel: ObservableObject {
                 }
                 self.flashSavedCue(L("feedback.addedReminders", suffix))
             case .failure(let err):
-                if self.text.isEmpty { self.text = line }
-                self.noteError = err.errorDescription ?? L("feedback.remindersFailed")
+                self.reportCaptureFailure(line, message: err.errorDescription ?? L("feedback.remindersFailed"))
             }
+        }
+    }
+
+    /// Surface a Note/Reminder save failure without ever silently dropping the
+    /// user's words. If the input is still empty we put the exact line back so a
+    /// retry is one keypress away. But if they've already started the next jot,
+    /// clobbering that draft would be its own data loss — so instead we fold the
+    /// failed line into the inline error, where it stays visible and copyable
+    /// rather than vanishing with no trace.
+    private func reportCaptureFailure(_ line: String, message: String) {
+        if text.isEmpty {
+            text = line
+            noteError = message
+        } else {
+            noteError = L("feedback.savePreservedLine", message, line)
         }
     }
 
@@ -1872,10 +2009,19 @@ final class NotchModel: ObservableObject {
     }
 
     private func loadHistory() -> [HistoryItem] {
-        guard let data = UserDefaults.standard.data(forKey: historyKey),
-              let items = try? JSONDecoder().decode([HistoryItem].self, from: data)
-        else { return [] }
-        return items
+        guard let data = UserDefaults.standard.data(forKey: historyKey) else { return [] }
+        let decoder = JSONDecoder()
+        // Decode item-by-item rather than `decode([HistoryItem].self …)`. The array
+        // decode is all-or-nothing — one element that throws (a corrupt blob, or a
+        // field that becomes required in a future build) drops the WHOLE list and
+        // every Recent row vanishes. `LossyArray` decodes each element in isolation
+        // and skips the failures, so one bad item costs only itself.
+        if let lossy = try? decoder.decode(LossyArray<HistoryItem>.self, from: data) {
+            return lossy.elements
+        }
+        // Fall back to the strict decode only if even the lossy pass can't open the
+        // top-level array (e.g. the blob isn't a JSON array at all).
+        return (try? decoder.decode([HistoryItem].self, from: data)) ?? []
     }
 
     private func saveHistory() {

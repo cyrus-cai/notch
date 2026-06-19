@@ -38,9 +38,35 @@ enum RemindersError: LocalizedError {
 /// (its callback arrives off-main after the one-time TCC prompt), so the
 /// main-thread deadlock dance the Notes path needs doesn't apply.
 enum RemindersService {
-    /// One store for the app's lifetime — EKEventStore is documented
-    /// thread-safe, and the TCC grant is remembered per store connection.
-    private static let store = EKEventStore()
+    /// The live EventKit connection. NOT a `static let`: an `EKEventStore` caches
+    /// the TCC grant it was created under for its whole lifetime, so if the user
+    /// revokes Reminders access in System Settings and re-grants it, a store made
+    /// before the revoke keeps reporting the *old* state — `requestFullAccess…`
+    /// returns `granted: false` forever and the app loops the user back to
+    /// Settings until relaunch. `currentStore()` rebuilds the instance whenever the
+    /// system authorization status no longer matches the one the cached store was
+    /// born under, so a fresh connection picks up the new grant without a restart.
+    private static var _store = EKEventStore()
+    /// The authorization status at the moment `_store` was created. A mismatch
+    /// against the live status means a revoke/regrant happened out from under us.
+    private static var _storeStatus = EKEventStore.authorizationStatus(for: .reminder)
+    /// Guards the lazy rebuild — `createReminder` can be called from the main
+    /// thread while a prior request's callback runs on EventKit's queue.
+    private static let storeLock = NSLock()
+
+    /// The store to use for this operation, rebuilt if Reminders authorization has
+    /// changed since the cached one was created. Always call this instead of
+    /// touching `_store` directly so a revoke→regrant is picked up live.
+    private static func currentStore() -> EKEventStore {
+        storeLock.lock()
+        defer { storeLock.unlock() }
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        if status != _storeStatus {
+            _store = EKEventStore()
+            _storeStatus = status
+        }
+        return _store
+    }
 
     // MARK: - Date detection (what makes a note a reminder)
 
@@ -55,9 +81,24 @@ enum RemindersService {
     /// Past references ("上周五买的牛奶过期了", "met john last tuesday") return
     /// dates behind now and are filtered out — remembering the past is a note,
     /// not a reminder.
+    ///
+    /// Two parsers, in order:
+    ///   1. `ChineseRelativeDate` — a deterministic Swift parser for the *relative*
+    ///      中文 phrasings NSDataDetector misses outright ("三天后", "两周后",
+    ///      "下月15号", "5分钟后", "月底"). It's checked first because on the few
+    ///      mixed lines where the detector *does* fire it tends to mis-anchor the
+    ///      offset, and an explicit anchor to `Calendar.current` is always right.
+    ///   2. NSDataDetector — the OS parser, which already nails absolute and
+    ///      named-weekday phrasing ("周三", "明天下午三点", "1月15号", "tomorrow 3pm").
+    /// The relative parser returns nil on anything it doesn't recognize, so ordinary
+    /// absolute lines fall straight through to the detector unchanged.
     static func futureDate(in text: String) -> Date? {
-        guard let detector, !text.isEmpty else { return nil }
+        guard !text.isEmpty else { return nil }
         let now = Date()
+        if let relative = ChineseRelativeDate.parse(text, now: now), relative > now {
+            return relative
+        }
+        guard let detector else { return nil }
         return detector
             .matches(in: text, options: [], range: NSRange(text.startIndex..., in: text))
             .compactMap(\.date)
@@ -191,9 +232,13 @@ enum RemindersService {
             Task { @MainActor in completion(.success(nil)) }
             return
         }
+        // Resolve the store up front so the access request and the subsequent
+        // write share one connection — the grant the prompt produces lands on the
+        // same store `write` saves through.
+        let store = currentStore()
         store.requestFullAccessToReminders { granted, _ in
             let result: Result<String?, RemindersError> =
-                granted ? write(trimmed, due: due) : .failure(.permissionDenied)
+                granted ? write(trimmed, due: due, store: store) : .failure(.permissionDenied)
             Task { @MainActor in completion(result) }
         }
     }
@@ -210,8 +255,12 @@ enum RemindersService {
     }
 
     /// The actual EventKit save. Runs on whatever queue the access callback
-    /// arrives on; the store is thread-safe.
-    private static func write(_ text: String, due: Date?) -> Result<String?, RemindersError> {
+    /// arrives on; the store is thread-safe. Takes the `store` explicitly (rather
+    /// than reading `currentStore()` again) so it writes through the exact
+    /// connection the access was granted on — a concurrent revoke/regrant can't
+    /// swap the store out between the grant and the save.
+    private static func write(_ text: String, due: Date?,
+                              store: EKEventStore) -> Result<String?, RemindersError> {
         guard let list = store.defaultCalendarForNewReminders() else {
             return .failure(.noList)
         }
@@ -275,5 +324,301 @@ enum RemindersService {
         } catch {
             return .failure(.saveFailed(error.localizedDescription))
         }
+    }
+}
+
+// MARK: - Chinese relative-time parser
+
+/// Deterministic Swift parser for the *relative* 中文 time phrasings NSDataDetector
+/// misses — the gap the Reminders feature kept tripping on. The OS detector is
+/// strong on absolute and named-weekday phrasing ("周三", "明天下午三点", "1月15号")
+/// but returns nothing for offset phrasings like "三天后", "两周后", "5分钟后",
+/// "下月15号", or "月底". This fills exactly those, anchored to `Calendar.current`
+/// so the result agrees with the rest of the app's date math.
+///
+/// Scope is deliberately narrow: only patterns the detector misses, recognized by a
+/// handful of regexes over the phrasings users actually type. `parse` returns nil on
+/// anything unrecognized, so ordinary lines fall straight through to the detector.
+/// All matching is whole-string-cheap (a few small regexes), safe to run per
+/// keystroke from `text.didSet`.
+enum ChineseRelativeDate {
+    /// The first relative moment named in `text`, anchored to `now`, or nil when no
+    /// recognized relative phrase is present. Day-and-larger offsets that name no
+    /// clock time default to 9am (matching `recurrenceDate`'s convention); minute and
+    /// hour offsets add to `now` directly, since "5分钟后" means literally now + 5 min.
+    static func parse(_ text: String, now: Date = Date()) -> Date? {
+        // Sub-minute precision never matters for a reminder and only makes results
+        // jitter; anchor every computation to the start of the current minute.
+        let cal = Calendar.current
+        let anchor = cal.date(bySetting: .second, value: 0, of: now) ?? now
+
+        // Order matters: the most specific / smallest-unit patterns first, so a line
+        // that names both ("三天后下午三点") is handled by the offset case (which then
+        // folds in the clock time) rather than the bare clock-time fallback.
+        if let d = parseMinuteHourOffset(text, anchor: anchor, cal: cal) { return d }
+        if let d = parseDayOffset(text, anchor: anchor, cal: cal) { return d }
+        if let d = parseWeekOffset(text, anchor: anchor, cal: cal) { return d }
+        if let d = parseMonthOffset(text, anchor: anchor, cal: cal) { return d }
+        if let d = parseYearOffset(text, anchor: anchor, cal: cal) { return d }
+        if let d = parseRelativeMonthDay(text, anchor: anchor, cal: cal) { return d }
+        if let d = parseMonthEnd(text, anchor: anchor, cal: cal) { return d }
+        return nil
+    }
+
+    // MARK: Offset families
+
+    /// "5分钟后", "半小时后", "两个小时后", "三个钟头后". Added straight onto `anchor`;
+    /// a named clock time would contradict a minute/hour offset, so none is parsed.
+    private static func parseMinuteHourOffset(_ text: String, anchor: Date,
+                                              cal: Calendar) -> Date? {
+        if let n = offsetAmount(text, unitPattern: "(?:分钟|分)") {
+            return cal.date(byAdding: .minute, value: Int(n.rounded()), to: anchor)
+        }
+        if let n = offsetAmount(text, unitPattern: "(?:个?小时|个?钟头|个?钟)") {
+            // "半小时" → 30 min; "一个半小时" → 90 min. `offsetAmount` already
+            // folded the 半 into `n`, so this just converts hours → minutes.
+            let minutes = Int((n * 60).rounded())
+            return cal.date(byAdding: .minute, value: minutes, to: anchor)
+        }
+        return nil
+    }
+
+    /// "三天后", "3天之后", "大后天", "后天", "明天" (+ optional clock time). Day-grained,
+    /// so it snaps to a clock time: an explicit one if named, else 9am.
+    private static func parseDayOffset(_ text: String, anchor: Date, cal: Calendar) -> Date? {
+        var days: Int?
+        // Day-words first — they carry their own fixed offset.
+        let dayWords: [(String, Int)] = [
+            ("大后天", 3), ("大前天", -3),
+            ("后天", 2), ("前天", -2),
+            ("明天", 1), ("明日", 1), ("昨天", -1), ("昨日", -1),
+            ("今天", 0), ("今日", 0),
+        ]
+        for (word, offset) in dayWords where text.contains(word) {
+            days = offset
+            break
+        }
+        if days == nil, let n = offsetAmount(text, unitPattern: "(?:天|日)") {
+            days = Int(n.rounded())
+        }
+        guard let days else { return nil }
+        let base = cal.date(byAdding: .day, value: days, to: anchor) ?? anchor
+        return applyClock(parseClock(text), to: base, cal: cal)
+    }
+
+    /// "两周后", "下周" is handled by the detector, so here only the offset form:
+    /// "N周后", "N个星期后", "N礼拜后" (+ optional clock time → else 9am).
+    private static func parseWeekOffset(_ text: String, anchor: Date, cal: Calendar) -> Date? {
+        guard let n = offsetAmount(text, unitPattern: "(?:个?星期|个?礼拜|周)") else { return nil }
+        let base = cal.date(byAdding: .day, value: Int(n.rounded()) * 7, to: anchor) ?? anchor
+        return applyClock(parseClock(text), to: base, cal: cal)
+    }
+
+    /// "N个月后", "N月后" (+ optional clock time → else 9am). Calendar month
+    /// arithmetic clamps overlong days (Jan 31 + 1 month → Feb 28/29) on its own.
+    private static func parseMonthOffset(_ text: String, anchor: Date, cal: Calendar) -> Date? {
+        guard let n = offsetAmount(text, unitPattern: "(?:个月|月)") else { return nil }
+        let base = cal.date(byAdding: .month, value: Int(n.rounded()), to: anchor) ?? anchor
+        return applyClock(parseClock(text), to: base, cal: cal)
+    }
+
+    /// "N年后", "N年之后" (+ optional clock time → else 9am).
+    private static func parseYearOffset(_ text: String, anchor: Date, cal: Calendar) -> Date? {
+        guard let n = offsetAmount(text, unitPattern: "年") else { return nil }
+        let base = cal.date(byAdding: .year, value: Int(n.rounded()), to: anchor) ?? anchor
+        return applyClock(parseClock(text), to: base, cal: cal)
+    }
+
+    /// "下月15号", "下下月3号", "这个月20号". NSDataDetector already handles "下个月15号"
+    /// (with 个) but trips on the bare "下月15号" form, so this covers both spellings.
+    /// The named day number is required — a bare "下月" with no day is too vague to
+    /// pin a reminder, and is left to fall through.
+    private static func parseRelativeMonthDay(_ text: String, anchor: Date, cal: Calendar) -> Date? {
+        // Month modifier: 下下(月) = +2, 下(月) = +1, 这/本(月) = 0.
+        let monthOffset: Int
+        if text.range(of: "下下个?月", options: .regularExpression) != nil { monthOffset = 2 }
+        else if text.range(of: "下个?月", options: .regularExpression) != nil { monthOffset = 1 }
+        else if text.range(of: "(?:这|本)个?月", options: .regularExpression) != nil { monthOffset = 0 }
+        else { return nil }
+
+        // Day number: "15号" / "15日" / "十五号".
+        guard let dayText = firstMatch(in: text, pattern: "([0-9零〇一二三四五六七八九十两]+)\\s*[号日]"),
+              let day = chineseNumber(dayText), day >= 1, day <= 31 else { return nil }
+
+        let targetMonth = cal.date(byAdding: .month, value: monthOffset, to: anchor) ?? anchor
+        var comps = cal.dateComponents([.year, .month], from: targetMonth)
+        comps.day = day
+        let clock = parseClock(text)
+        comps.hour = clock?.hour ?? 9
+        comps.minute = clock?.minute ?? 0
+        comps.second = 0
+        return cal.date(from: comps)
+    }
+
+    /// "月底", "月末", "本月底", "下月底" → last day of the relevant month at the named
+    /// clock time, else 9am.
+    private static func parseMonthEnd(_ text: String, anchor: Date, cal: Calendar) -> Date? {
+        guard text.contains("月底") || text.contains("月末") else { return nil }
+        // "下月底" / "下个月底" → end of next month.
+        let monthOffset = (text.contains("下月底") || text.contains("下个月底")
+                           || text.contains("下月末") || text.contains("下个月末")) ? 1 : 0
+        let inMonth = cal.date(byAdding: .month, value: monthOffset, to: anchor) ?? anchor
+        guard let range = cal.range(of: .day, in: .month, for: inMonth) else { return nil }
+        var comps = cal.dateComponents([.year, .month], from: inMonth)
+        comps.day = range.upperBound - 1   // last valid day of that month
+        let clock = parseClock(text)
+        comps.hour = clock?.hour ?? 9
+        comps.minute = clock?.minute ?? 0
+        comps.second = 0
+        return cal.date(from: comps)
+    }
+
+    // MARK: Shared sub-parsers
+
+    /// Pull the numeric amount in front of `unitPattern` followed by a 后/之后/以后
+    /// marker — the thing that makes a phrase *relative*. "三天后" → 3 (unit 天),
+    /// "半小时后" → 0.5 (unit 小时), "一个半小时后" → 1.5. Returns nil if no such
+    /// "<amount><unit><后>" run is present, so an absolute "三天" with no 后 is left
+    /// for the detector. The amount can be Arabic or Chinese numerals; a bare unit
+    /// with no leading number ("天后") defaults to 1.
+    private static func offsetAmount(_ text: String, unitPattern: String) -> Double? {
+        // Optional leading number, an optional 半 (possibly carrying its own 个 as in
+        // "一个半小时"), the unit, an optional trailing 半, then a relative marker. Both
+        // 半 slots are optional so "半小时后" (半 before, no number) and "一个半小时后"
+        // (number + 个半 before) both parse.
+        let pattern = "([0-9零〇一二三四五六七八九十两]*)(个?半)?\(unitPattern)(半?)(?:之?后|以后)"
+        guard let groups = firstMatchGroups(in: text, pattern: pattern) else { return nil }
+        let numberText = groups[1]
+        let halfBefore = groups[2].contains("半")    // 半小时 / 一个半小时
+        let halfAfter = !groups[3].isEmpty           // (trailing) 小时半
+        var amount: Double
+        if numberText.isEmpty {
+            // No explicit count. "半小时后" → 0.5; bare "小时后" → 1.
+            amount = halfBefore ? 0.5 : 1
+        } else if let n = chineseNumber(numberText) {
+            amount = Double(n)
+            if halfBefore || halfAfter { amount += 0.5 }
+        } else {
+            return nil
+        }
+        return amount > 0 ? amount : nil
+    }
+
+    /// Parse a clock time out of `text` — "下午三点", "晚上8点半", "上午9点30分",
+    /// "中午12点", "凌晨1点". Returns (hour 0…23, minute) or nil if none is named.
+    /// Bare "三点" with no period word is treated as PM when 1…6 (a reminder for
+    /// "三点" almost always means the afternoon), matching the detector's own lean.
+    static func parseClock(_ text: String) -> (hour: Int, minute: Int)? {
+        guard let groups = firstMatchGroups(
+            in: text,
+            pattern: "(上午|早上|早晨|凌晨|中午|下午|晚上|傍晚|夜里|夜晚)?\\s*"
+                   + "([0-9零〇一二三四五六七八九十两]+)\\s*[点时:：]"
+                   + "\\s*(半|[0-9零〇一二三四五六七八九十两]+)?\\s*分?")
+        else { return nil }
+
+        let period = groups[1]
+        guard var hour = chineseNumber(groups[2]), hour >= 0, hour <= 24 else { return nil }
+        if hour == 24 { hour = 0 }
+
+        var minute = 0
+        let minuteText = groups[3]
+        if minuteText == "半" {
+            minute = 30
+        } else if !minuteText.isEmpty, let m = chineseNumber(minuteText), m >= 0, m < 60 {
+            minute = m
+        }
+
+        switch period {
+        case "下午", "晚上", "傍晚", "夜里", "夜晚":
+            if hour < 12 { hour += 12 }
+        case "中午":
+            if hour < 12 { hour = 12 }
+        case "凌晨":
+            if hour == 12 { hour = 0 }   // "凌晨12点" → 0:00
+        case "上午", "早上", "早晨":
+            break
+        case "":
+            // No period word: a bare small hour reads as afternoon (3点 → 15:00),
+            // which is what people mean by a reminder time far more often than 3am.
+            if hour >= 1, hour <= 6 { hour += 12 }
+        default:
+            break
+        }
+        return (min(hour, 23), minute)
+    }
+
+    /// Set the clock on `base` to `clock`, or to 09:00 when no clock was named.
+    private static func applyClock(_ clock: (hour: Int, minute: Int)?, to base: Date,
+                                   cal: Calendar) -> Date? {
+        cal.date(bySettingHour: clock?.hour ?? 9, minute: clock?.minute ?? 0,
+                 second: 0, of: base)
+    }
+
+    // MARK: Numerals
+
+    /// Parse an Arabic or Chinese numeral string to an Int. Handles plain digits
+    /// ("15"), single characters ("三" → 3, "两" → 2, "〇/零" → 0), and the common
+    /// 十-composed forms up to 99 ("十" → 10, "十五" → 15, "二十" → 20, "三十五" → 35).
+    /// Returns nil for anything it can't read, so callers can reject it cleanly.
+    static func chineseNumber(_ s: String) -> Int? {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return nil }
+        if let n = Int(trimmed) { return n }
+
+        let digits: [Character: Int] = [
+            "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+            "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+        ]
+        // Pure single digit.
+        if trimmed.count == 1, let d = digits[trimmed.first!] { return d }
+
+        // 十-composed: [tens]十[units], any part optional. "十" = 10, "十五" = 15,
+        // "二十" = 20, "三十五" = 35. Hundreds ("一百") fall through to nil — out of
+        // range for the units this parser deals in (days/weeks/months/hours).
+        if let tenIndex = trimmed.firstIndex(of: "十") {
+            let before = trimmed[trimmed.startIndex..<tenIndex]
+            let after = trimmed[trimmed.index(after: tenIndex)...]
+            let tens: Int
+            if before.isEmpty {
+                tens = 1                              // "十..." → 1×10
+            } else if before.count == 1, let d = digits[before.first!] {
+                tens = d
+            } else {
+                return nil
+            }
+            var units = 0
+            if !after.isEmpty {
+                guard after.count == 1, let d = digits[after.first!] else { return nil }
+                units = d
+            }
+            return tens * 10 + units
+        }
+        return nil
+    }
+
+    // MARK: Regex helpers
+
+    /// First capture group 1 of `pattern` in `text`, or nil.
+    private static func firstMatch(in text: String, pattern: String) -> String? {
+        firstMatchGroups(in: text, pattern: pattern)?[safe: 1]
+    }
+
+    /// All capture groups (index 0 = whole match) of the first occurrence of
+    /// `pattern` in `text`, with absent optional groups as "". Nil if no match.
+    private static func firstMatchGroups(in text: String, pattern: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let full = NSRange(text.startIndex..., in: text)
+        guard let m = regex.firstMatch(in: text, range: full) else { return nil }
+        return (0..<m.numberOfRanges).map { i in
+            guard let r = Range(m.range(at: i), in: text) else { return "" }
+            return String(text[r])
+        }
+    }
+}
+
+private extension Array {
+    /// Bounds-checked subscript — returns nil instead of trapping past the end.
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

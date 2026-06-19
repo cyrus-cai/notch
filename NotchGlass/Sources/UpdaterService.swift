@@ -52,6 +52,10 @@ final class UpdaterService: ObservableObject {
 
     private enum UpdateError: Error {
         case badResponse, badArchive, toolFailed
+        /// The new bundle failed to copy in AND restoring the old one failed —
+        /// `/Applications/Notch.app` is gone. Carries both the original swap
+        /// failure and the rollback failure so neither is silently dropped.
+        case rollbackFailed(swap: Error, rollback: Error)
     }
 
     // MARK: - Check
@@ -196,10 +200,19 @@ final class UpdaterService: ObservableObject {
         try fm.moveItem(at: dest, to: backup)
         do {
             try runTool("/usr/bin/ditto", staged.path, dest.path)
-        } catch {
-            try? fm.removeItem(at: dest)
-            try? fm.moveItem(at: backup, to: dest)
-            throw error
+        } catch let swap {
+            // Restore the old bundle. If rollback itself fails the app is gone,
+            // so surface that distinctly instead of swallowing it — the caller
+            // must know the install location is now empty.
+            do {
+                if fm.fileExists(atPath: dest.path) {
+                    try fm.removeItem(at: dest)
+                }
+                try fm.moveItem(at: backup, to: dest)
+            } catch let rollback {
+                throw UpdateError.rollbackFailed(swap: swap, rollback: rollback)
+            }
+            throw swap
         }
     }
 

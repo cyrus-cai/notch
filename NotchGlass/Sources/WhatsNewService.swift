@@ -59,6 +59,21 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
+            version: "1.0.6",
+            date: "2026-06-19",
+            features: [
+                "Set a global shortcut to summon Notch (default ⌥Space) in Settings → General.",
+                "Chinese relative dates now become reminders.",
+                "Closing now fades the content out before the shell retracts.",
+            ],
+            fixes: [
+                "Chinese/Japanese/Korean input candidates now show above the island while typing.",
+                "Re-granting Reminders access after revoking it no longer needs a restart.",
+                "A corrupted Recent entry no longer wipes the whole history.",
+                "Interrupted answers are marked instead of cut off silently.",
+            ]
+        ),
+        Entry(
             version: "1.0.5",
             date: "2026-06-19",
             features: [

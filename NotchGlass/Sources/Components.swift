@@ -198,10 +198,15 @@ struct PromptField: NSViewRepresentable {
             PromptField.disableEditorMagic(field.currentEditor())
             attachEditorObservers(field.currentEditor())
             reportCaretWidth(for: field.currentEditor())
+            // Drop the island below the IME candidate window while typing so the
+            // pinyin/kana/Hangul selection popup isn't covered by the panel.
+            (field.window as? NotchPanel)?.beginFieldEditing()
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {
             detachEditorObservers()
+            // Restore the resting level now that this field is done editing.
+            ((obj.object as? NSTextField)?.window as? NotchPanel)?.endFieldEditing()
         }
 
         func controlTextDidChange(_ obj: Notification) {
@@ -454,7 +459,15 @@ struct HistorySearchField: NSViewRepresentable {
         }
 
         func controlTextDidBeginEditing(_ note: Notification) {
-            PromptField.disableEditorMagic((note.object as? NSTextField)?.currentEditor())
+            guard let field = note.object as? NSTextField else { return }
+            PromptField.disableEditorMagic(field.currentEditor())
+            // Same IME fix as PromptField: drop the island below the candidate window
+            // while this filter field is being typed into.
+            (field.window as? NotchPanel)?.beginFieldEditing()
+        }
+
+        func controlTextDidEndEditing(_ note: Notification) {
+            ((note.object as? NSTextField)?.window as? NotchPanel)?.endFieldEditing()
         }
     }
 }
@@ -1073,6 +1086,57 @@ struct ThinkingDots: View {
     }
 }
 
+/// The streaming assistant bubble while the answer is still in flight: the
+/// thinking dots until the first token lands, then the live `StreamingMarkdown`.
+/// The point of this wrapper is the *seam* between the two — without it the dots
+/// hard-cut out the instant `text` goes non-empty and the first words snap in.
+/// Here the two share one leading-anchored slot in a `ZStack` and cross-fade on
+/// the first-token edge: the dots ease out (`thinkingToStreamFade`) while the
+/// first words ease in over the same window, so the wait dissolves into the
+/// answer instead of blinking over to it. Subsequent chunks are owned by
+/// `StreamingMarkdown`'s own per-chunk `TailFadeIn`; this view only choreographs
+/// the dots → first-字 handoff and then stays out of the way.
+struct StreamingTurnContent: View {
+    let text: String
+    var baseFont: CGFloat = 15
+    var color: Color = Tokens.text1
+    var onInAppCopy: (() -> Void)? = nil
+
+    /// Duration of the dots-out / first-token-in cross-fade. Matched to the
+    /// 80ms-ish opacity beat the rest of the streaming UI uses so the handoff
+    /// reads as part of the same typewriter rhythm, not a separate flourish.
+    static let fade: Double = 0.12
+
+    /// Latched true on the first non-empty `text`. We key the cross-fade on this
+    /// edge (not on `text.isEmpty` directly) so it fires exactly once — later
+    /// chunks never re-run the dots fade, and a turn that arrives with text
+    /// already present (none do today, but cheap insurance) still settles lit.
+    @State private var hasFirstToken = false
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            // Dots: present (and animating) only until the first token, then
+            // faded fully out. Kept mounted across the fade so it can ease away
+            // rather than vanish; `allowsHitTesting(false)` and zero opacity make
+            // the settled state inert.
+            ThinkingDots()
+                .opacity(hasFirstToken ? 0 : 1)
+                .allowsHitTesting(false)
+
+            // First words: start transparent, ease in as the dots ease out. Once
+            // lit, `StreamingMarkdown` carries every following chunk's own fade.
+            StreamingMarkdown(source: text, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .opacity(hasFirstToken ? 1 : 0)
+        }
+        .animation(.easeInOut(duration: Self.fade), value: hasFirstToken)
+        .onChange(of: text.isEmpty) { _, isEmpty in
+            if !isEmpty { hasFirstToken = true }
+        }
+        .onAppear { if !text.isEmpty { hasFirstToken = true } }
+    }
+}
+
 /// Renders inline `**bold**` markdown into styled text — the same lightweight
 /// transform the prototype applied to AI answers.
 struct InlineMarkdownText: View {
@@ -1257,17 +1321,118 @@ struct MarkdownBlocks: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                row(for: block)
+                // Per-block styling lives in `MarkdownBlockRow`, shared with the
+                // streaming renderer (`StreamingMarkdown`) so a settled answer and a
+                // live one are laid out identically — they differ only in the tail
+                // fade/selection wrapping, never in how a block kind looks.
+                MarkdownBlockRow(block: block, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func row(for block: MarkdownBlock) -> some View {
+/// The streaming face of `MarkdownBlocks`: same layout, but the live tail
+/// **fades in** as chunks land instead of snapping. The result is the "逐字出现"
+/// typewriter feel the answer is supposed to have — text appears to dissolve into
+/// place rather than blink on in jumps.
+///
+/// Why only the tail: re-parsing the whole `source` every chunk and re-fading all
+/// of it would make the entire (already-read) answer flicker on each token. So we
+/// split the parsed blocks into the *settled head* (every block but the last) and
+/// the *growing tail* (the final block). The head renders through the plain
+/// `MarkdownBlocks` with no animation; the tail is keyed on its own text so that
+/// each time it grows, SwiftUI re-runs an 80ms opacity ramp from `tailFloor` → 1
+/// over just that block — the freshly-arrived words shimmer in, the rest holds.
+///
+/// Settles to nothing once streaming ends: the caller swaps back to a plain
+/// `MarkdownBlocks` for the finished, fully-selectable answer (see `turnView`),
+/// so none of this fade machinery touches a settled turn.
+struct StreamingMarkdown: View {
+    let source: String
+    var baseFont: CGFloat = 15
+    var color: Color = Tokens.text1
+    var onInAppCopy: (() -> Void)? = nil
+
+    private var blocks: [MarkdownBlock] { MarkdownParser.parse(source) }
+
+    var body: some View {
+        let parsed = blocks
+        // The tail is the block currently growing; the head is everything already
+        // settled above it. An empty source yields no blocks — the caller shows
+        // ThinkingDots in that case, so we just render nothing here.
+        let headCount = max(0, parsed.count - 1)
+        return VStack(alignment: .leading, spacing: 8) {
+            if headCount > 0 {
+                // Settled blocks: render verbatim through the plain renderer so they
+                // never re-fade as later chunks arrive. Rebuilt from the same
+                // `source` prefix; cheap, and keeps inline/code handling identical.
+                ForEach(Array(parsed.prefix(headCount).enumerated()), id: \.offset) { _, block in
+                    MarkdownBlockRow(block: block, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if let tail = parsed.last {
+                MarkdownBlockRow(block: tail, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(TailFadeIn(token: tailToken(for: tail)))
+            }
+        }
+    }
+
+    /// A change-key for the tail's fade: re-ramps opacity whenever the tail's text
+    /// grows. We key on the rendered character count (per block kind) rather than
+    /// the whole `source` so head edits never re-trigger the tail's fade.
+    private func tailToken(for block: MarkdownBlock) -> Int {
+        switch block {
+        case .heading(_, let t), .bullet(let t), .ordered(_, let t), .paragraph(let t):
+            return t.count
+        case .code(_, let t):
+            return t.count
+        case .divider:
+            return -1
+        }
+    }
+}
+
+/// Drives the per-chunk fade: each time `token` changes (the tail grew), opacity
+/// drops to `floor` for one frame and eases back to 1 over 80ms, so the newly
+/// landed text dissolves in. `.animation(value:)` makes the ramp fire on the
+/// change without a manual `withAnimation`, and the explicit `.opacity` keeps the
+/// floor from compounding across rapid chunks.
+private struct TailFadeIn: ViewModifier {
+    let token: Int
+    @State private var lit = false
+
+    private static let floor: Double = 0.55
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(lit ? 1 : Self.floor)
+            .animation(.easeOut(duration: 0.08), value: lit)
+            // Flip to lit on the next runloop turn so the floor→1 ramp actually
+            // animates; re-arm to dim on each new token so the next chunk fades too.
+            .onChange(of: token) { _, _ in
+                lit = false
+                DispatchQueue.main.async { lit = true }
+            }
+            .onAppear { lit = true }
+    }
+}
+
+/// One block of an answer, extracted from `MarkdownBlocks.row(for:)` so both the
+/// settled renderer and the streaming renderer share identical block styling. The
+/// two callers differ only in animation/selection wrapping, never in how a given
+/// block kind looks.
+struct MarkdownBlockRow: View {
+    let block: MarkdownBlock
+    var baseFont: CGFloat = 15
+    var color: Color = Tokens.text1
+    var onInAppCopy: (() -> Void)? = nil
+
+    var body: some View {
         switch block {
         case .heading(let level, let text):
-            // h1 largest, tapering down; all a touch heavier than body text.
             let size = max(baseFont, baseFont + CGFloat(7 - min(level, 5)) * 1.5)
             InlineMarkdownText(text)
                 .font(.sf(size, weight: .semibold))
@@ -1292,16 +1457,9 @@ struct MarkdownBlocks: View {
                 .textSelection(.enabled)
 
         case .code(_, let text):
-            // Verbatim monospace block on a faintly inset surface so it reads as
-            // a code island against the glass without competing with the chat. The
-            // island carries its own ghost one-tap copy button (drag-selection is
-            // unreliable on the narrow panel and the streaming tail-scroll collapses
-            // an in-progress drag), so `CodeBlockView` owns the rendering now.
             CodeBlockView(text: text, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
 
         case .divider:
-            // Use the same hairline the rest of the panel uses for separators
-            // so the rule reads as part of the system, not a markdown artifact.
             Rectangle()
                 .fill(Tokens.hairline)
                 .frame(height: 0.5)
