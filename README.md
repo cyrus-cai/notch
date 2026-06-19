@@ -4,8 +4,6 @@
 
 # Notch
 
-**Your notch, always ready.**
-
 Ask AI, take a note, or set a reminder right from your Mac's notch —
 without opening an app. **5× faster**, and **design-first**.
 
