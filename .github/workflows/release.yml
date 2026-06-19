@@ -1,0 +1,64 @@
+name: Release
+
+# Push a tag like v1.0.0 to build the app and publish a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  build:
+    # macos-26 ships Xcode 26.x, required for the macOS 26 Liquid Glass
+    # APIs (.glassEffect). Older runners (macos-14/15) cannot compile this.
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Select Xcode 26
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.5.app
+          xcodebuild -version
+
+      - name: Build (Release)
+        run: |
+          # Stamp the tag into the bundle (Info.plist reads $(MARKETING_VERSION));
+          # the in-app updater compares this version against the latest release.
+          xcodebuild \
+            -project NotchGlass.xcodeproj \
+            -scheme NotchGlass \
+            -configuration Release \
+            -derivedDataPath build \
+            MARKETING_VERSION="${GITHUB_REF_NAME#v}" \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package
+        run: |
+          APP="build/Build/Products/Release/Notch.app"
+          test -d "$APP" || { echo "::error::App not found at $APP"; exit 1; }
+          # Ad-hoc sign so the app has a stable signature (still not notarized).
+          codesign --force --deep --sign - "$APP" || true
+          # Zip preserving the bundle (ditto, not zip, for correct macOS metadata).
+          ditto -c -k --keepParent "$APP" "Notch-${GITHUB_REF_NAME}.zip"
+          ls -la Notch-*.zip
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Notch-*.zip
+          generate_release_notes: true
+          body: |
+            ### Install
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/install.sh | bash
+            ```
+
+            Or download the `.zip` below, unzip, and drag **Notch.app** into Applications.
+
+            > The app is not notarized. The installer clears the quarantine flag for you;
+            > if you install manually, run `xattr -dr com.apple.quarantine /Applications/Notch.app`.

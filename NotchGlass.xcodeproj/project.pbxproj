@@ -1,0 +1,360 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1000010 /* NotchGlassApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001 /* NotchGlassApp.swift */; };
+		A1000011 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002 /* AppDelegate.swift */; };
+		A1000012 /* NotchPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000003 /* NotchPanel.swift */; };
+		A1000013 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004 /* DesignSystem.swift */; };
+		A1000014 /* AIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000005 /* AIService.swift */; };
+		A1000015 /* NotchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000006 /* NotchModel.swift */; };
+		A1000016 /* GlassBackground.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000007 /* GlassBackground.swift */; };
+		A1000017 /* NotchBody.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000008 /* NotchBody.swift */; };
+		A1000018 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000009 /* Components.swift */; };
+		A100001A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000A /* ContentView.swift */; };
+		A100001B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000C /* SettingsView.swift */; };
+		A1000051 /* InlineSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000050 /* InlineSettingsView.swift */; };
+		A100001C /* HotKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000D /* HotKey.swift */; };
+		A100001D /* APIKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000E /* APIKeyStore.swift */; };
+		A1000060 /* NotesService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000061 /* NotesService.swift */; };
+		A1000064 /* IntentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000065 /* IntentEngine.swift */; };
+		A1000068 /* RemindersService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000069 /* RemindersService.swift */; };
+		A1000072 /* UpdaterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000073 /* UpdaterService.swift */; };
+		A1000074 /* MouseVelocityTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000075 /* MouseVelocityTracker.swift */; };
+		A1000076 /* OpenRouterAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000077 /* OpenRouterAuth.swift */; };
+		A1000078 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000079 /* Localization.swift */; };
+		A1000080 /* WhatsNewService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000081 /* WhatsNewService.swift */; };
+		A1000082 /* WhatsNewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000083 /* WhatsNewView.swift */; };
+		A1000066 /* IntentExamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000067 /* IntentExamples.swift */; };
+		A1000071 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000070 /* Assets.xcassets */; };
+		A10004A1 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = A10004A0 /* Fonts */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A1000001 /* NotchGlassApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchGlassApp.swift; sourceTree = "<group>"; };
+		A1000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A1000003 /* NotchPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchPanel.swift; sourceTree = "<group>"; };
+		A1000004 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
+		A1000005 /* AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIService.swift; sourceTree = "<group>"; };
+		A1000006 /* NotchModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchModel.swift; sourceTree = "<group>"; };
+		A1000061 /* NotesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesService.swift; sourceTree = "<group>"; };
+		A1000065 /* IntentEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentEngine.swift; sourceTree = "<group>"; };
+		A1000069 /* RemindersService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemindersService.swift; sourceTree = "<group>"; };
+		A1000073 /* UpdaterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterService.swift; sourceTree = "<group>"; };
+		A1000075 /* MouseVelocityTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseVelocityTracker.swift; sourceTree = "<group>"; };
+		A1000077 /* OpenRouterAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterAuth.swift; sourceTree = "<group>"; };
+		A1000079 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
+		A1000081 /* WhatsNewService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewService.swift; sourceTree = "<group>"; };
+		A1000083 /* WhatsNewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewView.swift; sourceTree = "<group>"; };
+		A1000067 /* IntentExamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentExamples.swift; sourceTree = "<group>"; };
+		A1000007 /* GlassBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassBackground.swift; sourceTree = "<group>"; };
+		A1000008 /* NotchBody.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchBody.swift; sourceTree = "<group>"; };
+		A1000009 /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		A100000A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A100000C /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A1000050 /* InlineSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InlineSettingsView.swift; sourceTree = "<group>"; };
+		A100000D /* HotKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKey.swift; sourceTree = "<group>"; };
+		A100000E /* APIKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeyStore.swift; sourceTree = "<group>"; };
+		A100000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000070 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A10004A0 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fonts; sourceTree = "<group>"; };
+		A1000100 /* NotchGlass.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NotchGlass.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1000200 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A1000300 = {
+			isa = PBXGroup;
+			children = (
+				A1000301 /* NotchGlass */,
+				A1000302 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1000301 /* NotchGlass */ = {
+			isa = PBXGroup;
+			children = (
+				A1000310 /* Sources */,
+				A1000311 /* Resources */,
+			);
+			path = NotchGlass;
+			sourceTree = "<group>";
+		};
+		A1000310 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A1000001 /* NotchGlassApp.swift */,
+				A1000002 /* AppDelegate.swift */,
+				A1000003 /* NotchPanel.swift */,
+				A1000004 /* DesignSystem.swift */,
+				A1000005 /* AIService.swift */,
+				A1000006 /* NotchModel.swift */,
+				A1000061 /* NotesService.swift */,
+				A1000069 /* RemindersService.swift */,
+				A1000073 /* UpdaterService.swift */,
+				A1000075 /* MouseVelocityTracker.swift */,
+				A1000077 /* OpenRouterAuth.swift */,
+				A1000079 /* Localization.swift */,
+				A1000081 /* WhatsNewService.swift */,
+				A1000083 /* WhatsNewView.swift */,
+				A1000065 /* IntentEngine.swift */,
+				A1000067 /* IntentExamples.swift */,
+				A1000007 /* GlassBackground.swift */,
+				A1000008 /* NotchBody.swift */,
+				A1000009 /* Components.swift */,
+				A100000A /* ContentView.swift */,
+				A100000C /* SettingsView.swift */,
+				A1000050 /* InlineSettingsView.swift */,
+				A100000D /* HotKey.swift */,
+				A100000E /* APIKeyStore.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		A1000311 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				A100000B /* Info.plist */,
+				A1000070 /* Assets.xcassets */,
+				A10004A0 /* Fonts */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		A1000302 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1000100 /* NotchGlass.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1000400 /* NotchGlass */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000500 /* Build configuration list for PBXNativeTarget "NotchGlass" */;
+			buildPhases = (
+				A1000201 /* Sources */,
+				A1000200 /* Frameworks */,
+				A1000202 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotchGlass;
+			productName = NotchGlass;
+			productReference = A1000100 /* NotchGlass.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1000600 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					A1000400 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = A1000601 /* Build configuration list for PBXProject "NotchGlass" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A1000300;
+			productRefGroup = A1000302 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1000400 /* NotchGlass */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000202 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000071 /* Assets.xcassets in Resources */,
+				A10004A1 /* Fonts in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000201 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000010 /* NotchGlassApp.swift in Sources */,
+				A1000011 /* AppDelegate.swift in Sources */,
+				A1000012 /* NotchPanel.swift in Sources */,
+				A1000013 /* DesignSystem.swift in Sources */,
+				A1000014 /* AIService.swift in Sources */,
+				A1000015 /* NotchModel.swift in Sources */,
+				A1000060 /* NotesService.swift in Sources */,
+				A1000068 /* RemindersService.swift in Sources */,
+				A1000072 /* UpdaterService.swift in Sources */,
+				A1000074 /* MouseVelocityTracker.swift in Sources */,
+				A1000076 /* OpenRouterAuth.swift in Sources */,
+				A1000078 /* Localization.swift in Sources */,
+				A1000080 /* WhatsNewService.swift in Sources */,
+				A1000082 /* WhatsNewView.swift in Sources */,
+				A1000064 /* IntentEngine.swift in Sources */,
+				A1000066 /* IntentExamples.swift in Sources */,
+				A1000016 /* GlassBackground.swift in Sources */,
+				A1000017 /* NotchBody.swift in Sources */,
+				A1000018 /* Components.swift in Sources */,
+				A100001A /* ContentView.swift in Sources */,
+				A100001B /* SettingsView.swift in Sources */,
+				A1000051 /* InlineSettingsView.swift in Sources */,
+				A100001C /* HotKey.swift in Sources */,
+				A100001D /* APIKeyStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A1000700 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A1000701 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		A1000702 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = NotchGlass/Resources/NotchGlass.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 4;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NotchGlass/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
+				PRODUCT_NAME = Notch;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1000703 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = NotchGlass/Resources/NotchGlass.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 4;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NotchGlass/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.6;
+				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
+				PRODUCT_NAME = Notch;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1000601 /* Build configuration list for PBXProject "NotchGlass" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000700 /* Debug */,
+				A1000701 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1000500 /* Build configuration list for PBXNativeTarget "NotchGlass" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000702 /* Debug */,
+				A1000703 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = A1000600 /* Project object */;
+}
