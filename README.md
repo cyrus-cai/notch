@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/icon.png" width="96" alt="Notch" />
+<img src=".github/icon.png" width="96" alt="Notch" />
 
 # Notch
 
