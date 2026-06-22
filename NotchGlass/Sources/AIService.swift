@@ -405,6 +405,13 @@ struct OpenAICompatAIService: AIService {
                 return L("service.error.malformed", provider)
             }
         }
+
+        /// The HTTP status when this is an HTTP failure, else nil — for the
+        /// metadata-only diagnostics breadcrumb (XII-85), never any body text.
+        var httpStatus: Int? {
+            if case .http(_, let status, _) = self { return status }
+            return nil
+        }
     }
 
     func stream(system: String, messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {

@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import Combine
+import NaturalLanguage
 import SwiftUI
 
 /// Owns the notch panels for the lifetime of the app — one per screen the
@@ -507,13 +508,15 @@ enum DockIconVisibility: String, CaseIterable, Identifiable {
     }
 }
 
-/// The language the Translate chip targets — persisted in `UserDefaults`, edited
-/// in Settings → Translation, consumed by `ClipboardPreset.phrase(cjk:)`. The
-/// default `.auto` keeps the original behavior (the model infers a target from
-/// the copied text); any explicit choice appends "to <language>" to the phrase
-/// so a tap always lands in the language the user picked.
+/// A language the user can pick for translation. Used for both pref1 and pref2
+/// of the dual-preference translation model. Persisted per-preference in
+/// UserDefaults under "translationPref1" / "translationPref2".
+///
+/// Migration note: previous single-target key ("translationTarget") and the old
+/// A/B pair keys ("translationLangA", "translationLangB") are ignored — unrecognised
+/// keys fall back to their respective defaults (pref1 → .chineseSimplified,
+/// pref2 → .english).
 enum TranslationLanguage: String, CaseIterable, Identifiable {
-    case auto
     case english
     case chineseSimplified
     case chineseTraditional
@@ -534,7 +537,6 @@ enum TranslationLanguage: String, CaseIterable, Identifiable {
     /// (each language named in itself, the convention OS language pickers use).
     var label: String {
         switch self {
-        case .auto:               return L("translation.auto")
         case .english:            return "English"
         case .chineseSimplified:  return "简体中文"
         case .chineseTraditional: return "繁體中文"
@@ -551,11 +553,28 @@ enum TranslationLanguage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The target named in English, for the Latin-script phrase ("Translate this
-    /// to Japanese"). `nil` for `.auto` — there's no target to name.
-    var englishName: String? {
+    /// A compact label for the translate chip — short enough to pair as "中→En".
+    var chipLabel: String {
         switch self {
-        case .auto:               return nil
+        case .english:            return "En"
+        case .chineseSimplified:  return "中"
+        case .chineseTraditional: return "繁"
+        case .japanese:           return "日"
+        case .korean:             return "韓"
+        case .french:             return "Fr"
+        case .german:             return "De"
+        case .spanish:            return "Es"
+        case .portuguese:         return "Pt"
+        case .italian:            return "It"
+        case .russian:            return "Ru"
+        case .arabic:             return "ع"
+        case .hindi:              return "हि"
+        }
+    }
+
+    /// The language named in English, for the Latin-script prompt phrase.
+    var englishName: String {
+        switch self {
         case .english:            return "English"
         case .chineseSimplified:  return "Simplified Chinese"
         case .chineseTraditional: return "Traditional Chinese"
@@ -572,11 +591,9 @@ enum TranslationLanguage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The target named in Chinese, for the CJK phrase ("把这段翻译成日语"). `nil`
-    /// for `.auto`.
-    var cjkName: String? {
+    /// The language named in Chinese, for the CJK prompt phrase.
+    var cjkName: String {
         switch self {
-        case .auto:               return nil
         case .english:            return "英语"
         case .chineseSimplified:  return "简体中文"
         case .chineseTraditional: return "繁体中文"
@@ -593,15 +610,78 @@ enum TranslationLanguage: String, CaseIterable, Identifiable {
         }
     }
 
-    private static let key = "translationLanguage"
-    static var current: TranslationLanguage {
-        get {
-            UserDefaults.standard.string(forKey: key)
-                .flatMap(TranslationLanguage.init) ?? .auto
+    // MARK: - Detection
+
+    /// The dominant language of `text`, mapped to one of our 13 cases — or nil if
+    /// detection is inconclusive or lands on a language we don't offer. Runs
+    /// locally via `NLLanguageRecognizer` (no network, no third-party library).
+    /// Chinese disambiguation: `NaturalLanguage` reports both scripts as
+    /// `.simplifiedChinese` / `.traditionalChinese` only when confident; we fall
+    /// back to a Han-presence check that maps any Chinese to Simplified, which is
+    /// enough for the direction display (the AI still does the real translation).
+    static func detect(in text: String) -> TranslationLanguage? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(trimmed)
+        guard let lang = recognizer.dominantLanguage else { return nil }
+        switch lang {
+        case .english:            return .english
+        case .simplifiedChinese:  return .chineseSimplified
+        case .traditionalChinese: return .chineseTraditional
+        case .japanese:           return .japanese
+        case .korean:             return .korean
+        case .french:             return .french
+        case .german:             return .german
+        case .spanish:            return .spanish
+        case .portuguese:         return .portuguese
+        case .italian:            return .italian
+        case .russian:            return .russian
+        case .arabic:             return .arabic
+        case .hindi:              return .hindi
+        default:                  return nil
         }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: key)
-        }
+    }
+
+    /// The translate direction the chip should advertise for a given pending
+    /// clip, resolved exactly the way the AI prompt routes it:
+    ///   • source is pref1            → target pref2
+    ///   • source is pref2, or other  → target pref1
+    /// Returns the *source* only when it's one of the two prefs (so the chip can
+    /// show "src→dst"); when the source is some third language (or undetected),
+    /// `source` is nil and only the guaranteed target is known ("→dst").
+    static func resolveDirection(
+        clip: String?, pref1: TranslationLanguage, pref2: TranslationLanguage
+    ) -> (source: TranslationLanguage?, target: TranslationLanguage) {
+        let detected = clip.flatMap(detect(in:))
+        if detected == pref1 { return (pref1, pref2) }
+        if detected == pref2 { return (pref2, pref1) }
+        return (nil, pref1)
+    }
+
+    // MARK: - Persistence
+
+    private static let pref1Key = "translationPref1"
+    private static let pref2Key = "translationPref2"
+
+    /// Load the persisted pref1 language. Falls back to `.chineseSimplified`.
+    static func loadPref1() -> TranslationLanguage {
+        UserDefaults.standard.string(forKey: pref1Key)
+            .flatMap(TranslationLanguage.init) ?? .chineseSimplified
+    }
+
+    static func savePref1(_ value: TranslationLanguage) {
+        UserDefaults.standard.set(value.rawValue, forKey: pref1Key)
+    }
+
+    /// Load the persisted pref2 language. Falls back to `.english`.
+    static func loadPref2() -> TranslationLanguage {
+        UserDefaults.standard.string(forKey: pref2Key)
+            .flatMap(TranslationLanguage.init) ?? .english
+    }
+
+    static func savePref2(_ value: TranslationLanguage) {
+        UserDefaults.standard.set(value.rawValue, forKey: pref2Key)
     }
 }
 

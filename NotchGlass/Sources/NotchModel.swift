@@ -419,6 +419,22 @@ final class NotchModel: ObservableObject {
     /// "Saving…" cue instead of looking like nothing happened on Enter.
     @Published var noteSaving = false
 
+    /// A failed Ask, surfaced as an actionable error state instead of a blank spinner
+    /// or a generic line (XII-85). Carries the real, human-readable reason (e.g.
+    /// "Anthropic · HTTP 401") and whether the likely fix is to set up a key (no key
+    /// configured) versus retry (transient/network). `nil` when there's no error.
+    @Published var askError: AskError? = nil
+
+    /// The shape of an Ask failure the result view renders into a capsule action.
+    struct AskError: Equatable {
+        /// The real reason, passed through from the service layer (not a generic
+        /// string) so the user sees what actually happened.
+        let message: String
+        /// True when no model/key is configured — the action should be "open
+        /// Settings" rather than "retry" (retrying without a key can't succeed).
+        let needsSetup: Bool
+    }
+
     /// The pasteboard's `changeCount` as of the last moment the notch was *resting*
     /// (closed, or a fresh chat) — i.e. the value from *before* the current open. An
     /// Ask injects the clipboard when the live count has moved past this baseline,
@@ -472,6 +488,14 @@ final class NotchModel: ObservableObject {
     /// this") silently running with no copied text. `submit()` reads this once and
     /// clears it, so it never leaks into a follow-up.
     private var forceClipboardInjection = false
+
+    /// When a chip's on-screen wording differs from the instruction sent to the
+    /// model (currently only Translate, whose verbose detect-and-route rule must
+    /// not leak into the "You" bubble), `runClipboardPreset` stashes the full
+    /// instruction here while the visible turn carries the short display phrase.
+    /// `submit()` consumes it once for the wire copy, then clears it so it can
+    /// never carry into a later typed turn.
+    private var forcedWirePhrase: String?
 
     /// The live conversation rendered in the result view — alternating user and
     /// assistant `Turn`s. A follow-up appends to this rather than replacing it, so
@@ -908,6 +932,16 @@ final class NotchModel: ObservableObject {
         showHistory = false
         showSettings = false
         highlightedHistoryIndex = nil
+        // Clear the note/reminder-save state, exactly like `fullClose` does (XII-86).
+        // Backing out with Back while a Note/Reminder write is still in flight (e.g.
+        // an AppleScript retry) used to leave `noteSaving` stuck true here — and the
+        // `guard !noteSaving` in `runClipboardCapture` then permanently blocked every
+        // clipboard-capture chip tap until the next full close. Resetting it (plus the
+        // cue task and feedback fields) keeps the next session clean.
+        noteCueTask?.cancel()
+        lastSavedNote = nil
+        noteError = nil
+        noteSaving = false
         // Re-baseline the clipboard against NOW. The handoff-copy button writes the
         // transcript to the pasteboard (bumping changeCount past the open baseline);
         // without this reset, the next first-turn Ask would mistake our own handoff
@@ -1231,6 +1265,20 @@ final class NotchModel: ObservableObject {
             }
         }
 
+        /// The text shown in the on-screen "You" bubble for this chip — what the
+        /// user *conceptually* asked, not the full instruction sent to the model.
+        /// For most presets the wire phrase already reads naturally ("Summarize
+        /// this"), so the display text *is* the phrase. Translate is the exception:
+        /// its wire phrase is a verbose detect-and-route rule that must never leak
+        /// on screen, so it gets a short stand-in. `submit()` shows this while
+        /// sending the full `phrase(cjk:)` (plus the clipboard) to the model.
+        func displayPhrase(cjk: Bool) -> String {
+            switch self {
+            case .translate: return cjk ? "翻译这段" : "Translate this"
+            default:         return phrase(cjk: cjk)
+            }
+        }
+
         /// The referential query the chip drops into the prompt. Object-less by
         /// design so `isReferentialQuery` pairs it with the clipboard.
         func phrase(cjk: Bool) -> String {
@@ -1243,23 +1291,47 @@ final class NotchModel: ObservableObject {
             case .professional: return cjk ? "把这段改得更正式一些"     : "Rewrite this to sound more professional"
             case .concise:      return cjk ? "把这段改得更精炼"         : "Rewrite this to be more concise"
             case .translate:
-                // Honor the user's preferred language as one half of a *pair*,
-                // not a fixed destination: `.auto` keeps the original object-less
-                // phrase (model infers the target); any explicit pick makes the
-                // tap bidirectional — if the copied text is already in that
-                // language, translate it back to its source language; otherwise
-                // translate it into the picked language. This is what users mean
-                // by "translate" on a clip they can't read: paste A get B, paste
-                // B get A. The model decides the direction. The phrase stays
-                // object-less ("把这段…"/"this…") so `isReferentialQuery` still
+                // Dual-preference rule: detect the language of the pasted text,
+                // then translate based on these three cases:
+                //   1. Neither pref1 nor pref2 → translate into pref1
+                //   2. Is pref1 → translate into pref2
+                //   3. Is pref2 → translate into pref1
+                // The AI does the language detection — no third-party library
+                // is introduced. Phrase is object-less so `isReferentialQuery`
                 // pairs it with the clipboard.
-                let lang = TranslationLanguage.current
+                let pref1 = TranslationLanguage.loadPref1()
+                let pref2 = TranslationLanguage.loadPref2()
+                // Guard the degenerate pref1 == pref2 case (XII-113): the user can set
+                // both slots to the same language (Settings, or either chip context
+                // submenu), and the three-way rule then collapses into "if it's X,
+                // translate to X" — self-contradictory, so the model echoes the source
+                // or flails, silently. Fall back to the old single-target rule: if the
+                // clip is already that language, translate it back to its source
+                // language; otherwise translate it into that language. Always a
+                // meaningful direction, never a no-op.
+                guard pref1 != pref2 else {
+                    let only = pref1
+                    if cjk {
+                        return "把这段翻译一下：如果是\(only.cjkName)就翻译成它的原文语言，" +
+                               "否则翻译成\(only.cjkName)。只输出译文，不加解释。"
+                    } else {
+                        return "Translate this: if it is in \(only.englishName), translate it to its " +
+                               "original language; otherwise translate it into \(only.englishName). " +
+                               "Output only the translation, no explanation."
+                    }
+                }
                 if cjk {
-                    guard let name = lang.cjkName else { return "翻译这段" }
-                    return "把这段翻译一下：如果是\(name)就翻译成它的原文语言，否则翻译成\(name)"
+                    return "判断这段文字是什么语言，然后按以下规则翻译：" +
+                           "如果是\(pref1.cjkName)，翻译成\(pref2.cjkName)；" +
+                           "如果是\(pref2.cjkName)，翻译成\(pref1.cjkName)；" +
+                           "如果两者都不是，翻译成\(pref1.cjkName)。" +
+                           "只输出译文，不加解释。"
                 } else {
-                    guard let name = lang.englishName else { return "Translate this" }
-                    return "Translate this: if it is in \(name), translate it to its original language; otherwise translate it to \(name)"
+                    return "Detect the language of this text, then translate it: " +
+                           "if it is \(pref1.englishName), translate into \(pref2.englishName); " +
+                           "if it is \(pref2.englishName), translate into \(pref1.englishName); " +
+                           "if it is neither, translate into \(pref1.englishName). " +
+                           "Output only the translation, no explanation."
                 }
             }
         }
@@ -1272,6 +1344,42 @@ final class NotchModel: ObservableObject {
     }
 
     /// Which clipboard presets the user has chosen to offer, in display order —
+
+    // MARK: - Translation preferences
+
+    /// Primary translation language (pref1). The chip translates into pref1
+    /// when the copied text is pref2 or any other language. Published so the
+    /// chip label re-renders immediately; `didSet` persists to UserDefaults.
+    @Published var translationPref1: TranslationLanguage =
+        TranslationLanguage.loadPref1() {
+        didSet { TranslationLanguage.savePref1(translationPref1) }
+    }
+
+    /// Secondary translation language (pref2). The chip translates into pref2
+    /// when the copied text is pref1. Published so the chip label re-renders
+    /// immediately; `didSet` persists to UserDefaults.
+    @Published var translationPref2: TranslationLanguage =
+        TranslationLanguage.loadPref2() {
+        didSet { TranslationLanguage.savePref2(translationPref2) }
+    }
+
+    /// The directional suffix for the Translate chip, resolved against the *pending
+    /// clipboard* — the target language is knowable up front, so the chip names it
+    /// instead of hedging. With a detected source that's one of the two prefs we
+    /// show "src→dst" (e.g. "中→En"); when the source is some other language (or
+    /// undetected) only the target is guaranteed, so we show "→dst". Recomputes
+    /// whenever the clipboard or either pref changes (all are `@Published`).
+    var translateChipDirection: String {
+        let (source, target) = TranslationLanguage.resolveDirection(
+            clip: pendingClipboard,
+            pref1: translationPref1,
+            pref2: translationPref2)
+        if let source {
+            return "\(source.chipLabel)→\(target.chipLabel)"
+        }
+        return "→\(target.chipLabel)"
+    }
+
     /// the "custom quick-tools" set (XII-111). Persisted as an ordered list of
     /// raw values in `UserDefaults`; defaults to every preset. The published
     /// property drives the chip row live, and its `didSet` writes through.
@@ -1372,7 +1480,13 @@ final class NotchModel: ObservableObject {
     func runClipboardPreset(_ preset: ClipboardPreset) {
         guard pendingClipboard != nil else { return }
         manualPanelOverride = nil
-        text = preset.phrase(cjk: pendingClipboardIsCJK)
+        // The "You" bubble shows the short display phrase; the model gets the full
+        // instruction. They match for every preset except Translate, whose
+        // detect-and-route rule must stay off screen — see `displayPhrase`.
+        let display = preset.displayPhrase(cjk: pendingClipboardIsCJK)
+        let wire = preset.phrase(cjk: pendingClipboardIsCJK)
+        text = display
+        forcedWirePhrase = (wire != display) ? wire : nil
         // The chip *is* the clipboard intent — fold the copied text in directly rather
         // than re-deriving it from the phrase's wording (which `isReferentialQuery`
         // can misjudge). `submit()` reads and clears the flag this turn.
@@ -1409,11 +1523,18 @@ final class NotchModel: ObservableObject {
     func submit() {
         let q = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return }
+        // Clear any prior error state — this attempt replaces it (XII-85).
+        askError = nil
         // One-shot: a preset chip set this so its turn injects the clipboard without
         // having to read as referential. Consume it here regardless of the early
         // returns below, so it can never carry over to a later typed submit.
         let forceClip = forceClipboardInjection
         forceClipboardInjection = false
+        // The instruction to send the model in place of the visible bubble text, if a
+        // chip set one (Translate). Consumed once here so it never bleeds into a later
+        // typed turn. Only honoured on a forced-clip turn, paired with the clipboard.
+        let wireOverride = forcedWirePhrase
+        forcedWirePhrase = nil
         text = ""
         showHistory = false
         highlightedHistoryIndex = nil
@@ -1461,9 +1582,13 @@ final class NotchModel: ObservableObject {
         let clipForTurn = forceClip ? (clipboardContextIfEligible() ?? pendingClipboard)
                                     : (isReferentialQuery(q) ? clipboardContextIfEligible() : nil)
         if firstTurn, let clip = clipForTurn {
+            // The instruction the model acts on: the chip's full wire phrase (e.g. the
+            // Translate detect-and-route rule) when one was set, otherwise the visible
+            // question. The on-screen bubble keeps `q`; only this wire copy diverges.
+            let instruction = wireOverride ?? q
             context[context.count - 1] = ChatMessage(
                 role: "user",
-                content: "For context, here is what I have copied:\n\n\(clip)\n\nWith that in mind: \(q)")
+                content: "For context, here is what I have copied:\n\n\(clip)\n\nWith that in mind: \(instruction)")
             // Stamp the on-screen user turn so the result view can show a *permanent*
             // "based on what you copied" trace above it — not a load-only flash. The
             // user turn is the second-to-last entry (the empty assistant placeholder
@@ -1551,14 +1676,47 @@ final class NotchModel: ObservableObject {
                     }
                 } else if self.isOnScreen(answerID: answerID) {
                     // Failed before any text arrived (refused connection, bad key): no
-                    // partial round worth saving. Show the generic error on screen; a
-                    // detached pre-text failure is simply dropped.
-                    self.updateAnswer(id: answerID, text: L("error.generic"))
+                    // partial round worth saving. Surface the REAL reason (XII-85) —
+                    // `ServiceError` already localizes to e.g. "Anthropic · HTTP 401" —
+                    // and raise an actionable error state (retry, or open Settings when
+                    // no key is set) instead of a dead generic line. A detached pre-text
+                    // failure is simply dropped.
+                    let reason = error.localizedDescription
+                    self.updateAnswer(id: answerID, text: reason)
                     self.markFinished(id: answerID)
+                    self.askError = AskError(message: reason, needsSetup: !self.isConfigured)
                     self.mode = .result
+                    // Metadata-only breadcrumb (no prompt/answer/key) — see DiagnosticsLog.
+                    DiagnosticsLog.shared.record(
+                        provider: APIKeyStore.selectedProvider.displayName,
+                        status: Self.httpStatus(from: error),
+                        error: error)
                 }
             }
         }
+    }
+
+    /// The HTTP status carried by a service error, if any — for the diagnostics
+    /// breadcrumb only. Pulls it from `ServiceError.http` without ever touching the
+    /// response body. Nil for non-HTTP failures (timeout, offline, malformed).
+    private static func httpStatus(from error: Error) -> Int? {
+        (error as? OpenAICompatAIService.ServiceError)?.httpStatus
+    }
+
+    /// Retry the Ask that just failed (XII-85). The failed turn pair (the question
+    /// plus its empty/error assistant turn) is still on screen; drop the assistant
+    /// half and the question turn, lift the question back into the input, and re-run
+    /// `submit()` so it streams a fresh answer into a clean pair. No-op when there's
+    /// nothing to retry.
+    func retryLastAsk() {
+        guard askError != nil else { return }
+        askError = nil
+        guard let lastUser = turns.last(where: { $0.role == "user" }) else { return }
+        let question = lastUser.text
+        if turns.last?.role == "assistant" { turns.removeLast() }
+        if turns.last?.role == "user" { turns.removeLast() }
+        text = question
+        submit()
     }
 
     /// Does this *note* line point at something on the clipboard rather than carry

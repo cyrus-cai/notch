@@ -59,6 +59,17 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
+            version: "1.0.8",
+            date: "2026-06-22",
+            features: [
+                "Translate now flips between your two preferred languages and shows the direction on the chip.",
+                "A failed answer now shows what went wrong, with a one-tap Try Again or Open Settings.",
+            ],
+            fixes: [
+                "Clipboard action chips no longer stop responding after backing out of a save.",
+            ]
+        ),
+        Entry(
             version: "1.0.7",
             date: "2026-06-22",
             features: [

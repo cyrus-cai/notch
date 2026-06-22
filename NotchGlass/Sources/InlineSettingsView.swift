@@ -112,10 +112,6 @@ struct InlineSettingsView: View {
     /// through `selectPlacement` so `AppDelegate` rebuilds panels immediately.
     @State private var placement: DisplayPlacement = .current
 
-    /// The language the Translate chip targets — mirrors the persisted value;
-    /// writes go through `selectTranslationLanguage` so the next tap picks it up.
-    @State private var translationLanguage: TranslationLanguage = .current
-
     /// Whether the app shows a Dock icon — mirrors the persisted value; writes go
     /// through `selectDockIconVisibility` so `AppDelegate` flips the activation
     /// policy immediately.
@@ -906,35 +902,41 @@ struct InlineSettingsView: View {
 
     // MARK: - Translation
 
-    /// The language the Translate chip aims for. `Auto` leaves the target to the
-    /// model (the original behavior); any explicit pick is named in the phrase so
-    /// a tap always lands there. Applies to the next tap — no rebuild needed.
+    /// Pref1 picker — the primary language. Writing through `model.translationPref1`
+    /// publishes the change so the chip label re-renders immediately.
     private var translationLanguageRow: some View {
-        settingRow(label: L("translation.language")) {
-            GlassMenu(title: translationLanguage.label) {
-                // The list is long (14 entries) — mark the active one with a native
-                // checkmark so the current target is obvious on open. A plain
-                // `Button` label of just the checkmark image gets SwiftUI to render
-                // it leading, the way the system menu marks a selected item.
-                ForEach(TranslationLanguage.allCases) { lang in
-                    Button {
-                        selectTranslationLanguage(lang)
-                    } label: {
-                        if lang == translationLanguage {
-                            Label(lang.label, systemImage: "checkmark")
-                        } else {
-                            Text(lang.label)
+        Group {
+            settingRow(label: L("translation.pref1")) {
+                GlassMenu(title: model.translationPref1.label) {
+                    ForEach(TranslationLanguage.allCases) { lang in
+                        Button {
+                            model.translationPref1 = lang
+                        } label: {
+                            if lang == model.translationPref1 {
+                                Label(lang.label, systemImage: "checkmark")
+                            } else {
+                                Text(lang.label)
+                            }
+                        }
+                    }
+                }
+            }
+            settingRow(label: L("translation.pref2")) {
+                GlassMenu(title: model.translationPref2.label) {
+                    ForEach(TranslationLanguage.allCases) { lang in
+                        Button {
+                            model.translationPref2 = lang
+                        } label: {
+                            if lang == model.translationPref2 {
+                                Label(lang.label, systemImage: "checkmark")
+                            } else {
+                                Text(lang.label)
+                            }
                         }
                     }
                 }
             }
         }
-    }
-
-    private func selectTranslationLanguage(_ newValue: TranslationLanguage) {
-        guard newValue != translationLanguage else { return }
-        translationLanguage = newValue
-        TranslationLanguage.current = newValue
     }
 
     private var translationFooter: some View {

@@ -175,9 +175,9 @@ enum Strings {
         "conn.unexpected": "Unexpected response",
 
         // Translation section
-        "translation.language": "Language",
-        "translation.footer": "The language the Translate chip pairs with. Tap it on text already in this language and it translates back to the source; tap it on anything else and it translates into this language. Auto lets the model pick a target from the copied text.",
-        "translation.auto": "Auto",
+        "translation.pref1": "Primary language",
+        "translation.pref2": "Secondary language",
+        "translation.footer": "Translation direction is decided by the pasted content: if it matches the primary language, it translates to secondary; if secondary, to primary; otherwise to primary.",
 
         // General section
         "general.showOn": "Show on",
@@ -278,6 +278,8 @@ enum Strings {
         "feedback.remindersFailed": "Couldn't save to Reminders. Try again.",
         "feedback.savePreservedLine": "%1$@\n%2$@",
         "error.generic": "Something went wrong. Try again.",
+        "error.retry": "Try again",
+        "error.openSettings": "Open Settings",
         "error.interrupted": "\n\n— connection lost; answer may be incomplete.",
 
         // Relative time
@@ -354,9 +356,9 @@ enum Strings {
         "conn.unavailable": "该服务商不支持测试",
         "conn.unexpected": "响应异常",
 
-        "translation.language": "语言",
-        "translation.footer": "「翻译」按钮配对的语言。点在已是该语言的文本上，会译回原文语言；点在其他文本上，则译成该语言。选「自动」时，由模型从复制的文本里推断目标语言。",
-        "translation.auto": "自动",
+        "translation.pref1": "首选语言一",
+        "translation.pref2": "首选语言二",
+        "translation.footer": "翻译方向由粘贴内容的语言决定：若是首选一，翻成首选二；若是首选二，翻成首选一；其他语言统一翻成首选一。",
 
         "general.showOn": "显示于",
         "general.placement.footer": "外接显示器会得到一个菜单栏高度的小岛。",
@@ -447,6 +449,8 @@ enum Strings {
         "feedback.remindersFailed": "加入提醒事项失败，请重试。",
         "feedback.savePreservedLine": "%1$@\n%2$@",
         "error.generic": "出了点问题，请重试。",
+        "error.retry": "重试",
+        "error.openSettings": "打开设置",
         "error.interrupted": "\n\n——连接中断，回答可能不完整。",
 
         "time.justNow": "刚刚",
@@ -518,9 +522,9 @@ enum Strings {
         "conn.unavailable": "此服務商不支援測試",
         "conn.unexpected": "回應異常",
 
-        "translation.language": "語言",
-        "translation.footer": "「翻譯」按鈕配對的語言。點在已是該語言的文字上，會譯回原文語言；點在其他文字上，則譯成該語言。選「自動」時，由模型從複製的文字裡推斷目標語言。",
-        "translation.auto": "自動",
+        "translation.pref1": "首選語言一",
+        "translation.pref2": "首選語言二",
+        "translation.footer": "翻譯方向由貼上內容的語言決定：若是首選一，翻成首選二；若是首選二，翻成首選一；其他語言統一翻成首選一。",
 
         "general.showOn": "顯示於",
         "general.placement.footer": "外接螢幕會得到一個選單列高度的小島。",
@@ -611,6 +615,8 @@ enum Strings {
         "feedback.remindersFailed": "加入提醒事項失敗，請重試。",
         "feedback.savePreservedLine": "%1$@\n%2$@",
         "error.generic": "出了點問題，請重試。",
+        "error.retry": "重試",
+        "error.openSettings": "打開設定",
         "error.interrupted": "\n\n——連線中斷，回答可能不完整。",
 
         "time.justNow": "剛剛",

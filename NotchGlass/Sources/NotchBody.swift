@@ -414,21 +414,19 @@ struct NotchBody: View {
                 .transition(.scale(scale: 0.7, anchor: .leading).combined(with: .opacity))
             }
             ForEach(model.visibleClipboardPresets) { preset in
-                ClipboardPresetChip(title: preset.label) {
-                    model.runClipboardPreset(preset)
-                }
-                // The overflow chips (everything past the collapsed few) unfurl from the
-                // leading edge — scaling up and fading in as they push out on hover, and
-                // collapsing back the same way. Asymmetric so the fold-back reads as a
-                // tuck-in rather than a mirror of the reveal.
-                .transition(
-                    .asymmetric(
-                        insertion: .scale(scale: 0.55, anchor: .leading)
-                            .combined(with: .opacity),
-                        removal: .scale(scale: 0.7, anchor: .leading)
-                            .combined(with: .opacity)
+                translateChip(preset)
+                    // The overflow chips (everything past the collapsed few) unfurl from the
+                    // leading edge — scaling up and fading in as they push out on hover, and
+                    // collapsing back the same way. Asymmetric so the fold-back reads as a
+                    // tuck-in rather than a mirror of the reveal.
+                    .transition(
+                        .asymmetric(
+                            insertion: .scale(scale: 0.55, anchor: .leading)
+                                .combined(with: .opacity),
+                            removal: .scale(scale: 0.7, anchor: .leading)
+                                .combined(with: .opacity)
+                        )
                     )
-                )
             }
             // The "⋯" affordance: only when the enabled set is longer than the collapsed
             // count. Expands on *hover* (the whole row's onHover drives the flag), so the
@@ -462,6 +460,60 @@ struct NotchBody: View {
         // their new positions while new ones scale in beside them.
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.visibleClipboardPresets.count)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.pendingClipboardCapture)
+    }
+
+    /// One clipboard-preset chip, with the Translate chip getting special treatment:
+    /// it shows both preferred languages (e.g. "译 中/En") and surfaces a context
+    /// menu split into pref1 / pref2 submenus. Left-click still runs the preset
+    /// immediately. All other presets render as plain chips.
+    @ViewBuilder
+    private func translateChip(_ preset: NotchModel.ClipboardPreset) -> some View {
+        if preset == .translate {
+            // Chip label: "译 中→En" — preset label + the resolved direction for the
+            // pending clip. The target language isn't a mystery: we detect the source
+            // locally and route it the same way the prompt does, so the chip names the
+            // actual direction ("中→En" / "En→中" / "→En" when the source is neither
+            // pref) instead of hedging with a slash or swap arrow. See
+            // `NotchModel.translateChipDirection`.
+            let chipTitle: String = "\(preset.label) \(model.translateChipDirection)"
+            ClipboardPresetChip(title: chipTitle) {
+                model.runClipboardPreset(preset)
+            }
+            .contextMenu {
+                // Two sections: one per preference slot. Each lists all languages
+                // with a checkmark on the current value for that slot.
+                Section(L("translation.pref1")) {
+                    ForEach(TranslationLanguage.allCases) { lang in
+                        Button {
+                            model.translationPref1 = lang
+                        } label: {
+                            if lang == model.translationPref1 {
+                                Label(lang.label, systemImage: "checkmark")
+                            } else {
+                                Text(lang.label)
+                            }
+                        }
+                    }
+                }
+                Section(L("translation.pref2")) {
+                    ForEach(TranslationLanguage.allCases) { lang in
+                        Button {
+                            model.translationPref2 = lang
+                        } label: {
+                            if lang == model.translationPref2 {
+                                Label(lang.label, systemImage: "checkmark")
+                            } else {
+                                Text(lang.label)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            ClipboardPresetChip(title: preset.label) {
+                model.runClipboardPreset(preset)
+            }
+        }
     }
 
     /// Label for the leading clipboard-capture chip, in the copied text's script and
@@ -814,14 +866,24 @@ struct NotchBody: View {
             // stub placeholder, so instead of an input that can't really answer we
             // show a call-to-action that takes the user straight to Settings to set
             // up a model. Once configured, the normal follow-up field returns.
-            Group {
-                if model.isConfigured {
-                    followUpRow
-                } else {
-                    setupModelRow
+            // A failed Ask gets an actionable capsule right under the answer (XII-85):
+            // "Open Settings" when there's no key to retry with, "Try again" otherwise.
+            // Shown in place of the normal follow-up field so the next step is obvious
+            // instead of a dead generic line above a working input.
+            if let askError = model.askError {
+                errorActionRow(askError)
+                    .padding(.top, 24)
+                    .transition(.opacity)
+            } else {
+                Group {
+                    if model.isConfigured {
+                        followUpRow
+                    } else {
+                        setupModelRow
+                    }
                 }
+                .padding(.top, 24)
             }
-            .padding(.top, 24)
 
             // Note/Reminder save feedback for lines filed FROM the result view (now
             // that the follow-up field routes by intent). The idle prompt shows this
@@ -860,6 +922,40 @@ struct NotchBody: View {
                     .font(.sf(14.5, weight: .medium))
                 Spacer(minLength: 0)
                 Image(systemName: "arrow.up.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Tokens.text3)
+            }
+            .foregroundStyle(Tokens.text1)
+            .padding(.leading, 13)
+            .padding(.trailing, 12)
+            .frame(height: 39)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SetupModelButtonStyle())
+    }
+
+    /// The actionable error footer for a failed Ask (XII-85): a full-width capsule —
+    /// "Open Settings" when no key is configured (retrying can't help), else
+    /// "Try again", which re-runs the same question. Styled like `setupModelRow` so
+    /// the result view's footprint doesn't jump between the two.
+    private func errorActionRow(_ askError: NotchModel.AskError) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                if askError.needsSetup {
+                    model.openSettings()
+                } else {
+                    model.retryLastAsk()
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: askError.needsSetup ? "slider.horizontal.3" : "arrow.clockwise")
+                    .font(.system(size: 13, weight: .medium))
+                Text(askError.needsSetup ? L("error.openSettings") : L("error.retry"))
+                    .font(.sf(14.5, weight: .medium))
+                Spacer(minLength: 0)
+                Image(systemName: askError.needsSetup ? "arrow.up.right" : "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Tokens.text3)
             }
