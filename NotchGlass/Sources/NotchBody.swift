@@ -396,6 +396,9 @@ struct NotchBody: View {
     /// label/phrase script follows the copied text (CJK chips for CJK clips), so a
     /// Chinese clipboard offers 总结 / 校对 / 翻译 etc.
     private func clipboardPresetChips() -> some View {
+        // The user's enabled quick-tools (XII-111): collapsed to the first few, the
+        // rest tucked behind a "⋯" chip that unfurls on hover. Unchecked tools never
+        // appear. Wraps via FlowLayout if a row ever overflows.
         FlowLayout(hSpacing: 6, vSpacing: 6) {
             // When the copied text itself reads as a note/reminder, lead with a one-tap
             // capture chip — filing the jot is the more likely intent than asking the AI
@@ -414,11 +417,10 @@ struct NotchBody: View {
                 ClipboardPresetChip(title: preset.label) {
                     model.runClipboardPreset(preset)
                 }
-                // The overflow chips (everything past the primary set) unfurl from the
-                // leading edge — scaling up and fading in as they push out to the right
-                // on hover, and collapsing back the same way. The primary chip is always
-                // present, so it carries no transition (identity stays put). Asymmetric
-                // so the fold-back reads as a tuck-in rather than a mirror of the reveal.
+                // The overflow chips (everything past the collapsed few) unfurl from the
+                // leading edge — scaling up and fading in as they push out on hover, and
+                // collapsing back the same way. Asymmetric so the fold-back reads as a
+                // tuck-in rather than a mirror of the reveal.
                 .transition(
                     .asymmetric(
                         insertion: .scale(scale: 0.55, anchor: .leading)
@@ -427,17 +429,13 @@ struct NotchBody: View {
                             .combined(with: .opacity)
                     )
                 )
-                .zIndex(NotchModel.ClipboardPreset.primary.contains(preset) ? 1 : 0)
             }
-            // The "⋯" affordance: only shown when there's actually more to reveal
-            // than the primary set. Unlike a button, it expands on *hover* — the
-            // whole row's `onHover` below drives `clipboardPresetsExpanded`, so the
-            // extra chips unfurl in place when the pointer is over the row and fold
-            // back when it leaves. Collapsed, it's just a quiet "⋯" hint; expanded,
-            // the trailing chips have replaced it, so it disappears on its own. It
-            // fades rather than snaps as the overflow chips take its place.
+            // The "⋯" affordance: only when the enabled set is longer than the collapsed
+            // count. Expands on *hover* (the whole row's onHover drives the flag), so the
+            // extra chips unfurl in place; collapsed it's a quiet hint, expanded the
+            // trailing chips have replaced it so it disappears on its own.
             if !model.clipboardPresetsExpanded
-                && model.clipboardPresets.count > NotchModel.ClipboardPreset.primary.count {
+                && model.clipboardPresets.count > NotchModel.collapsedPresetCount {
                 ClipboardPresetChip(title: "⋯") {
                     // Tap still works as a fallback for non-hover input.
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
@@ -450,21 +448,18 @@ struct NotchBody: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 10)
         // Hover anywhere over the chip row to unfurl the overflow actions in place;
-        // leaving the row folds them back to the single primary chip. Driving the
-        // expansion off the *row's* hover (not the tiny "⋯" chip's) means the pointer
-        // can travel onto the newly-revealed chips without collapsing them.
+        // leaving folds them back to the collapsed few. Driving the expansion off the
+        // *row's* hover (not the tiny "⋯" chip's) lets the pointer travel onto the
+        // newly-revealed chips without collapsing them.
         .onHover { hovering in
-            guard model.clipboardPresets.count > NotchModel.ClipboardPreset.primary.count else { return }
+            guard model.clipboardPresets.count > NotchModel.collapsedPresetCount else { return }
             withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
                 model.clipboardPresetsExpanded = hovering
             }
         }
-        // Drive the row's reflow as chips appear/disappear: the capture chip landing,
-        // AND the overflow set unfurling on hover. Both change `visibleClipboardPresets`,
-        // so keying the animation on its count (plus the capture chip) ties the
-        // FlowLayout's re-place — which has no Animatable inputs of its own — to the same
-        // spring that carries the per-chip insert/remove transitions, so the existing
-        // chips glide to their new x-positions while the new ones scale in beside them.
+        // Tie the FlowLayout reflow (capture chip landing AND overflow unfurling) to the
+        // same spring that carries the per-chip transitions, so existing chips glide to
+        // their new positions while new ones scale in beside them.
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.visibleClipboardPresets.count)
         .animation(.spring(response: 0.34, dampingFraction: 0.82), value: model.pendingClipboardCapture)
     }

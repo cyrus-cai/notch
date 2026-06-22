@@ -172,30 +172,42 @@ enum RemindersService {
         guard let kind = recurrenceKind(in: text) else { return nil }
         let cal = Calendar.current
         let now = Date()
+        let synthesized: Date?
         switch kind {
         case .daily:
             // Tomorrow at 9am.
             let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
-            return cal.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)
+            synthesized = cal.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)
         case .weekly(let day):
             if let day {
                 // Next occurrence of that weekday at 9am.
                 let comps = DateComponents(hour: 9, minute: 0,
                                            weekday: calendarWeekday(from: day))
-                return cal.nextDate(after: now, matching: comps,
-                                    matchingPolicy: .nextTime)
+                synthesized = cal.nextDate(after: now, matching: comps,
+                                           matchingPolicy: .nextTime)
+            } else {
+                // No specific day → tomorrow 9am (weekday derived from this in `write`).
+                let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
+                synthesized = cal.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)
             }
-            // No specific day → tomorrow 9am (weekday derived from this in `write`).
-            let tomorrow = cal.date(byAdding: .day, value: 1, to: now) ?? now
-            return cal.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)
         case .monthly:
             // First of next month at 9am.
-            guard let nextMonth = cal.date(byAdding: .month, value: 1, to: now)
-            else { return nil }
-            var c = cal.dateComponents([.year, .month], from: nextMonth)
-            c.day = 1; c.hour = 9; c.minute = 0; c.second = 0
-            return cal.date(from: c)
+            if let nextMonth = cal.date(byAdding: .month, value: 1, to: now) {
+                var c = cal.dateComponents([.year, .month], from: nextMonth)
+                c.day = 1; c.hour = 9; c.minute = 0; c.second = 0
+                synthesized = cal.date(from: c)
+            } else {
+                synthesized = nil
+            }
         }
+        // Unlike `futureDate`, these dates are *synthesized* (not detected from the
+        // text), so they normally land in the future by construction — but a DST
+        // shift or a skewed system clock can push the computed instant into the past.
+        // EventKit would silently accept a past due date and the reminder would never
+        // fire (XII-97), so guard the same way `futureDate` does: only return a date
+        // still ahead of now.
+        guard let synthesized, synthesized > now else { return nil }
+        return synthesized
     }
 
     /// EKWeekday (Sunday = 1 ... Saturday = 7) → Calendar's `.weekday` int, which

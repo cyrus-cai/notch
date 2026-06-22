@@ -623,9 +623,9 @@ final class NotchModel: ObservableObject {
     /// eligibility rules as injection (fresh, non-empty, ≤1500 chars, supported type).
     func refreshPendingClipboard() {
         let next = clipboardContextIfEligible()
-        // A new (or cleared) clipboard always reopens the preset row collapsed, so the
-        // panel never inherits a previous clip's expanded state.
         if next != pendingClipboard {
+            // A new (or cleared) clipboard always reopens the preset row collapsed, so
+            // the panel never inherits a previous clip's expanded "⋯" state.
             clipboardPresetsExpanded = false
             // Drop the prior clip's verdict *synchronously* so its chip can't linger
             // over the new clip while the async re-classification is still in flight —
@@ -1264,39 +1264,83 @@ final class NotchModel: ObservableObject {
             }
         }
 
-        /// The single preset shown by default — everything else stays tucked behind
-        /// the "⋯" chip until hovered. This block is auxiliary to the prompt, so we
-        /// keep the resting row to one chip (the most common reach on copied text)
-        /// and let the rest unfurl on hover, so the panel stays uncluttered next to
-        /// the Recent list.
-        static let primary: [ClipboardPreset] = [.summarize]
+        /// The default enabled set when the user has never customized it — every
+        /// preset, in the canonical order. Customizing (XII-111) narrows this; the
+        /// enabled set then drives the clipboard chip row (collapsed to a few behind
+        /// a "⋯", unfurling on hover).
+        static let defaultEnabled: [ClipboardPreset] = ClipboardPreset.allCases
+    }
+
+    /// Which clipboard presets the user has chosen to offer, in display order —
+    /// the "custom quick-tools" set (XII-111). Persisted as an ordered list of
+    /// raw values in `UserDefaults`; defaults to every preset. The published
+    /// property drives the chip row live, and its `didSet` writes through.
+    @Published var enabledClipboardPresets: [ClipboardPreset] = NotchModel.loadEnabledPresets() {
+        didSet { NotchModel.saveEnabledPresets(enabledClipboardPresets) }
+    }
+
+    private static let enabledPresetsKey = "clipboardPresets.enabled"
+
+    private static func loadEnabledPresets() -> [ClipboardPreset] {
+        guard let raw = UserDefaults.standard.array(forKey: enabledPresetsKey) as? [String] else {
+            return ClipboardPreset.defaultEnabled
+        }
+        // Map stored raw values back to cases, dropping any unknown (e.g. a preset
+        // removed in a later build). An empty/all-unknown result falls back to the
+        // default so the row is never silently emptied by stale data.
+        let restored = raw.compactMap { ClipboardPreset(rawValue: $0) }
+        return restored.isEmpty ? ClipboardPreset.defaultEnabled : restored
+    }
+
+    private static func saveEnabledPresets(_ presets: [ClipboardPreset]) {
+        UserDefaults.standard.set(presets.map(\.rawValue), forKey: enabledPresetsKey)
+    }
+
+    /// Toggle one preset on/off in the enabled set, preserving canonical order.
+    /// Refuses to remove the last one — an empty row would strip the feature
+    /// entirely with no way back from the chip UI.
+    func setClipboardPreset(_ preset: ClipboardPreset, enabled: Bool) {
+        if enabled {
+            guard !enabledClipboardPresets.contains(preset) else { return }
+            // Re-insert in canonical order so the row stays stably ordered.
+            enabledClipboardPresets = ClipboardPreset.allCases.filter {
+                $0 == preset || enabledClipboardPresets.contains($0)
+            }
+        } else {
+            guard enabledClipboardPresets.count > 1 else { return }
+            enabledClipboardPresets.removeAll { $0 == preset }
+        }
     }
 
     /// The presets to offer for the currently-pending clipboard, or `[]` when there's
-    /// nothing eligible. The set is the same regardless of content; only the *script*
+    /// nothing eligible. Honors the user's enabled set (XII-111); only the *script*
     /// of the labels/phrases follows the copied text (so a Chinese clipboard gets
-    /// Chinese chips). Returns Apple's core actions plus Translate, ordered most-used
-    /// first so the row reads left-to-right by likelihood.
+    /// Chinese chips), ordered to read left-to-right by likelihood.
     var clipboardPresets: [ClipboardPreset] {
         guard pendingClipboard != nil else { return [] }
-        return ClipboardPreset.allCases
+        return enabledClipboardPresets
     }
 
-    /// The presets visible right now: just the primary few when the row is collapsed
-    /// (the default), the full set once the user taps "⋯" to expand. Empty when
-    /// there's nothing eligible. Keeps the default panel to one short row so the
-    /// prompt stays the focus.
+    /// How many enabled presets the collapsed row shows before the rest tuck behind
+    /// the "⋯" chip. Keeps the resting row short in the narrow notch; the user's full
+    /// enabled set unfurls on hover. (Unchecked presets never appear at all.)
+    static let collapsedPresetCount = 3
+
+    /// Whether the preset row is unfurled to show every enabled preset (true) or just
+    /// the first `collapsedPresetCount` behind a "⋯" chip (false, the default). Resets
+    /// to collapsed each time a new clipboard becomes pending so the row opens compact.
+    @Published var clipboardPresetsExpanded = false
+
+    /// The presets visible right now: the user's enabled set (XII-111), but collapsed
+    /// to the first `collapsedPresetCount` until the row is hovered/expanded — the rest
+    /// tuck behind a "⋯" chip rather than scrolling or wrapping. Unchecked presets are
+    /// absent entirely. Empty when there's nothing eligible.
     var visibleClipboardPresets: [ClipboardPreset] {
         let all = clipboardPresets
         guard !all.isEmpty else { return [] }
         if clipboardPresetsExpanded { return all }
-        return all.filter { ClipboardPreset.primary.contains($0) }
+        return Array(all.prefix(NotchModel.collapsedPresetCount))
     }
-
-    /// Whether the clipboard preset row is showing every action (true) or just the
-    /// primary few behind a "⋯" chip (false, the default). Resets to collapsed each
-    /// time a new clipboard becomes pending so the panel always opens compact.
-    @Published var clipboardPresetsExpanded = false
 
     /// True when the pending clipboard is predominantly CJK text, so the preset chips
     /// speak the language the user copied. Counts Han characters against total letters;
@@ -1426,10 +1470,12 @@ final class NotchModel: ObservableObject {
             // is last). Set before `seedThread = turns` is captured below, so the flag
             // rides into the saved snapshot and survives reopen from Recent.
             if turns.count >= 2 { turns[turns.count - 2].usedClipboard = true }
-            // The injected text needs room the 90-word cap can't give. Raise the
-            // ceiling just for this enriched turn so summaries/translations aren't
-            // truncated mid-thought; the base persona/no-headers rules still hold.
-            system = notchSystemPrompt + "\nFor this turn you may use up to 200 words."
+            // The injected text needs room the 90-word cap can't give. Append the
+            // shared enriched-turn marker so the persona allows 200 words AND the
+            // client raises the wire `max_tokens` to match (XII-91) — at the default
+            // ceiling a long clip + question + 200-word answer was truncated. Single
+            // source for the marker string lives in `ReplyTokens`.
+            system = notchSystemPrompt + ReplyTokens.enrichedMarker
         }
 
         mode = .load
@@ -1622,7 +1668,21 @@ final class NotchModel: ObservableObject {
     func submitReminder() {
         let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !line.isEmpty else { return }
-        let due = detectedDue
+        // `detectedDue` is computed asynchronously (off-main Task). On the clipboard
+        // path the submit can run in the same call stack that just kicked that Task
+        // off, so it can still be nil here even though the line names a time (XII-97).
+        // Fall back to a synchronous parse so a timed reminder never silently lands
+        // with no due date. A line with no parseable time (incl. a pure "every day"
+        // recurring reminder) legitimately stays nil — EventKit's repeat rule carries
+        // it — so we don't force a date on those.
+        var due = detectedDue
+            ?? RemindersService.futureDate(in: line)
+            ?? RemindersService.recurrenceDate(in: line)
+        // Guard against a due that resolves into the PAST (a stale async value, or a
+        // DST/clock-skew edge in the synthesized recurrence date): EventKit accepts it
+        // but the reminder would never fire. Drop it to nil rather than file a dead
+        // reminder — better a reminder with no time than one that silently never rings.
+        if let d = due, d <= Date() { due = nil }
 
         text = ""
         showHistory = false

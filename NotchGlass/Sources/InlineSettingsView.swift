@@ -131,6 +131,11 @@ struct InlineSettingsView: View {
     /// modifier), cleared on the next successful record or when recording ends.
     @State private var hotKeyHint: String?
 
+    /// Whether the quick-tools checklist popover is open. A popover (not a native
+    /// `Menu`) so toggling a tool keeps the list up — the user can check several in
+    /// a row; clicking outside dismisses it.
+    @State private var quickToolsOpen = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -166,6 +171,7 @@ struct InlineSettingsView: View {
                     case .general:
                         appLanguageRow
                         shortcutRow
+                        quickToolsRow
                         placementRow
                         dockIconRow
                     case .about:
@@ -696,6 +702,75 @@ struct InlineSettingsView: View {
         NotificationCenter.default.post(name: .dockIconVisibilityChanged, object: nil)
     }
 
+    /// Which clipboard quick-tools (Summarize / Translate / Proofread …) appear as
+    /// one-tap chips when text is copied (XII-111). A compact dropdown matching the
+    /// other General rows: the pill shows a summary ("3 enabled"); opening it lists
+    /// every tool with a checkmark on the enabled ones. Selecting toggles a tool;
+    /// the last enabled one can't be turned off (an empty row would strip the
+    /// feature with no way back from here). Changes apply to the next copied clip.
+    private var quickToolsRow: some View {
+        settingRow(label: L("general.quickTools")) {
+            Button {
+                quickToolsOpen.toggle()
+            } label: {
+                HStack(spacing: 7) {
+                    Text(L("general.quickTools.count", model.enabledClipboardPresets.count))
+                        .font(.sf(13))
+                        .foregroundStyle(Tokens.text1)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Tokens.text3)
+                }
+                .padding(.leading, 11)
+                .padding(.trailing, 9)
+                .frame(height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(.white.opacity(quickToolsOpen ? 0.10 : 0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(.white.opacity(quickToolsOpen ? 0.20 : 0.12), lineWidth: 0.5)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 9))
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            // A popover (not a native Menu) so checking a tool keeps the list open —
+            // the user can toggle several in a row; clicking outside dismisses it.
+            .popover(isPresented: $quickToolsOpen, arrowEdge: .bottom) {
+                quickToolsChecklist
+            }
+        }
+    }
+
+    /// The checklist shown inside the quick-tools popover: one row per tool, a leading
+    /// checkmark on the enabled ones, the whole row tappable to toggle in place (the
+    /// popover stays open). The last enabled tool is disabled so the set can't be
+    /// emptied with no way back.
+    private var quickToolsChecklist: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(NotchModel.ClipboardPreset.allCases) { preset in
+                let on = model.enabledClipboardPresets.contains(preset)
+                let isLast = on && model.enabledClipboardPresets.count == 1
+                QuickToolRow(label: preset.label, on: on, disabled: isLast) {
+                    model.setClipboardPreset(preset, enabled: !on)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .preferredColorScheme(.dark)
+        // Replace the popover's OWN window backing — not just paint a layer inside
+        // it — so no light system chrome shows around the edges (that was the white
+        // rim on the earlier opaque version). The presentation background uses the
+        // SAME glass the panel uses (`nativeGlass`) over a soft dark veil for text
+        // legibility, so the popover reads as a piece of the same surface floated
+        // out. `.presentationBackground` needs macOS 13.3+; older systems fall back
+        // to the in-content glass layer.
+        .modifier(GlassPopoverBackground())
+    }
+
     /// The global summon shortcut. The chip shows the current trigger — the
     /// default reads as ⌥⌥ (double-tap ⌥). Click it to record a chord instead; the
     /// adjacent menu toggles it off (hover-only summon) or resets to double-tap ⌥.
@@ -1109,6 +1184,78 @@ struct InlineSettingsView: View {
             try? await Task.sleep(nanoseconds: 1_800_000_000)
             withAnimation(.easeOut(duration: 0.3)) { saved = false }
         }
+    }
+}
+
+/// Backs the quick-tools popover with the panel's glass instead of the stock light
+/// popover chrome. On macOS 13.3+ it replaces the presentation background itself
+/// (so no light rim shows around the edges); older systems get the glass painted
+/// behind the content as a graceful fallback.
+private struct GlassPopoverBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        // No dark veil — let `nativeGlass` (the high-transparency `.clear` Liquid
+        // Glass variant) show at full strength so the wallpaper refracts through and
+        // the popover reads as airy glass, not a dark block. Just a faint hairline
+        // rim so the edge stays defined.
+        if #available(macOS 13.3, *) {
+            content.presentationBackground {
+                shape.fill(.clear).nativeGlass(in: shape)
+                    .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+            }
+        } else {
+            content.background {
+                shape.fill(.clear).nativeGlass(in: shape)
+                    .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+            }
+        }
+    }
+}
+
+/// One row in the quick-tools popover checklist: a leading checkmark on the
+/// enabled tools, a hover highlight on the whole row, and a tap that toggles in
+/// place (the popover stays open). The last enabled tool comes in `disabled` so
+/// the set can't be emptied with no way back from here.
+private struct QuickToolRow: View {
+    let label: String
+    let on: Bool
+    let disabled: Bool
+    let toggle: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 8) {
+                // Fixed-size slot, shown/hidden via opacity — NOT via `.clear` color
+                // or conditional insertion. Opacity doesn't touch layout, so the
+                // checkmark appearing/disappearing on toggle can't nudge the label
+                // left or right (the prior jitter came from the symbol's intrinsic
+                // width participating in layout as it showed/hid).
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Tokens.text1)
+                    .frame(width: 14, height: 14, alignment: .center)
+                    .opacity(on ? 1 : 0)
+                Text(label)
+                    .font(.sf(13))
+                    .foregroundStyle(on ? Tokens.text1 : Tokens.text2)
+                Spacer(minLength: 16)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(width: 184, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.white.opacity(hovering && !disabled ? 0.10 : 0))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .opacity(disabled ? 0.5 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .padding(.horizontal, 6)
+        .onHover { hovering = $0 }
     }
 }
 

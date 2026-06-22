@@ -347,12 +347,13 @@ struct IslandRim: View {
     }
 }
 
-private extension View {
+extension View {
     /// Apply genuine system Liquid Glass on macOS 26+, with a graceful blurred
     /// fallback on older systems. We use the **high-transparency** `.clear`
     /// variant so the wallpaper / app icons refract strongly through the whole
     /// slab (the iOS Control-Center look); our own even dark veil supplies the
-    /// smoked tint and keeps text legible.
+    /// smoked tint and keeps text legible. Reused by the quick-tools popover so it
+    /// shares the panel's glass instead of an opaque slab.
     @ViewBuilder
     func nativeGlass<S: Shape>(in shape: S) -> some View {
         if #available(macOS 26.0, *) {

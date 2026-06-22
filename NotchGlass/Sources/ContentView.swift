@@ -281,9 +281,10 @@ struct NotchIsland: View {
         // top of the open spring's own per-frame layout work.
         .modifier(EntryKickEffect(tx: kick.tx, shear: kick.shear, squash: kick.squash).ignoredByLayout())
         .contentShape(NotchShape(bottomRadius: bottomRadius))
-        // Spring expand (eased by how hard the cursor arrived — see
-        // `openSpring`); snappier, non-springy collapse — distinct in/out feel.
-        .animation(isOpen ? openSpring : .easeOut(duration: 0.30), value: isOpen)
+        // Spring expand (eased by how hard the cursor arrived — see `openSpring`);
+        // the collapse now settles on `closeSpring` (XII-108) so the shell drops
+        // back with a touch of gravity/rebound instead of a flat clamp.
+        .animation(isOpen ? openSpring : closeSpring, value: isOpen)
         // The kick fires on the open *edge*, reading the entry vector the hover
         // just recorded. Closing lets any residual kick decay on its own.
         .onChange(of: isOpen) { _, nowOpen in
@@ -351,6 +352,16 @@ struct NotchIsland: View {
         let s = entryEnergy
         return .spring(response: 0.50 - 0.06 * s,
                        dampingFraction: 0.82 - 0.10 * s)
+    }
+
+    /// The retract animation (XII-108): instead of a flat ease-out, the shell
+    /// settles on a slightly-underdamped spring so it reads as an object dropping
+    /// back into the bezel with a touch of gravity/rebound, not a clean clamp. The
+    /// damping is below 1 (a little overshoot) but high enough that it's one soft
+    /// settle, not a visible bob. Reduce-motion keeps the old flat, motionless ease.
+    private var closeSpring: Animation {
+        guard !reduceMotion else { return .easeOut(duration: 0.30) }
+        return .spring(response: 0.34, dampingFraction: 0.68)
     }
 
     /// Seed the kick from the entry vector, then release it. Two writes on

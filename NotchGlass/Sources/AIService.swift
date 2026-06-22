@@ -28,6 +28,27 @@ protocol AIService: Sendable {
     func stream(system: String, messages: [ChatMessage]) -> AsyncThrowingStream<String, Error>
 }
 
+/// Reply-length budgets, in tokens. A normal turn is short (the 90-word persona
+/// cap); a clipboard-enriched turn lets the model use up to 200 words for a
+/// summary/translation of the copied text, which needs a bigger wire ceiling than
+/// the default — at 1024 a long clip (≤1500 chars) + question + 200-word answer
+/// was being truncated mid-thought (XII-91).
+enum ReplyTokens {
+    static let standard = 1024
+    static let enriched = 2048
+
+    /// The suffix appended to the system prompt on a clipboard-enriched turn (see
+    /// `NotchModel.submit`). Single source of truth so the wire `max_tokens` can be
+    /// raised for exactly the turns whose prompt was widened to 200 words.
+    static let enrichedMarker = "\nFor this turn you may use up to 200 words."
+
+    /// The `max_tokens` to send for a turn with this system prompt: the larger
+    /// budget when the prompt carries the enriched-turn marker, otherwise standard.
+    static func budget(forSystem system: String) -> Int {
+        system.contains(enrichedMarker) ? enriched : standard
+    }
+}
+
 extension AIService {
     /// Convenience for callers that just want the whole answer to a single
     /// question: wraps it as a one-message conversation, drains the stream, and
@@ -406,7 +427,7 @@ struct OpenAICompatAIService: AIService {
                     let body = RequestBody(
                         model: model,
                         messages: chat,
-                        maxTokens: 1024,
+                        maxTokens: ReplyTokens.budget(forSystem: system),
                         tokenFieldName: provider.maxTokensField,
                         temperature: 0.7,
                         stream: true
@@ -547,7 +568,7 @@ struct AnthropicAIService: AIService {
                         model: model,
                         system: system,
                         messages: messages.map { .init(role: $0.role, content: $0.content) },
-                        maxTokens: 1024,
+                        maxTokens: ReplyTokens.budget(forSystem: system),
                         stream: true
                     )
                     req.httpBody = try JSONEncoder().encode(body)

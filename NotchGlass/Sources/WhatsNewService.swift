@@ -60,9 +60,15 @@ final class WhatsNewService: ObservableObject {
     private static let bundled: [Entry] = [
         Entry(
             version: "1.0.7",
-            date: "2026-06-19",
+            date: "2026-06-22",
             features: [
                 "Double-tap ⌥ to summon Notch — the new default shortcut.",
+                "Choose which clipboard quick-tools (Summarize, Translate, Proofread…) show up, in Settings → General.",
+                "Closing now settles with a soft spring instead of snapping shut.",
+            ],
+            fixes: [
+                "Long clipboard summaries and translations are no longer cut off mid-thought.",
+                "Timed reminders no longer occasionally lose their time and never fire.",
             ]
         ),
         Entry(
