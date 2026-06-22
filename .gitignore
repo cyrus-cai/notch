@@ -29,9 +29,10 @@ Icon
 # Internal working docs — kept local only, never published
 AGENTS.md
 CLAUDE.md
-docs/ROADMAP.md
-docs/roadmap-done.md
-docs/reviews/
+
+# Landing page / front-end — kept local only, deployed via Vercel, never
+# published to this repo. Includes ROADMAP/reviews docs that lived here too.
+docs/
 # Guard for the local-only roadmap docs above — useless to anyone cloning the
 # repo (they have no roadmap files), and its text describes the internal flow.
 scripts/check-roadmap.sh
