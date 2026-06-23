@@ -1,0 +1,402 @@
+import Foundation
+
+// MARK: - Agent turn protocol
+//
+// The single-shot `AIService.stream(system:messages:)` answers a question in one
+// pass: text in, text out. An *agent* turn is richer — the model may decide to
+// call a tool, the harness runs it, feeds the result back, and the model
+// continues, possibly for several rounds, until it has nothing left to do. That
+// loop needs more than a `String` stream: it needs to see, per turn, the text the
+// model wrote, any tool calls it requested, and why it stopped.
+//
+// `TurnEvent` is that richer stream. `AIService.streamTurn` yields these events
+// for one model turn; `AgentHarness` runs the multi-turn loop on top. The old
+// `stream(system:messages:)` stays exactly as it was — every non-agent path
+// (title generation, the `complete` convenience, any provider that can't or
+// won't do tools) keeps using it untouched. Tool support is purely additive.
+
+/// One incremental event from a single agent turn.
+enum TurnEvent: Sendable {
+    /// A chunk of visible answer text to append (same semantics as the plain
+    /// `stream`'s yielded String).
+    case text(String)
+    /// The model finished a tool-call request: it wants `name(input)` run, keyed
+    /// by `id` so the result can be matched back. Emitted once per tool call after
+    /// its arguments have fully streamed in.
+    case toolCall(id: String, name: String, input: [String: Any])
+    /// The turn ended. `stopReason` is the provider's reason: `"tool_use"`/
+    /// `"tool_calls"` means the model is waiting on tool results and the harness
+    /// should run another turn; anything else (`"end_turn"`, `"stop"`, …) means
+    /// the model is done.
+    case finished(stopReason: String?)
+}
+
+/// One web result a search tool surfaced — the structured source behind a cited
+/// answer, kept so the UI can show a clickable source badge under the answer. The
+/// text fed back to the model is separate (and lossy); this preserves the URL +
+/// metadata the model's prose would otherwise drop. `Codable` so it rides on the
+/// persisted `Turn`.
+struct WebSource: Codable, Equatable, Sendable, Identifiable {
+    var id: String { url }
+    let title: String
+    let url: String
+    /// The publication date as the provider reported it, if any (e.g. "2026-06-23").
+    var date: String?
+
+    /// The short site name shown on the badge — the registrable domain's main
+    /// label, so "www.tmtpost.com" → "tmtpost", "finance.sina.com.cn" → "sina",
+    /// "so.com" → "so". We take the second-to-last label *unless* the host ends in
+    /// a country-code SLD like ".com.cn"/".co.uk" (where the real name is one
+    /// further left). Falls back to the title's first token when there's no host.
+    var site: String {
+        guard let host = URL(string: url)?.host else {
+            return title.split(separator: " ").first.map(String.init) ?? title
+        }
+        var labels = host.split(separator: ".").map(String.init)
+        if labels.first == "www" { labels.removeFirst() }
+        guard labels.count >= 2 else { return labels.first ?? host }
+        // Two-part public suffixes (com.cn, co.uk, com.hk, …): the name sits one
+        // label further left than the usual second-to-last.
+        let twoPartSuffix: Set<String> = ["com", "co", "net", "org", "gov", "edu"]
+        let secondToLast = labels[labels.count - 2]
+        if labels.count >= 3, twoPartSuffix.contains(secondToLast) {
+            return labels[labels.count - 3]
+        }
+        return secondToLast
+    }
+}
+
+/// One tool call the model made, paired with the result the harness produced —
+/// the unit a follow-up turn needs to continue the conversation.
+struct ToolInvocation: Sendable {
+    let id: String
+    let name: String
+    let input: [String: Any]
+    /// The string result fed back to the model. On a tool error this carries the
+    /// error text and `isError` is true (the model is told the call failed and can
+    /// adapt, rather than the whole turn dying).
+    var result: String = ""
+    var isError: Bool = false
+    /// Structured sources a search tool surfaced this call, for the UI's source
+    /// badge. Empty for non-search tools; the model never sees these (it gets
+    /// `result`), they ride straight to the on-screen turn.
+    var sources: [WebSource] = []
+}
+
+/// The conversation as the harness threads it back to the provider. Beyond the
+/// plain user/assistant text turns, an agent conversation also carries
+/// *assistant tool-call* turns and *tool-result* turns, which the two wire
+/// formats (Anthropic vs OpenAI) encode differently. `AgentMessage` is the
+/// provider-neutral shape; each client lowers it to its own JSON.
+struct AgentMessage: Sendable {
+    enum Kind: Sendable {
+        /// Plain text turn — `role` is "user" or "assistant", `text` is the body.
+        case text(role: String, text: String)
+        /// An assistant turn that requested tool calls. `text` is any prose the
+        /// model wrote alongside the calls (often empty); `calls` are the requests.
+        case assistantToolCalls(text: String, calls: [ToolInvocation])
+        /// The results of those calls, sent back as the next user turn.
+        case toolResults([ToolInvocation])
+    }
+    let kind: Kind
+}
+
+/// The streaming-turn capability. A provider that can drive tool calls implements
+/// this in addition to the base `stream`; one that can't simply doesn't, and the
+/// harness falls back to plain single-shot streaming. `tools` is the JSON-Schema
+/// tool list in the provider's expected shape's *neutral* form (see `ToolSpec`).
+protocol AgentCapableService: AIService {
+    func streamTurn(system: String,
+                    messages: [AgentMessage],
+                    tools: [ToolSpec]) -> AsyncThrowingStream<TurnEvent, Error>
+}
+
+/// A tool as advertised to the model: a name, a description the model reads to
+/// decide when to call it, and a JSON-Schema object describing its input. Kept
+/// provider-neutral; each client serializes it into Anthropic's `{name,
+/// description, input_schema}` or OpenAI's `{type:"function", function:{...}}`.
+struct ToolSpec: Sendable {
+    let name: String
+    let description: String
+    /// The JSON Schema for the tool input, as a nested dictionary
+    /// (`["type": "object", "properties": [...], "required": [...]]`).
+    let schema: [String: Any]
+}
+
+// MARK: - Tool protocol & registry
+
+/// A capability the agent can invoke. Implementations are pure-ish leaf actions —
+/// read the clipboard, fetch the time, open a URL — that take a decoded input dict
+/// and return a short string the model reads back. Kept off the main actor so
+/// several can run concurrently; a tool that must touch the main actor (UI, NSApp)
+/// hops there itself inside `execute`.
+protocol NotchTool: Sendable {
+    /// Stable identifier the model calls by. Lowercase snake_case, e.g.
+    /// `read_clipboard`.
+    var name: String { get }
+    /// What the tool does and *when* to use it — the model relies on this to decide
+    /// whether to call it, so be prescriptive about the trigger, not just the action.
+    var description: String { get }
+    /// JSON Schema for `execute`'s input (a `type: object`). An argument-less tool
+    /// returns an empty-properties object.
+    var schema: [String: Any] { get }
+    /// Run the tool. `input` is the model's decoded arguments. Return a short
+    /// string the model reads; throw to signal failure (the harness turns the
+    /// thrown error into an `isError` tool result rather than aborting the turn).
+    func execute(_ input: [String: Any]) async throws -> String
+}
+
+extension NotchTool {
+    /// The advertised spec derived from the tool's own metadata.
+    var spec: ToolSpec { ToolSpec(name: name, description: description, schema: schema) }
+}
+
+/// A tool that, besides the string it feeds the model, surfaces structured web
+/// sources for the UI's source badge. A search tool runs once and produces both:
+/// the model reads `text`, the on-screen turn keeps `sources`. Tools that conform
+/// are run through `runSourced` instead of `execute`, so the structured URLs
+/// aren't lost to the text-only path.
+protocol SourcedTool: NotchTool {
+    /// Run the tool, returning the model-facing text *and* the structured sources.
+    func runSourced(_ input: [String: Any]) async throws -> (text: String, sources: [WebSource])
+}
+
+/// The set of tools available to the agent this turn. Construction decides the
+/// surface: an unconfigured or restricted session can be handed an empty registry,
+/// which makes `submit` fall straight back to plain streaming (no tools → no
+/// agent loop).
+struct ToolRegistry: Sendable {
+    let tools: [NotchTool]
+
+    init(_ tools: [NotchTool]) { self.tools = tools }
+
+    var isEmpty: Bool { tools.isEmpty }
+    var specs: [ToolSpec] { tools.map(\.spec) }
+
+    func tool(named name: String) -> NotchTool? {
+        tools.first { $0.name == name }
+    }
+
+    /// Run one invocation, capturing success or failure into the invocation's
+    /// `result`/`isError` so the harness can thread it back regardless of outcome.
+    /// An unknown tool name is itself an error result, never a crash. A
+    /// `SourcedTool` also fills `sources` (for the UI badge) from the same run.
+    func run(_ call: ToolInvocation) async -> ToolInvocation {
+        var out = call
+        guard let tool = tool(named: call.name) else {
+            out.result = "Error: no tool named \(call.name)."
+            out.isError = true
+            return out
+        }
+        do {
+            if let sourced = tool as? SourcedTool {
+                let (text, sources) = try await sourced.runSourced(call.input)
+                out.result = text
+                out.sources = sources
+            } else {
+                out.result = try await tool.execute(call.input)
+            }
+        } catch {
+            out.result = "Error: \(error.localizedDescription)"
+            out.isError = true
+        }
+        return out
+    }
+}
+
+// MARK: - The harness loop
+
+/// Drives the agentic loop on top of an `AgentCapableService`. Each iteration:
+/// stream one turn, surfacing text as it arrives; if the model requested tools,
+/// run them concurrently, append the assistant-call turn and the tool-result turn
+/// to the running conversation, and loop; otherwise stop.
+///
+/// The harness is deliberately UI-agnostic — it reports progress through two
+/// callbacks so `NotchModel` can drive its existing streaming `Turn` without the
+/// harness knowing anything about SwiftUI. It also respects cancellation at every
+/// await point (the surrounding `Task` is cancelled on supersede / panel close,
+/// exactly as the plain path), and bounds itself with `maxIterations` so a model
+/// that loops forever on tools can't pin the task open.
+struct AgentHarness {
+    let service: AgentCapableService
+    let registry: ToolRegistry
+    /// Hard ceiling on tool-call rounds. A well-behaved turn finishes in 1–3; the
+    /// cap is a runaway-loop backstop, after which we force a final no-tools turn so
+    /// the user still gets a closing answer instead of a dangling tool request.
+    var maxIterations: Int = 8
+
+    /// Minimum on-screen time for the tool-activity line, so a fast tool (clipboard
+    /// and time return in milliseconds) still shows a full, readable cue instead of
+    /// a one-frame flicker. The tools run *during* this window — it delays only the
+    /// label's clear, not the work. Sized to comfortably cover a fade-in, a beat to
+    /// read it, and the fade-out.
+    static let minActivityVisible: TimeInterval = 0.9
+
+    /// Streamed visible text → append to the on-screen answer (same role as the
+    /// plain `stream`'s chunks). Main-actor isolated: it drives `NotchModel`'s
+    /// `@MainActor` UI state, and the harness awaits it per chunk so ordering holds.
+    /// Not `@Sendable` — it's only ever called from the harness's `run`, which the
+    /// caller runs on the main actor, so it can capture main-actor mutable state.
+    typealias TextSink = @MainActor (String) -> Void
+    /// A tool is about to run / has finished → drive a transient "🔍 searching…"
+    /// activity line on the streaming turn. `nil` clears it. Also main-actor.
+    typealias ActivitySink = @MainActor (String?) -> Void
+    /// A search round produced structured sources → attach them to the answer turn
+    /// for the source badge. Called with the round's sources (accumulated across
+    /// rounds is the caller's job). Main-actor.
+    typealias SourcesSink = @MainActor ([WebSource]) -> Void
+
+    /// Run the loop to completion. `onText` receives answer chunks; `onActivity`
+    /// receives tool-progress labels; `onSources` receives any web sources a search
+    /// round surfaced. Returns when the model stops asking for tools (or the
+    /// iteration cap forces a close). Throws on a real stream error or
+    /// cancellation, exactly like the plain path, so the caller's existing
+    /// catch/persist logic applies unchanged.
+    ///
+    /// `@MainActor` so the whole loop runs where the plain single-shot stream loop
+    /// ran — UI sinks fire synchronously in order, and the consuming side of
+    /// `streamTurn` (whose producer stays on a detached `URLSession` task) is driven
+    /// from the main actor exactly as the old `for await chunk` loop was.
+    @MainActor
+    func run(system: String,
+             messages: [AgentMessage],
+             onText: @escaping TextSink,
+             onActivity: @escaping ActivitySink,
+             onSources: @escaping SourcesSink) async throws {
+        var convo = messages
+        var iteration = 0
+        // True once the model has run at least one tool round. It changes what the
+        // *gap* should say: before any tool the wait is plain "thinking" (the load
+        // view's dots); after a tool round, the gap is the model reading what it
+        // just fetched, so we keep a "composing" cue on screen instead of dropping
+        // back to generic dots (the empty state Cyrus flagged). It also tells a
+        // second-or-later tool round to say "refining" rather than "searching".
+        var didTool = false
+
+        while true {
+            try Task.checkCancellation()
+            // Past the cap, advertise no tools: the model is forced to answer from
+            // what it has, guaranteeing a terminating turn.
+            let toolsThisTurn = iteration >= maxIterations ? [] : registry.specs
+
+            var assistantText = ""
+            var pendingCalls: [ToolInvocation] = []
+            var stopReason: String? = nil
+            // First visible token of *this* turn clears whatever gap label was
+            // showing (a "composing…" carried over from the prior tool round):
+            // the answer is now arriving, so the cue has done its job.
+            var clearedGapLabel = false
+
+            for try await event in service.streamTurn(system: system,
+                                                      messages: convo,
+                                                      tools: toolsThisTurn) {
+                try Task.checkCancellation()
+                switch event {
+                case .text(let piece):
+                    if !clearedGapLabel {
+                        onActivity(nil)
+                        clearedGapLabel = true
+                    }
+                    assistantText += piece
+                    onText(piece)
+                case .toolCall(let id, let name, let input):
+                    pendingCalls.append(ToolInvocation(id: id, name: name, input: input))
+                case .finished(let reason):
+                    stopReason = reason
+                }
+            }
+
+            // No tool calls (or we suppressed them at the cap) → the model is done.
+            if pendingCalls.isEmpty {
+                onActivity(nil)
+                return
+            }
+
+            // Surface what's running, then execute every call concurrently. The
+            // results are reassembled in request order so the wire turn lines up
+            // with the assistant's tool_use blocks.
+            //
+            // Hold the activity line on screen for at least `minActivityVisible`
+            // even when the tool returns almost instantly (the clipboard/time
+            // tools take milliseconds): otherwise the cue flickers in and out in a
+            // frame and reads as a glitch. We don't slow the actual work — the
+            // tools run during the dwell — we only delay *clearing* the label so it
+            // completes a full appear → settle → disappear cycle. The fade in/out
+            // itself is the view's `.transition(.opacity)` (see `turnView`).
+            let shownAt = Date()
+            onActivity(activityLabel(for: pendingCalls, isRepeatRound: didTool))
+            let completed = await runConcurrently(pendingCalls)
+            let elapsed = Date().timeIntervalSince(shownAt)
+            if elapsed < Self.minActivityVisible {
+                let remaining = Self.minActivityVisible - elapsed
+                try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+            }
+            try Task.checkCancellation()
+            // Hand any structured sources this round produced to the UI so they can
+            // appear as a source badge under the answer. Deduped/accumulated on the
+            // caller's side across rounds.
+            let roundSources = completed.flatMap(\.sources)
+            if !roundSources.isEmpty { onSources(roundSources) }
+            // Don't clear into a blank gap: the next turn is the model reading these
+            // results and composing the answer, which takes a real round-trip. Carry
+            // a "composing…" cue through that gap so the wait stays narrated; the
+            // next turn's first token (or its next tool round) replaces it. Only the
+            // search-style tools warrant this — a clipboard/time read composes
+            // instantly, so for those we just clear.
+            if pendingCalls.contains(where: { Self.isSearchTool($0.name) }) {
+                onActivity(L("agent.activity.composing"))
+            } else {
+                onActivity(nil)
+            }
+            try Task.checkCancellation()
+
+            convo.append(AgentMessage(kind: .assistantToolCalls(text: assistantText,
+                                                                calls: pendingCalls)))
+            convo.append(AgentMessage(kind: .toolResults(completed)))
+            didTool = true
+            iteration += 1
+            _ = stopReason  // reason is informational; presence of calls drives the loop
+        }
+    }
+
+    /// Execute all of a turn's tool calls at once, preserving request order in the
+    /// returned array (a `tool_result` must map back to its `tool_use` by id, and
+    /// some providers also care about order).
+    private func runConcurrently(_ calls: [ToolInvocation]) async -> [ToolInvocation] {
+        await withTaskGroup(of: (Int, ToolInvocation).self) { group in
+            for (i, call) in calls.enumerated() {
+                group.addTask { (i, await registry.run(call)) }
+            }
+            var out = Array<ToolInvocation?>(repeating: nil, count: calls.count)
+            for await (i, done) in group { out[i] = done }
+            return out.compactMap { $0 }
+        }
+    }
+
+    /// Tool names that hit the network for fresh information — the ones whose
+    /// follow-up "reading the results" gap is worth narrating with a "composing…"
+    /// cue. `lookup_web` is GLM's client search tool (deliberately not named
+    /// `web_search` to avoid colliding with GLM's builtin); `$web_search` is Kimi's
+    /// builtin echo.
+    private static func isSearchTool(_ name: String) -> Bool {
+        name == "lookup_web" || name == "$web_search"
+    }
+
+    /// A short, human-readable progress label for the running calls, e.g.
+    /// "Searching the web…". `isRepeatRound` is true on a second-or-later tool
+    /// round, where a search reads as "digging deeper" rather than a fresh start.
+    /// Falls back to a generic line for unmapped tools.
+    private func activityLabel(for calls: [ToolInvocation], isRepeatRound: Bool) -> String {
+        if let first = calls.first, calls.count == 1 {
+            switch first.name {
+            case "lookup_web", "$web_search":
+                return L(isRepeatRound ? "agent.activity.refining" : "agent.activity.search")
+            case "read_clipboard": return L("agent.activity.clipboard")
+            case "current_datetime": return L("agent.activity.time")
+            case "open_url": return L("agent.activity.open")
+            default: break
+            }
+        }
+        return L("agent.activity.working")
+    }
+}

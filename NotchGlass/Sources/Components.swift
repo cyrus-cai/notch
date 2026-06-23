@@ -1554,3 +1554,170 @@ private struct CodeBlockView: View {
             .onHover { hovering = $0 }
     }
 }
+
+/// The floating source popup's request, published up the view tree by the hovered
+/// badge: where it is (`anchor`, the pill's frame) and what to show (`sources`).
+/// `nil` when no badge is hovered. An ancestor *outside* the conversation
+/// ScrollView reads this and draws the panel, so the popup escapes the scroll's
+/// clip that was chopping it off (XII-118).
+struct SourcePopoverRequest: Equatable {
+    let id: UUID
+    let anchor: Anchor<CGRect>
+    let sources: [WebSource]
+    static func == (a: SourcePopoverRequest, b: SourcePopoverRequest) -> Bool { a.id == b.id }
+}
+
+struct SourcePopoverKey: PreferenceKey {
+    static let defaultValue: SourcePopoverRequest? = nil
+    static func reduce(value: inout SourcePopoverRequest?, nextValue: () -> SourcePopoverRequest?) {
+        // Last writer wins — at most one badge is hovered at a time.
+        if let next = nextValue() { value = next }
+    }
+}
+
+/// A source badge shown under a search-grounded answer (XII-118). Rests as a
+/// compact pill — just the first source's site name plus "+N" for the rest, e.g.
+/// "tmtpost + 3", no icons. **Hover** the pill and a floating panel pops up over
+/// the content listing every source as "site · title (date)"; click a row to open
+/// the original page. The panel is rendered by an ancestor (see
+/// `conversationOverlay`) so it floats above the answer and is never clipped by
+/// the scroll view.
+///
+/// `hoveredID` is the shared "which badge is open" state owned by `NotchBody`: the
+/// badge sets it to its own `id` on hover and clears it on exit; the floating
+/// panel keeps it set while the cursor is over the panel, so moving up onto a row
+/// doesn't dismiss it. The pill only *publishes its anchor* when it's the open one.
+struct SourceBadge: View {
+    let sources: [WebSource]
+    @Binding var hoveredID: UUID?
+    /// Shared deferred-close handle (owned by `NotchBody`): when the cursor leaves
+    /// the pill we don't close immediately — we schedule a close ~140ms out, and
+    /// the floating panel cancels it the moment the cursor lands on it. Without
+    /// this, the 6pt gap between pill and panel is a dead zone that snaps the popup
+    /// shut before the cursor can cross it.
+    @Binding var pendingClose: DispatchWorkItem?
+
+    private let id = UUID()
+    private var isOpen: Bool { hoveredID == id }
+
+    var body: some View {
+        Text(pillLabel)
+            .font(.sf(11, weight: .medium))
+            .tracking(0.1)
+            .foregroundStyle(Tokens.text3)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(Color.white.opacity(isOpen ? 0.10 : 0.06))
+            )
+            .overlay(Capsule().stroke(Tokens.hairline, lineWidth: 0.5))
+            .contentShape(Capsule())
+            // Publish this pill's frame + sources up to the ancestor overlay, but
+            // only while it's the open one — so the ancestor knows where to float
+            // the panel. A hidden tracking value when closed keeps the key present.
+            .anchorPreference(key: SourcePopoverKey.self, value: .bounds) { anchor in
+                isOpen ? SourcePopoverRequest(id: id, anchor: anchor, sources: sources) : nil
+            }
+            .onHover { hovering in
+                if hovering {
+                    pendingClose?.cancel()      // re-entered the pill — cancel any close
+                    pendingClose = nil
+                    hoveredID = id
+                } else if isOpen {
+                    scheduleClose()             // grace period to reach the panel
+                }
+            }
+            .help(L("source.badge.help"))
+    }
+
+    /// Close after a short grace period, unless something (the panel's hover, or
+    /// re-entering the pill) cancels it first.
+    private func scheduleClose() {
+        pendingClose?.cancel()
+        let work = DispatchWorkItem {
+            if hoveredID == id { hoveredID = nil }
+        }
+        pendingClose = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
+    }
+
+    /// "tmtpost + 3" — the first source's short site name, plus a count of the
+    /// rest. A single source just shows its site, no "+".
+    private var pillLabel: String {
+        let lead = sources.first?.site ?? L("source.badge.fallback")
+        let extra = sources.count - 1
+        return extra > 0 ? "\(lead) + \(extra)" : lead
+    }
+}
+
+/// The floating source list — a self-contained dark card with a hairline border
+/// and soft shadow so it reads as a layer above the answer, not part of it.
+/// Rendered by an ancestor overlay (escaping the scroll clip) and positioned over
+/// the badge by the caller. `keepOpen`/`dismiss` let it hold the badge open while
+/// the cursor is over its rows.
+struct SourcePopoverPanel: View {
+    let sources: [WebSource]
+    let keepOpen: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(sources) { source in
+                SourceRow(source: source)
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        // A fixed width gives the rows a definite bound to truncate long titles
+        // against (instead of stretching the popup to the longest line).
+        .frame(width: 320, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.black.opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(Tokens.hairline, lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
+        // Hovering the panel keeps the badge open; leaving it dismisses — so the
+        // round-trip pill → row works, and moving away closes.
+        .onHover { $0 ? keepOpen() : dismiss() }
+    }
+}
+
+/// One expanded source row: "site · title", with the date trailing if known.
+/// Clicking opens the URL. Hover lifts it slightly so it reads as actionable.
+private struct SourceRow: View {
+    let source: WebSource
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            if let url = URL(string: source.url) { NSWorkspace.shared.open(url) }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(source.site)
+                    .font(.sf(11, weight: .semibold))
+                    .foregroundStyle(Tokens.text3)
+                    .lineLimit(1)
+                    .fixedSize()
+                Text(source.title)
+                    .font(.sf(11))
+                    .foregroundStyle(hovering ? Tokens.text2 : Tokens.text4)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let date = source.date {
+                    Text(date)
+                        .font(.sf(10))
+                        .foregroundStyle(Tokens.text4)
+                        .fixedSize()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}

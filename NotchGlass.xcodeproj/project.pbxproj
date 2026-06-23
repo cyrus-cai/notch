@@ -34,6 +34,8 @@
 		A1000066 /* IntentExamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000067 /* IntentExamples.swift */; };
 		A1000071 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000070 /* Assets.xcassets */; };
 		A10004A1 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = A10004A0 /* Fonts */; };
+		A1000710 /* AgentHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000720 /* AgentHarness.swift */; };
+		A1000711 /* AgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000721 /* AgentTools.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +44,8 @@
 		A1000003 /* NotchPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchPanel.swift; sourceTree = "<group>"; };
 		A1000004 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		A1000005 /* AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIService.swift; sourceTree = "<group>"; };
+		A1000720 /* AgentHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentHarness.swift; sourceTree = "<group>"; };
+		A1000721 /* AgentTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTools.swift; sourceTree = "<group>"; };
 		A1000006 /* NotchModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotchModel.swift; sourceTree = "<group>"; };
 		A1000061 /* NotesService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesService.swift; sourceTree = "<group>"; };
 		A1000065 /* IntentEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentEngine.swift; sourceTree = "<group>"; };
@@ -104,6 +108,8 @@
 				A1000003 /* NotchPanel.swift */,
 				A1000004 /* DesignSystem.swift */,
 				A1000005 /* AIService.swift */,
+				A1000720 /* AgentHarness.swift */,
+				A1000721 /* AgentTools.swift */,
 				A1000006 /* NotchModel.swift */,
 				A1000061 /* NotesService.swift */,
 				A1000069 /* RemindersService.swift */,
@@ -221,6 +227,8 @@
 				A1000012 /* NotchPanel.swift in Sources */,
 				A1000013 /* DesignSystem.swift in Sources */,
 				A1000014 /* AIService.swift in Sources */,
+				A1000710 /* AgentHarness.swift in Sources */,
+				A1000711 /* AgentTools.swift in Sources */,
 				A1000015 /* NotchModel.swift in Sources */,
 				A1000060 /* NotesService.swift in Sources */,
 				A1000068 /* RemindersService.swift in Sources */,
@@ -298,7 +306,7 @@
 				CODE_SIGN_ENTITLEMENTS = NotchGlass/Resources/NotchGlass.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NotchGlass/Resources/Info.plist;
@@ -306,7 +314,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.8;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
 				PRODUCT_NAME = Notch;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -321,7 +329,7 @@
 				CODE_SIGN_ENTITLEMENTS = NotchGlass/Resources/NotchGlass.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NotchGlass/Resources/Info.plist;
@@ -329,7 +337,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.8;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.notchglass.app;
 				PRODUCT_NAME = Notch;
 				SWIFT_EMIT_LOC_STRINGS = YES;

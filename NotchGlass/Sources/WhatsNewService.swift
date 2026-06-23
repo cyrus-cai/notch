@@ -59,6 +59,18 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
+            version: "1.1.0",
+            date: "2026-06-23",
+            features: [
+                "Notch can now search the web to answer — live results, no extra setup.",
+                "Answers grounded by a search show their sources beneath, each opening the original page.",
+                "Providers without web search are tucked into a submenu, so the picker leads with the ones that can.",
+            ],
+            fixes: [
+                "Switching models now takes effect immediately — no Save step.",
+            ]
+        ),
+        Entry(
             version: "1.0.8",
             date: "2026-06-22",
             features: [

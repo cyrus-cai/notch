@@ -73,6 +73,15 @@ final class NotchModel: ObservableObject {
         /// it — not a flag that flashes during load and vanishes. Always false on
         /// assistant turns.
         var usedClipboard: Bool = false
+        /// A transient "🔍 searching…" label shown on a *streaming assistant* turn
+        /// while the agent harness runs a tool, then cleared. Purely runtime UI — it
+        /// is never persisted (no `CodingKey`), so a saved conversation never carries
+        /// a stale activity line. `nil` whenever no tool is running.
+        var toolActivity: String? = nil
+        /// Web sources behind this assistant answer, when it was grounded by a
+        /// search tool (GLM today). Drives the clickable source badge under the
+        /// answer. Persisted, so reopening a recent item keeps its sources.
+        var sources: [WebSource] = []
 
         init(id: UUID = UUID(), role: String, text: String,
              streaming: Bool = false, usedClipboard: Bool = false) {
@@ -86,7 +95,8 @@ final class NotchModel: ObservableObject {
         // existed must NOT throw `keyNotFound` and take the entire list down with
         // it. `decodeIfPresent` + defaults is what keeps old saved conversations
         // loadable. `role`/`text` are required — every saved turn has them.
-        enum CodingKeys: String, CodingKey { case id, role, text, streaming, usedClipboard }
+        // `toolActivity` is deliberately absent: it's runtime-only UI state.
+        enum CodingKeys: String, CodingKey { case id, role, text, streaming, usedClipboard, sources }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -95,6 +105,7 @@ final class NotchModel: ObservableObject {
             text         = try c.decode(String.self, forKey: .text)
             streaming    = try c.decodeIfPresent(Bool.self, forKey: .streaming) ?? false
             usedClipboard = try c.decodeIfPresent(Bool.self, forKey: .usedClipboard) ?? false
+            sources      = try c.decodeIfPresent([WebSource].self, forKey: .sources) ?? []
         }
     }
 
@@ -1627,19 +1638,70 @@ final class NotchModel: ObservableObject {
             // persist that partial round, not discard it (see the catch below).
             var acc = ""
             do {
-                for try await chunk in self.ai.stream(system: system, messages: context) {
-                    if Task.isCancelled { return }
-                    acc += chunk
+                // One sink for streamed text, shared by the plain and agent paths so
+                // the snapshot threading, first-chunk mode-flip, and on-screen guard
+                // live in exactly one place. Main-actor (the task inherits it), so it
+                // can mutate the task-local `acc`/`thread` and touch UI directly.
+                // `[weak self]` mirrors the task; on a detached round `self` is gone
+                // and the closure is a no-op.
+                let appendChunk: @MainActor (String) -> Void = { [weak self] piece in
+                    guard let self else { return }
+                    acc += piece
                     if let i = thread.firstIndex(where: { $0.id == answerID }) {
                         thread[i].text = acc
                     }
                     if self.isOnScreen(answerID: answerID) {
-                        // First chunk: flip to the result view, so the answer
-                        // appears to grow in place out of the thinking state. The
-                        // permanent clipboard trace rides on the user turn, so there's
-                        // no transient flag to clear here.
+                        // First chunk: flip to the result view so the answer appears
+                        // to grow in place out of the thinking state.
                         if self.mode == .load { self.mode = .result }
                         self.updateAnswer(id: answerID, text: acc)
+                    }
+                }
+
+                // Agent path when the backend can drive tools AND there are tools to
+                // offer; otherwise the plain single-shot stream. The harness reads
+                // tool calls, runs them, and threads the results back over several
+                // turns — but to the UI it's the same growing answer. Any provider
+                // that can't do tools, or a turn with an empty registry, falls
+                // straight back to the existing behavior: nothing about plain Q&A
+                // changes.
+                let registry = ToolRegistry.standard(for: APIKeyStore.selectedProvider)
+                if let agent = self.ai as? AgentCapableService,
+                   APIKeyStore.selectedProvider.supportsTools,
+                   !registry.isEmpty {
+                    let harness = AgentHarness(service: agent, registry: registry)
+                    let agentMessages = context.map {
+                        AgentMessage(kind: .text(role: $0.role, text: $0.content))
+                    }
+                    try await harness.run(
+                        system: system,
+                        messages: agentMessages,
+                        onText: appendChunk,
+                        onActivity: { [weak self] label in
+                            guard let self else { return }
+                            // The activity line only shows on a still-on-screen
+                            // round; a detached harness silently ignores it.
+                            if self.isOnScreen(answerID: answerID) {
+                                if self.mode == .load { self.mode = .result }
+                                self.updateActivity(id: answerID, label: label)
+                            }
+                        },
+                        onSources: { [weak self] roundSources in
+                            guard let self else { return }
+                            // Accumulate sources across rounds onto the snapshot
+                            // (so they persist with the thread) and, when on screen,
+                            // the live turn (so the badge appears). Deduped by URL.
+                            if let i = thread.firstIndex(where: { $0.id == answerID }) {
+                                thread[i].sources = Self.mergedSources(thread[i].sources, roundSources)
+                            }
+                            if self.isOnScreen(answerID: answerID) {
+                                self.appendSources(id: answerID, roundSources)
+                            }
+                        })
+                } else {
+                    for try await chunk in self.ai.stream(system: system, messages: context) {
+                        if Task.isCancelled { return }
+                        appendChunk(chunk)
                     }
                 }
                 if Task.isCancelled { return }
@@ -1957,10 +2019,39 @@ final class NotchModel: ObservableObject {
     }
 
     /// Clear the `streaming` flag on the assistant turn (its caret/typing cue can
-    /// stop) without otherwise touching it.
+    /// stop) without otherwise touching it. Also clears any lingering tool-activity
+    /// line so a finished turn never shows "searching…".
     private func markFinished(id: UUID) {
         guard let i = turns.firstIndex(where: { $0.id == id }) else { return }
         turns[i].streaming = false
+        turns[i].toolActivity = nil
+    }
+
+    /// Set or clear the transient agent tool-activity label on the streaming
+    /// assistant turn (e.g. "🔍 Searching the web…"); `nil` clears it. Runtime-only;
+    /// never persisted.
+    private func updateActivity(id: UUID, label: String?) {
+        guard let i = turns.firstIndex(where: { $0.id == id }) else { return }
+        turns[i].toolActivity = label
+    }
+
+    /// Append a search round's sources to the on-screen assistant turn (deduped by
+    /// URL), so the source badge under the answer reflects every round.
+    private func appendSources(id: UUID, _ newSources: [WebSource]) {
+        guard let i = turns.firstIndex(where: { $0.id == id }) else { return }
+        turns[i].sources = Self.mergedSources(turns[i].sources, newSources)
+    }
+
+    /// Merge two source lists preserving order and dropping URL duplicates — the
+    /// same dedup the snapshot and the on-screen turn both use so they agree.
+    static func mergedSources(_ existing: [WebSource], _ incoming: [WebSource]) -> [WebSource] {
+        var seen = Set(existing.map(\.url))
+        var out = existing
+        for s in incoming where !seen.contains(s.url) {
+            seen.insert(s.url)
+            out.append(s)
+        }
+        return out
     }
 
     /// Called once a stream completes: persist the task's snapshot of the thread

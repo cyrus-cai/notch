@@ -142,6 +142,8 @@ enum Strings {
 
         // Model section
         "model.provider": "Provider",
+        "model.provider.noSearchGroup": "Not recommended · no web search",
+        "model.provider.noSearchReason": "These can't search the web — answers rely on training data only.",
         "model.apiKey": "API key",
         "model.pasteKey": "Paste your API key",
         "model.test": "Test",
@@ -177,7 +179,6 @@ enum Strings {
         // Translation section
         "translation.pref1": "Primary language",
         "translation.pref2": "Secondary language",
-        "translation.footer": "Translation direction is decided by the pasted content: if it matches the primary language, it translates to secondary; if secondary, to primary; otherwise to primary.",
 
         // General section
         "general.showOn": "Show on",
@@ -311,6 +312,19 @@ enum Strings {
         "or.page.connected.line": "Notch is connected — you can close this tab.",
         "or.page.cancelled.title": "Cancelled",
         "or.page.cancelled.line": "Sign-in was cancelled. You can close this tab and try again from Notch.",
+
+        // Agent tool activity (shown on the streaming turn while a tool runs)
+        "agent.activity.search": "Searching the web…",
+        "agent.activity.refining": "Digging deeper…",
+        "agent.activity.composing": "Reading the results…",
+        "agent.activity.clipboard": "Reading the clipboard…",
+        "agent.activity.time": "Checking the time…",
+        "agent.activity.open": "Opening…",
+        "agent.activity.working": "Working…",
+
+        // Source badge (under a search-grounded answer)
+        "source.badge.help": "Sources — hover to expand, then open a page",
+        "source.badge.fallback": "Sources",
     ]
 
     // MARK: 简体中文
@@ -325,6 +339,8 @@ enum Strings {
         "sidebar.about": "关于",
 
         "model.provider": "服务商",
+        "model.provider.noSearchGroup": "不推荐 · 不支持联网搜索",
+        "model.provider.noSearchReason": "这些服务商无法联网搜索，回答只能依赖训练数据。",
         "model.apiKey": "API 密钥",
         "model.pasteKey": "粘贴你的 API 密钥",
         "model.test": "测试",
@@ -358,7 +374,6 @@ enum Strings {
 
         "translation.pref1": "首选语言一",
         "translation.pref2": "首选语言二",
-        "translation.footer": "翻译方向由粘贴内容的语言决定：若是首选一，翻成首选二；若是首选二，翻成首选一；其他语言统一翻成首选一。",
 
         "general.showOn": "显示于",
         "general.placement.footer": "外接显示器会得到一个菜单栏高度的小岛。",
@@ -477,6 +492,18 @@ enum Strings {
         "or.page.connected.line": "Notch 已连接——可以关掉这个标签页了。",
         "or.page.cancelled.title": "已取消",
         "or.page.cancelled.line": "登录已取消。关掉这个标签页，回 Notch 再试一次就好。",
+
+        // 智能体工具活动（工具运行时显示在流式回答上方）
+        "agent.activity.search": "正在联网搜索…",
+        "agent.activity.refining": "正在进一步查证…",
+        "agent.activity.composing": "正在整理搜索结果…",
+        "agent.activity.clipboard": "正在读取剪贴板…",
+        "agent.activity.time": "正在查看时间…",
+        "agent.activity.open": "正在打开…",
+        "agent.activity.working": "处理中…",
+
+        "source.badge.help": "来源——悬停展开，再打开原网页",
+        "source.badge.fallback": "来源",
     ]
 
     // MARK: 繁體中文
@@ -491,6 +518,8 @@ enum Strings {
         "sidebar.about": "關於",
 
         "model.provider": "服務商",
+        "model.provider.noSearchGroup": "不推薦 · 不支援聯網搜尋",
+        "model.provider.noSearchReason": "這些服務商無法聯網搜尋，回答只能依賴訓練資料。",
         "model.apiKey": "API 金鑰",
         "model.pasteKey": "貼上你的 API 金鑰",
         "model.test": "測試",
@@ -524,7 +553,6 @@ enum Strings {
 
         "translation.pref1": "首選語言一",
         "translation.pref2": "首選語言二",
-        "translation.footer": "翻譯方向由貼上內容的語言決定：若是首選一，翻成首選二；若是首選二，翻成首選一；其他語言統一翻成首選一。",
 
         "general.showOn": "顯示於",
         "general.placement.footer": "外接螢幕會得到一個選單列高度的小島。",
@@ -643,5 +671,17 @@ enum Strings {
         "or.page.connected.line": "Notch 已連接——可以關掉這個分頁了。",
         "or.page.cancelled.title": "已取消",
         "or.page.cancelled.line": "登入已取消。關掉這個分頁，回 Notch 再試一次就好。",
+
+        // 智慧代理工具活動（工具執行時顯示在串流回答上方）
+        "agent.activity.search": "正在聯網搜尋…",
+        "agent.activity.refining": "正在進一步查證…",
+        "agent.activity.composing": "正在整理搜尋結果…",
+        "agent.activity.clipboard": "正在讀取剪貼簿…",
+        "agent.activity.time": "正在查看時間…",
+        "agent.activity.open": "正在開啟…",
+        "agent.activity.working": "處理中…",
+
+        "source.badge.help": "來源——懸停展開，再打開原網頁",
+        "source.badge.fallback": "來源",
     ]
 }

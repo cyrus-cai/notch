@@ -51,10 +51,11 @@ struct InlineSettingsView: View {
 
     private var canSave: Bool {
         guard !envOverride else { return false }
-        let keyChanged = editingKey
+        // Only the API key needs an explicit Save — a model switch auto-persists
+        // (see `selectModel`), so it never lights up this button.
+        return editingKey
             && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && apiKey != APIKeyStore.stored(for: provider)
-        return keyChanged || modelID != APIKeyStore.storedModel(for: provider)
     }
 
     /// The stored key rendered safe for display: enough of the head and tail to
@@ -163,7 +164,6 @@ struct InlineSettingsView: View {
                         footer
                     case .translation:
                         translationLanguageRow
-                        translationFooter
                     case .general:
                         appLanguageRow
                         shortcutRow
@@ -302,8 +302,21 @@ struct InlineSettingsView: View {
     private var providerRow: some View {
         settingRow(label: L("model.provider")) {
             GlassMenu(title: provider.displayName) {
-                ForEach(Provider.allCases) { p in
+                // Recommended providers (real web search available) sit at the top
+                // level. The vendors with no search are demoted into a submenu so the
+                // primary list only shows the ones we'd steer a new user toward.
+                ForEach(Provider.allCases.filter(\.supportsWebSearch)) { p in
                     Button(p.displayName) { selectProvider(p) }
+                }
+                Divider()
+                Menu(L("model.provider.noSearchGroup")) {
+                    // A non-actionable caption row explaining why these are tucked
+                    // away, then the providers themselves.
+                    Text(L("model.provider.noSearchReason"))
+                    Divider()
+                    ForEach(Provider.allCases.filter { !$0.supportsWebSearch }) { p in
+                        Button(p.displayName) { selectProvider(p) }
+                    }
                 }
             }
         }
@@ -381,18 +394,9 @@ struct InlineSettingsView: View {
                 .opacity(envOverride ? 0.5 : 1)
 
                 if editingKey {
-                    // Connectivity test: a token-free probe of the entered key against
-                    // the provider, so the user can confirm it works before relying on
-                    // it. Disabled while empty, env-overridden, or already running.
-                    if testing {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button(L("model.test")) { test() }
-                            .buttonStyle(.plain)
-                            .font(.sf(11, weight: .semibold))
-                            .foregroundStyle(canTest ? Tokens.text1 : Tokens.text4)
-                            .disabled(!canTest)
-                    }
+                    // While editing, only Save (and Cancel) — Test is deliberately
+                    // withheld until the key is saved, so a connectivity check always
+                    // probes the *stored* key, never an unsaved draft.
                     // Back out of editing without touching the stored key — only
                     // offered when there is a stored key to fall back to.
                     if !APIKeyStore.stored(for: provider).isEmpty {
@@ -402,8 +406,8 @@ struct InlineSettingsView: View {
                             .foregroundStyle(Tokens.text2)
                     }
                 } else if !envOverride {
-                    // Saved state still allows a quick liveness check of the
-                    // stored key, plus the way back into editing.
+                    // Saved state allows a liveness check of the stored key, plus
+                    // the way back into editing.
                     if testing {
                         ProgressView().controlSize(.small)
                     } else {
@@ -607,11 +611,12 @@ struct InlineSettingsView: View {
         Task { await refreshModels() }
     }
 
-    /// Whether the Test button is actionable: a non-blank key, not env-overridden,
-    /// not already running.
+    /// Whether the Test button is actionable: a non-blank *stored* key, not
+    /// env-overridden, not already running. Test only shows once a key is saved,
+    /// so it probes what's on disk, never an unsaved draft.
     private var canTest: Bool {
         !testing && !envOverride
-            && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !APIKeyStore.stored(for: provider).isEmpty
     }
 
     /// Swap the masked summary for an empty field ready for a fresh paste —
@@ -635,14 +640,24 @@ struct InlineSettingsView: View {
         modelID.isEmpty ? L("model.default", provider.defaultModel) : modelID
     }
 
+    /// Picking a model from the menu persists it on the spot — no Save step. Only
+    /// the model is written (the key is left untouched), then the backend is told
+    /// to pick up the new id so the next turn uses it immediately.
+    private func selectModel(_ id: String) {
+        guard id != modelID else { return }
+        modelID = id
+        APIKeyStore.saveModel(id, for: provider)
+        NotificationCenter.default.post(name: .aiBackendChanged, object: nil)
+    }
+
     private var modelRow: some View {
         settingRow(label: L("model.label")) {
             HStack(spacing: 6) {
                 GlassMenu(title: modelLabel) {
-                    Button(L("model.default", provider.defaultModel)) { modelID = "" }
+                    Button(L("model.default", provider.defaultModel)) { selectModel("") }
                     Divider()
                     ForEach(modelRows, id: \.self) { id in
-                        Button(id) { modelID = id }
+                        Button(id) { selectModel(id) }
                     }
                 }
                 .disabled(envOverride)
@@ -939,14 +954,6 @@ struct InlineSettingsView: View {
         }
     }
 
-    private var translationFooter: some View {
-        Text(L("translation.footer"))
-            .font(.sf(11))
-            .foregroundStyle(Tokens.text4)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 2)
-    }
-
     // MARK: - About
 
     /// The About pane: who the app is before the version mechanics. An identity
@@ -1116,11 +1123,13 @@ struct InlineSettingsView: View {
         label: String,
         @ViewBuilder _ content: () -> Content
     ) -> some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(label)
                 .font(.sf(13, weight: .medium))
                 .foregroundStyle(Tokens.text2)
-                .frame(width: 64, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: 64, alignment: .leading)
             content()
             Spacer(minLength: 0)
         }
@@ -1146,13 +1155,13 @@ struct InlineSettingsView: View {
         modelOptions = live ?? target.availableModels
     }
 
-    /// Probe the entered key against the current provider and surface the verdict.
-    /// Tests the *typed* key (not the saved one) so the user can verify before
-    /// committing. Guarded against overlapping runs via `canTest`/`testing`.
+    /// Probe the *stored* key against the current provider and surface the verdict.
+    /// Test is only offered once a key is saved, so it always checks what's on disk
+    /// — never an unsaved draft. Guarded against overlapping runs via `canTest`.
     private func test() {
         guard canTest else { return }
         let target = provider
-        let key = apiKey
+        let key = APIKeyStore.current(for: target) ?? APIKeyStore.stored(for: target)
         testing = true
         testResult = nil
         Task {

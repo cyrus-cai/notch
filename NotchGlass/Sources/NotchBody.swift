@@ -61,6 +61,14 @@ struct NotchBody: View {
     /// quote-with-chips header is tall. Seeded to the plain-input baseline so the
     /// first frame (before the preference lands) already clears a no-quote header.
     @State private var measuredImmersiveHeaderHeight: CGFloat = NotchBody.immersiveHeaderBaseline
+    /// Which answer's source badge is currently open (hovered), shared between the
+    /// badge in the scroll and the floating panel rendered by `resultView` so the
+    /// popup escapes the scroll's clip (XII-118). `nil` = none open.
+    @State private var hoveredSourceID: UUID? = nil
+    /// Deferred-close handle for the source popup, so leaving the pill doesn't snap
+    /// it shut before the cursor can cross the gap to the panel. Cancelled when the
+    /// cursor reaches the panel (or re-enters the pill).
+    @State private var sourceCloseWork: DispatchWorkItem? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -903,6 +911,50 @@ struct NotchBody: View {
         }
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.lastSavedNote)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteSaving)
+        // Float the source popup here, at the result-view level — OUTSIDE the
+        // conversation ScrollView — so it's never clipped by the scroll's height
+        // (which was chopping the popup's top off, XII-118). The hovered badge
+        // publishes its frame via `SourcePopoverKey`; we resolve it in this view's
+        // coordinate space and place the panel just ABOVE the badge, clamped to the
+        // left edge so a badge near the right doesn't push it off-screen.
+        .overlayPreferenceValue(SourcePopoverKey.self) { request in
+            GeometryReader { geo in
+                if let request {
+                    let rect = geo[request.anchor]
+                    SourcePopoverPanel(
+                        sources: request.sources,
+                        keepOpen: {
+                            // Cursor reached the panel — cancel the pending close
+                            // and keep this badge open.
+                            sourceCloseWork?.cancel()
+                            sourceCloseWork = nil
+                            hoveredSourceID = request.id
+                        },
+                        dismiss: {
+                            // Left the panel — close after the same grace period so
+                            // a slip back toward the pill doesn't flicker it shut.
+                            sourceCloseWork?.cancel()
+                            let work = DispatchWorkItem {
+                                if hoveredSourceID == request.id { hoveredSourceID = nil }
+                            }
+                            sourceCloseWork = work
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
+                        }
+                    )
+                    .fixedSize()
+                    // Anchor the panel's BOTTOM-leading just above the badge's top,
+                    // so it pops up over the answer. `.bottomLeading` alignment +
+                    // an offset of (badge.minX, badge.minY) positions the panel's
+                    // bottom-left at the badge's top-left, minus a 6pt gap.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .offset(x: max(0, rect.minX),
+                            y: rect.minY - geo.size.height - 6)
+                    .transition(.opacity)
+                }
+            }
+            .allowsHitTesting(request != nil)
+            .animation(.easeInOut(duration: 0.16), value: request)
+        }
     }
 
     /// Stand-in for the follow-up field while on the offline stub: a full-width
@@ -1093,10 +1145,27 @@ struct NotchBody: View {
             // scroll (onChange → scrollTo(.bottom)) would collapse an in-progress
             // drag-selection. The settled branch below re-enables it the instant
             // the stream finishes.
-            StreamingTurnContent(text: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
-                .padding(.vertical, 2)
-                .padding(.horizontal, 2)
-                .textSelection(.disabled)
+            VStack(alignment: .leading, spacing: 6) {
+                // Agent tool activity: while the harness runs a tool ("Searching the
+                // web…"), a quiet one-line cue sits above the answer so the wait
+                // reads as the assistant doing work, not as a stall. No icon — just
+                // the words. The harness holds it on screen a minimum time
+                // (`minActivityVisible`) so a fast tool can't flicker; the
+                // `.animation(value:)` here fades it through a full appear → settle
+                // → disappear cycle rather than hard-cutting.
+                if let activity = turn.toolActivity {
+                    Text(activity)
+                        .font(.sf(12))
+                        .tracking(0.1)
+                        .foregroundStyle(Tokens.text3)
+                        .transition(.opacity)
+                }
+                StreamingTurnContent(text: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 2)
+                    .textSelection(.disabled)
+            }
+            .animation(.easeInOut(duration: 0.25), value: turn.toolActivity)
         } else {
             // A settled answer carries its own quiet "file this in Notes" button
             // directly beneath it — one per answer, so a long thread can save any
@@ -1107,6 +1176,16 @@ struct NotchBody: View {
                 MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
+                // Source badge: when this answer was grounded by a web search
+                // (sources came back through the harness), show a compact,
+                // clickable "site + N" badge beneath it (XII-118). Expands to the
+                // full list; each opens the original page.
+                if !turn.sources.isEmpty {
+                    SourceBadge(sources: turn.sources,
+                                hoveredID: $hoveredSourceID,
+                                pendingClose: $sourceCloseWork)
+                        .padding(.top, 2)
+                }
             }
         }
     }

@@ -295,6 +295,108 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
             return [:]
         }
     }
+
+    /// Whether this provider's models reliably support function/tool calling, so
+    /// the agent harness can drive them. Every vendor here exposes a tool-calling
+    /// API on its current models; OpenRouter is the one wildcard — its free
+    /// auto-router rotates across whatever free model is available, some of which
+    /// don't do tools, so an unsupported pick simply yields no tool calls and the
+    /// harness reads that as a normal `end_turn`. The gate exists so a future
+    /// known-toolless provider can be excluded cleanly without touching the harness.
+    var supportsTools: Bool { true }
+
+    // MARK: Server-side web search (XII-118)
+
+    /// How this provider exposes a *real* web search the model can run during a
+    /// turn — using the key the app already holds, with no separate search account
+    /// (the keyless constraint). `nil` means the provider has no native search, so
+    /// the request goes out unchanged and the assistant answers without searching
+    /// (the honest no-search fallback from XII-116). The three shapes are genuinely
+    /// different wire protocols, verified per-provider against current vendor docs:
+    ///
+    /// - `.tool`  (Anthropic, GLM, OpenRouter): inject one entry into the request
+    ///   `tools` array; the search runs entirely server-side and the grounded text
+    ///   streams straight back. The client never executes or echoes anything.
+    /// - `.builtin` (Kimi): inject a `builtin_function` tool. The model emits a
+    ///   tool call the client must echo back *unchanged* (its arguments JSON) for
+    ///   the provider to actually run the search — handled by the matching
+    ///   passthrough tool, not by any local execution.
+    /// - `.chatModelSwap` (OpenAI): chat-completions has no search tool; the only
+    ///   path is to swap the request `model` to a search-capable id and add a
+    ///   parameter, which forces a search every turn.
+    enum ServerSearch {
+        /// A `tools`-array entry (provider-shaped) the search rides on. Fully
+        /// server-side; nothing comes back through the harness's tool loop.
+        case tool([String: Any])
+        /// A `builtin_function` tool plus the body fields it requires (e.g.
+        /// `thinking: disabled`). The client echoes the call back; see
+        /// `KimiWebSearchPassthrough`.
+        case builtin(tool: [String: Any], bodyExtras: [String: Any])
+        /// Swap the request model to `model` and merge `bodyExtras` (e.g.
+        /// `web_search_options`). Used where chat-completions can't carry a tool.
+        case chatModelSwap(model: String, bodyExtras: [String: Any])
+    }
+
+    /// The native search shape for this provider, or `nil` for no native search.
+    /// Tier-1 coverage (Anthropic / OpenAI / Kimi / GLM / OpenRouter); the rest
+    /// fall through to `nil` and answer without searching.
+    var serverSearch: ServerSearch? {
+        switch self {
+        case .anthropic:
+            // Fully server-side; streams server_tool_use → web_search_tool_result
+            // → cited text through the existing /v1/messages SSE parser. Requires
+            // the user to enable web search in the Anthropic Console.
+            return .tool(["type": "web_search_20260318", "name": "web_search"])
+        // GLM is intentionally NOT here. Its in-chat `tools:[{web_search}]` path
+        // was verified (live, with a real key) to silently NOT search on the
+        // current account/models — it returned training-cutoff hallucinations with
+        // no results, the exact dishonest behavior XII-116 fought. GLM's real
+        // search runs through a *client-side* tool against Zhipu's standalone Web
+        // Search API instead — see `GLMWebSearchTool` and `ToolRegistry.standard`.
+        case .openrouter:
+            // One tool for every proxied model; bills OpenRouter credits, no extra
+            // key. The old `:online` model suffix is deprecated — don't use it.
+            return .tool([
+                "type": "openrouter:web_search",
+                "parameters": ["engine": "auto", "max_results": 5,
+                               "search_context_size": "medium"],
+            ])
+        case .kimi:
+            // Builtin function the client must echo back unchanged for Moonshot to
+            // run the search. `thinking: disabled` is required and rides at the
+            // body root (the SDK's `extra_body` is just a pass-through wrapper).
+            return .builtin(
+                tool: ["type": "builtin_function", "function": ["name": "$web_search"]],
+                bodyExtras: ["thinking": ["type": "disabled"]])
+        case .openai:
+            // Chat-completions has no search *tool*; the search-API model performs
+            // a web search every turn. `web_search_options` is its enabling param.
+            return .chatModelSwap(model: "gpt-5-search-api",
+                                  bodyExtras: ["web_search_options": [String: Any]()])
+        default:
+            return nil
+        }
+    }
+
+    /// The function name a provider uses for a *builtin* search the client must
+    /// echo back (Kimi's `$web_search`). The harness matches an incoming tool call
+    /// against this to route it to the passthrough instead of failing on an unknown
+    /// tool. `nil` for providers whose search needs no echo.
+    var builtinSearchName: String? {
+        if case .builtin = serverSearch, case .kimi = self { return "$web_search" }
+        return nil
+    }
+
+    /// Whether this provider can run a *real* web search during a turn — either a
+    /// native server-side search (`serverSearch != nil`: Anthropic / OpenAI / Kimi
+    /// / OpenRouter) or the client-side `GLMWebSearchTool` (GLM). The five vendors
+    /// that have neither (DeepSeek / Gemini / Qwen / MiniMax / MiMo) return false:
+    /// their requests go out unchanged and the model answers only from its training
+    /// data, with no way to reach current information. The Settings provider menu
+    /// uses this to demote the no-search vendors into a "not recommended" submenu.
+    var supportsWebSearch: Bool {
+        serverSearch != nil || self == .glm
+    }
 }
 
 /// Offline stand-in. Returns a short, plausible-looking answer after a brief
@@ -808,5 +910,391 @@ enum ConnectivityTest {
             return URL(string: String(s.dropLast(suffix.count)) + "/models")
         }
         return nil
+    }
+}
+
+// MARK: - Agent (tool-calling) turn streaming
+//
+// `streamTurn` is the richer counterpart to `stream`: it yields a `TurnEvent`
+// stream — text, tool-call requests, and a final stop reason — for one model
+// turn, which is what the `AgentHarness` loop runs on. The two clients lower the
+// provider-neutral `AgentMessage`/`ToolSpec` into their respective wire formats
+// (OpenAI `tool_calls` vs Anthropic `tool_use`), which differ in three ways: how
+// the tool list is shaped, how a tool call streams in, and how a tool result is
+// sent back.
+//
+// JSON note: tool inputs are arbitrary objects, so these clients build request
+// bodies with `JSONSerialization` against `[String: Any]` rather than `Encodable`
+// structs — Swift's `Codable` can't round-trip a heterogeneous `[String: Any]`,
+// and the harness already speaks that shape.
+
+/// Shared helpers for encoding a JSON request body and reading SSE `data:` lines,
+/// used by both agent clients.
+private enum AgentWire {
+    /// Serialize a JSON object to request-body data.
+    static func body(_ object: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object)
+    }
+    /// Parse one decoded JSON-string argument blob into `[String: Any]`. Tool args
+    /// always decode to an object; a malformed/empty blob yields an empty dict so a
+    /// no-argument call still runs.
+    static func decodeArgs(_ json: String) -> [String: Any] {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [:] }
+        return obj
+    }
+}
+
+extension OpenAICompatAIService: AgentCapableService {
+    func streamTurn(system: String,
+                    messages: [AgentMessage],
+                    tools: [ToolSpec]) -> AsyncThrowingStream<TurnEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var req = URLRequest(url: provider.endpoint)
+                    req.httpMethod = "POST"
+                    req.timeoutInterval = Self.streamTimeout
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                    for (field, value) in provider.extraHeaders {
+                        req.setValue(value, forHTTPHeaderField: field)
+                    }
+
+                    // Server-side web search (XII-118): for OpenAI-compatible
+                    // vendors the native search rides in three different shapes.
+                    // `.tool` (GLM) adds a tools-array entry; `.builtin` (Kimi)
+                    // adds a builtin tool plus required body fields and is echoed
+                    // back by the harness; `.chatModelSwap` (OpenAI) swaps the model
+                    // and adds a parameter. Resolve the effective model + any extra
+                    // search tool/body up front, then build the request once.
+                    var effectiveModel = model
+                    var searchTool: [String: Any]? = nil
+                    var bodyExtras: [String: Any] = [:]
+                    switch provider.serverSearch {
+                    case .tool(let t):
+                        searchTool = t
+                    case .builtin(let t, let extras):
+                        searchTool = t
+                        bodyExtras = extras
+                    case .chatModelSwap(let m, let extras):
+                        effectiveModel = m
+                        bodyExtras = extras
+                    case nil:
+                        break
+                    }
+
+                    // The model's own client-side tools plus, when present, the
+                    // provider's server-search entry. Kept in one array so a turn
+                    // can both call a local tool and search.
+                    var wireTools = Self.wireTools(tools)
+                    if let searchTool { wireTools.append(searchTool) }
+
+                    var body: [String: Any] = [
+                        "model": effectiveModel,
+                        "messages": Self.wireMessages(system: system, messages: messages),
+                        provider.maxTokensField: ReplyTokens.budget(forSystem: system),
+                        "temperature": 0.7,
+                        "stream": true,
+                    ]
+                    if !wireTools.isEmpty { body["tools"] = wireTools }
+                    for (k, v) in bodyExtras { body[k] = v }
+                    req.httpBody = try AgentWire.body(body)
+
+                    let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw ServiceError.malformedResponse(provider: provider.displayName)
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        let bodyText = await Self.drainErrorBody(bytes.lines)
+                        throw ServiceError.http(provider: provider.displayName,
+                                                status: http.statusCode, body: bodyText)
+                    }
+
+                    // Tool calls arrive in fragments across many SSE chunks: the
+                    // first delta for a call carries its `index`, `id`, and
+                    // `function.name`; subsequent deltas for the same `index`
+                    // append to `function.arguments`. We accumulate per index and
+                    // emit one `toolCall` per call once the stream completes.
+                    var callsByIndex: [Int: (id: String, name: String, args: String)] = [:]
+                    var finishReason: String? = nil
+
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if payload.isEmpty { continue }
+                        if payload == "[DONE]" { break }
+                        guard let data = payload.data(using: .utf8),
+                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              let choices = obj["choices"] as? [[String: Any]],
+                              let choice = choices.first
+                        else { continue }
+
+                        if let fr = choice["finish_reason"] as? String { finishReason = fr }
+                        guard let delta = choice["delta"] as? [String: Any] else { continue }
+
+                        if let content = delta["content"] as? String, !content.isEmpty {
+                            continuation.yield(.text(content))
+                        }
+                        if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
+                            for tc in toolCalls {
+                                let idx = tc["index"] as? Int ?? 0
+                                var entry = callsByIndex[idx] ?? (id: "", name: "", args: "")
+                                if let id = tc["id"] as? String, !id.isEmpty { entry.id = id }
+                                if let fn = tc["function"] as? [String: Any] {
+                                    if let n = fn["name"] as? String, !n.isEmpty { entry.name = n }
+                                    if let a = fn["arguments"] as? String { entry.args += a }
+                                }
+                                callsByIndex[idx] = entry
+                            }
+                        }
+                    }
+
+                    // Emit the assembled tool calls in index order.
+                    for idx in callsByIndex.keys.sorted() {
+                        let c = callsByIndex[idx]!
+                        guard !c.name.isEmpty else { continue }
+                        // Some vendors omit an id; synthesize a stable one so the
+                        // result can be matched back.
+                        let id = c.id.isEmpty ? "call_\(idx)" : c.id
+                        continuation.yield(.toolCall(id: id, name: c.name,
+                                                     input: AgentWire.decodeArgs(c.args)))
+                    }
+                    continuation.yield(.finished(stopReason: finishReason))
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// OpenAI tool list: `[{type:"function", function:{name, description,
+    /// parameters}}]`. `parameters` is the tool's JSON Schema. A `$`-prefixed name
+    /// is a provider *builtin* (Kimi's `$web_search`, XII-118) and takes the
+    /// `builtin_function` shape with only a name — no description/parameters, which
+    /// the vendor rejects on a builtin.
+    private static func wireTools(_ tools: [ToolSpec]) -> [[String: Any]] {
+        tools.map { t in
+            if t.name.hasPrefix("$") {
+                return ["type": "builtin_function",
+                        "function": ["name": t.name]]
+            }
+            return ["type": "function",
+                    "function": ["name": t.name,
+                                 "description": t.description,
+                                 "parameters": t.schema]]
+        }
+    }
+
+    /// Lower the neutral conversation to OpenAI chat messages. The system prompt
+    /// leads; a plain turn is `{role, content}`; an assistant tool-call turn is
+    /// `{role:"assistant", content, tool_calls:[…]}`; a tool-results turn becomes
+    /// one `{role:"tool", tool_call_id, content}` message per result.
+    private static func wireMessages(system: String,
+                                     messages: [AgentMessage]) -> [[String: Any]] {
+        var out: [[String: Any]] = [["role": "system", "content": system]]
+        for m in messages {
+            switch m.kind {
+            case .text(let role, let text):
+                out.append(["role": role, "content": text])
+            case .assistantToolCalls(let text, let calls):
+                let toolCalls: [[String: Any]] = calls.map { c in
+                    let argsJSON = (try? String(data: JSONSerialization.data(withJSONObject: c.input),
+                                                encoding: .utf8)) ?? "{}"
+                    return ["id": c.id,
+                            "type": "function",
+                            "function": ["name": c.name, "arguments": argsJSON ?? "{}"]]
+                }
+                out.append(["role": "assistant",
+                            "content": text,
+                            "tool_calls": toolCalls])
+            case .toolResults(let results):
+                for r in results {
+                    // `name` is required for Kimi's builtin-search echo to match
+                    // (XII-118); OpenAI and the other vendors ignore the extra
+                    // field, so it's safe to always include when known.
+                    var msg: [String: Any] = ["role": "tool",
+                                              "tool_call_id": r.id,
+                                              "content": r.result]
+                    if !r.name.isEmpty { msg["name"] = r.name }
+                    out.append(msg)
+                }
+            }
+        }
+        return out
+    }
+}
+
+extension AnthropicAIService: AgentCapableService {
+    func streamTurn(system: String,
+                    messages: [AgentMessage],
+                    tools: [ToolSpec]) -> AsyncThrowingStream<TurnEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var req = URLRequest(url: provider.endpoint)
+                    req.httpMethod = "POST"
+                    req.timeoutInterval = OpenAICompatAIService.streamTimeout
+                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                    req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+                    // Client-side tools plus, when present, Anthropic's native
+                    // server-side web search (XII-118). It rides in the same
+                    // `tools` array; the search runs server-side and streams back
+                    // through this same SSE loop as `server_tool_use` /
+                    // `web_search_tool_result` blocks (skipped below as unknown
+                    // block types — the cited answer text streams as normal
+                    // `text_delta`). Requires the user to have enabled web search
+                    // in the Anthropic Console; if not, the API returns a
+                    // `web_search_tool_result_error` block and the model answers
+                    // without it.
+                    var wireTools = Self.wireTools(tools)
+                    if case .tool(let searchTool)? = provider.serverSearch {
+                        wireTools.append(searchTool)
+                    }
+                    var body: [String: Any] = [
+                        "model": model,
+                        "system": system,
+                        "messages": Self.wireMessages(messages),
+                        "max_tokens": ReplyTokens.budget(forSystem: system),
+                        "stream": true,
+                    ]
+                    if !wireTools.isEmpty { body["tools"] = wireTools }
+                    req.httpBody = try AgentWire.body(body)
+
+                    let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw OpenAICompatAIService.ServiceError.malformedResponse(provider: provider.displayName)
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        let bodyText = await OpenAICompatAIService.drainErrorBody(bytes.lines)
+                        throw OpenAICompatAIService.ServiceError.http(provider: provider.displayName,
+                                                                      status: http.statusCode, body: bodyText)
+                    }
+
+                    // Anthropic streams each content block separately. A `tool_use`
+                    // block opens with `content_block_start` (carrying the block's
+                    // `id` and tool `name`), streams its arguments as
+                    // `input_json_delta` partial-JSON fragments, and closes with
+                    // `content_block_stop`. We track the open block by index and
+                    // accumulate its partial JSON; text blocks stream as
+                    // `text_delta`. The final `message_delta` carries `stop_reason`.
+                    var blocks: [Int: (id: String, name: String, partialJSON: String)] = [:]
+                    var stopReason: String? = nil
+
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { break }
+                        guard line.hasPrefix("data:") else { continue }
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if payload.isEmpty { continue }
+                        guard let data = payload.data(using: .utf8),
+                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                              let type = obj["type"] as? String
+                        else { continue }
+
+                        switch type {
+                        case "content_block_start":
+                            let idx = obj["index"] as? Int ?? 0
+                            if let block = obj["content_block"] as? [String: Any],
+                               block["type"] as? String == "tool_use" {
+                                let id = block["id"] as? String ?? "toolu_\(idx)"
+                                let name = block["name"] as? String ?? ""
+                                blocks[idx] = (id: id, name: name, partialJSON: "")
+                            }
+                        case "content_block_delta":
+                            let idx = obj["index"] as? Int ?? 0
+                            guard let delta = obj["delta"] as? [String: Any] else { break }
+                            switch delta["type"] as? String {
+                            case "text_delta":
+                                if let t = delta["text"] as? String, !t.isEmpty {
+                                    continuation.yield(.text(t))
+                                }
+                            case "input_json_delta":
+                                if let partial = delta["partial_json"] as? String,
+                                   var entry = blocks[idx] {
+                                    entry.partialJSON += partial
+                                    blocks[idx] = entry
+                                }
+                            default:
+                                break
+                            }
+                        case "content_block_stop":
+                            let idx = obj["index"] as? Int ?? 0
+                            if let b = blocks[idx], !b.name.isEmpty {
+                                continuation.yield(.toolCall(id: b.id, name: b.name,
+                                                             input: AgentWire.decodeArgs(b.partialJSON)))
+                                blocks[idx] = nil
+                            }
+                        case "message_delta":
+                            if let delta = obj["delta"] as? [String: Any],
+                               let sr = delta["stop_reason"] as? String {
+                                stopReason = sr
+                            }
+                        case "message_stop":
+                            break
+                        default:
+                            break
+                        }
+                    }
+                    continuation.yield(.finished(stopReason: stopReason))
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Anthropic tool list: `[{name, description, input_schema}]`.
+    private static func wireTools(_ tools: [ToolSpec]) -> [[String: Any]] {
+        tools.map { t in
+            ["name": t.name, "description": t.description, "input_schema": t.schema]
+        }
+    }
+
+    /// Lower the neutral conversation to Anthropic messages. The system prompt is
+    /// a top-level field (added in `streamTurn`), not a message. A plain turn is
+    /// `{role, content:"…"}`. An assistant tool-call turn is `{role:"assistant",
+    /// content:[ {type:text,…}?, {type:tool_use, id, name, input}… ]}`. A
+    /// tool-results turn is `{role:"user", content:[{type:tool_result,
+    /// tool_use_id, content, is_error?}…]}`.
+    private static func wireMessages(_ messages: [AgentMessage]) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        for m in messages {
+            switch m.kind {
+            case .text(let role, let text):
+                out.append(["role": role, "content": text])
+            case .assistantToolCalls(let text, let calls):
+                var content: [[String: Any]] = []
+                if !text.isEmpty { content.append(["type": "text", "text": text]) }
+                for c in calls {
+                    content.append(["type": "tool_use",
+                                    "id": c.id,
+                                    "name": c.name,
+                                    "input": c.input])
+                }
+                out.append(["role": "assistant", "content": content])
+            case .toolResults(let results):
+                let content: [[String: Any]] = results.map { r in
+                    var block: [String: Any] = ["type": "tool_result",
+                                                "tool_use_id": r.id,
+                                                "content": r.result]
+                    if r.isError { block["is_error"] = true }
+                    return block
+                }
+                out.append(["role": "user", "content": content])
+            }
+        }
+        return out
     }
 }
