@@ -61,6 +61,12 @@ struct NotchBody: View {
     /// quote-with-chips header is tall. Seeded to the plain-input baseline so the
     /// first frame (before the preference lands) already clears a no-quote header.
     @State private var measuredImmersiveHeaderHeight: CGFloat = NotchBody.immersiveHeaderBaseline
+    /// Whether the immersive header height has been measured at least once this open.
+    /// The FIRST measurement (baseline → real height) must land silently — animating
+    /// it forces a second, animated layout pass before the expand can even start,
+    /// which read as a ~0.5s stall before the list moved. Only LATER changes (a quote
+    /// appearing/clearing while open) animate, so those still slide. Reset on close.
+    @State private var didMeasureImmersiveHeader = false
     /// Which answer's source badge is currently open (hovered), shared between the
     /// badge in the scroll and the floating panel rendered by `resultView` so the
     /// popup escapes the scroll's clip (XII-118). `nil` = none open.
@@ -119,6 +125,10 @@ struct NotchBody: View {
             if model.open, !isShowing, model.mode == .idle {
                 refocusInput()
             }
+            // Closing the list tears down the immersive layout, so re-arm the
+            // "first measurement lands silently" latch for the next open — otherwise
+            // the next open's baseline→real jump would animate (and stall) again.
+            if !isShowing { didMeasureImmersiveHeader = false }
         }
         .onAppear {
             if model.open {
@@ -302,10 +312,18 @@ struct NotchBody: View {
             )
         }
         .onPreferenceChange(ImmersiveHeaderHeightKey.self) { h in
-            // Animate the runway shift so a quote appearing/clearing slides the list
-            // rather than snapping it.
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
-                measuredImmersiveHeaderHeight = max(h, NotchBody.immersiveHeaderBaseline)
+            let measured = max(h, NotchBody.immersiveHeaderBaseline)
+            if didMeasureImmersiveHeader {
+                // A later change (quote appearing/clearing) slides the runway so the
+                // list shifts smoothly rather than snapping.
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                    measuredImmersiveHeaderHeight = measured
+                }
+            } else {
+                // First measurement of this open: land it silently. Animating here
+                // forces an animated second layout pass that stalls the expand start.
+                didMeasureImmersiveHeader = true
+                measuredImmersiveHeaderHeight = measured
             }
         }
         .transition(moduleTransition)

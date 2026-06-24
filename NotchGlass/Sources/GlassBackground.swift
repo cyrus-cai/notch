@@ -127,6 +127,12 @@ struct GlassMaterial: View {
             shape
                 .fill(.black.opacity(0.30))
                 .blur(radius: 9)
+                // Flatten the blurred shadow to one offscreen texture: its content is
+                // a fixed solid fill (no height-derived gradient stops), so only the
+                // geometry springs as the panel grows. Without this the radius-9
+                // offscreen blur re-renders every frame of the expand; with it the
+                // frame just scales the cached texture. Pixel-identical.
+                .drawingGroup()
                 .offset(y: 5)
                 .allowsHitTesting(false)
         )

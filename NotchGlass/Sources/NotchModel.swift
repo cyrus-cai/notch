@@ -352,11 +352,16 @@ final class NotchModel: ObservableObject {
     }
 
     /// Where pressing Enter on the *current* text will actually land. Resolution
-    /// order: a Tab override (the user said so explicitly) beats the classifier's
-    /// confident read, which beats `.chat` (the resting "ambiguous → ask" default).
-    /// This is exactly the resolution `submitCurrent()` uses, so the inline hint can
-    /// show its destination and never lie about it.
-    var effectiveSubmitPanel: Panel { manualPanelOverride ?? suggestedPanel ?? .chat }
+    /// order: once a conversation is on screen every line is a follow-up question, so
+    /// it's always Ask — intent routing (Note/Remind) only applies to a *fresh* prompt
+    /// (XII-119). On a fresh prompt: a Tab override (the user said so explicitly) beats
+    /// the classifier's confident read, which beats `.chat` (the resting "ambiguous →
+    /// ask" default). This is exactly the resolution `submitCurrent()` uses, so the
+    /// inline hint can show its destination and never lie about it.
+    var effectiveSubmitPanel: Panel {
+        guard turns.isEmpty else { return .chat }
+        return manualPanelOverride ?? suggestedPanel ?? .chat
+    }
 
     /// Tab in the idle prompt: step where Enter will send the current line
     /// (Ask → Note → Remind → Ask…), overriding the classifier. Steps from whatever

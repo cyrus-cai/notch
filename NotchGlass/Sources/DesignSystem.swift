@@ -212,6 +212,14 @@ struct ProgressiveTopBlur: ViewModifier {
                         // further, shallow layers (strong) stay near the top.
                         let depth = band * (1 - t) + band * 0.34
                         content
+                            // NOTE: deliberately NOT `.drawingGroup()`-flattened here.
+                            // Flattening caches the blur for smoother animation frames,
+                            // but it also forces all up-to-50 rows to rasterize into a
+                            // Metal texture (×4 layers) on the FIRST frame the immersive
+                            // list mounts — which landed right in the click-to-expand
+                            // window and stalled the open by ~0.5s. The plain path keeps
+                            // the open responsive; the in-flight blur cost is minor since
+                            // only the few rows inside the top band are ever blurred.
                             .blur(radius: radius)
                             .mask(
                                 LinearGradient(
