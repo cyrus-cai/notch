@@ -1086,6 +1086,65 @@ struct ThinkingDots: View {
     }
 }
 
+/// A single status-line slot that cross-fades whenever its `text` changes, so a
+/// rotating mood word ("Glowing" → "Drifting") or a status change ("Searching the
+/// web…" → "Reading the results…") dissolves rather than hard-cutting. The seam is
+/// the whole point: SwiftUI's default for a `Text` whose string changes is to swap
+/// the value with no transition, and keying it on `.id()` only re-inserts the view
+/// (which, without an enclosing animated transaction, blinks). Here two layers —
+/// the outgoing word and the incoming word — are stacked in the same leading slot
+/// and their opacities are animated in opposite directions over one easeInOut
+/// window, so one fades out exactly as the other fades in. The phase is flipped on
+/// a `.task(id:)` keyed to the incoming text, which also enforces a minimum dwell
+/// before the *caller* is allowed to rotate again (the caller's timer interval is
+/// the dwell; this view just guarantees the fade can't be cut short by a too-fast
+/// change — it always completes a full fade before showing the next).
+struct CrossfadeText: View {
+    let text: String
+    var font: CGFloat = 15
+    var color: Color = Tokens.text2
+
+    /// The word currently lit. Lags `text` by exactly one fade: when `text`
+    /// changes, the old `shown` fades out while the new `text` fades in, then
+    /// `shown` catches up.
+    @State private var shown: String = ""
+    @State private var visible = true
+
+    /// One fade leg (out, then in). 0.45s reads as a calm dissolve, not a blink,
+    /// and is short enough that back-to-back rotations never pile up.
+    private static let fade: Double = 0.45
+
+    var body: some View {
+        // Always render `shown`; `visible` alone drives opacity. The incoming word
+        // is swapped into `shown` only after the out-leg finishes, so the slot never
+        // briefly shows the next word at full opacity (which would read as a flash
+        // of the next word before the current one has faded).
+        Text(shown)
+            .font(.system(size: font, weight: .regular))
+            .foregroundStyle(color)
+            .opacity(visible ? 1 : 0)
+            .animation(.easeInOut(duration: Self.fade), value: visible)
+            .onAppear {
+                // First appearance lights up immediately — no fade-from-blank that
+                // would read as a flicker on the very first word.
+                shown = text
+                visible = true
+            }
+            .onChange(of: text) { _, newValue in
+                guard newValue != shown else { return }
+                // Fade the old word out…
+                visible = false
+                // …then, after the out-leg completes, swap in the new word and
+                // fade it back. The delay matches `fade` so the two legs are
+                // sequential (out, in) rather than overlapping into a muddy blur.
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.fade) {
+                    shown = newValue
+                    visible = true
+                }
+            }
+    }
+}
+
 /// The streaming assistant bubble while the answer is still in flight: the
 /// thinking dots until the first token lands, then the live `StreamingMarkdown`.
 /// The point of this wrapper is the *seam* between the two — without it the dots
@@ -1101,39 +1160,52 @@ struct StreamingTurnContent: View {
     var baseFont: CGFloat = 15
     var color: Color = Tokens.text1
     var onInAppCopy: (() -> Void)? = nil
+    /// The present-progressive mood word shown beside the dots during the pre-stream
+    /// wait (e.g. "gazing"). Empty hides it, leaving the bare dots.
+    var thinkingWord: String = ""
 
     /// Duration of the dots-out / first-token-in cross-fade. Matched to the
     /// 80ms-ish opacity beat the rest of the streaming UI uses so the handoff
     /// reads as part of the same typewriter rhythm, not a separate flourish.
     static let fade: Double = 0.12
 
-    /// Latched true on the first non-empty `text`. We key the cross-fade on this
-    /// edge (not on `text.isEmpty` directly) so it fires exactly once — later
-    /// chunks never re-run the dots fade, and a turn that arrives with text
-    /// already present (none do today, but cheap insurance) still settles lit.
-    @State private var hasFirstToken = false
+    /// Whether the answer area currently has visible text. The dots / answer cross-fade
+    /// keys on this LIVE state, not a one-way latch: the agent harness can emit assistant
+    /// text, then run a tool and sit with an empty visible answer through the next round —
+    /// a latch would hide the dots forever after that first text and leave the tool wait
+    /// blank. Tracking emptiness directly means the dots come back whenever the answer is
+    /// momentarily empty again (between rounds), so the wait is never dotless.
+    ///
+    /// Trimmed, not a bare `!text.isEmpty`: GLM (and Kimi) open an agent turn with a
+    /// lone `"\n"` content chunk *before* requesting a tool, so a raw emptiness check
+    /// flips true on that newline and hides the dots/status while the real answer is
+    /// still a tool-round away — the blank-block bug. Treating whitespace-only as empty
+    /// keeps the wait state lit until genuine answer text lands.
+    private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // Dots: present (and animating) only until the first token, then
-            // faded fully out. Kept mounted across the fade so it can ease away
-            // rather than vanish; `allowsHitTesting(false)` and zero opacity make
-            // the settled state inert.
-            ThinkingDots()
-                .opacity(hasFirstToken ? 0 : 1)
-                .allowsHitTesting(false)
+            // Status word only — no dots. Shown whenever the answer is currently empty.
+            // Kept mounted across the fade so it eases away rather than vanishing;
+            // `allowsHitTesting(false)` and zero opacity make the lit state inert. The
+            // mood word fed here (`currentThinkingWord`) is always non-empty, so the
+            // pre-stream wait is never blank.
+            Group {
+                if !thinkingWord.isEmpty {
+                    // Cross-fades one mood word into the next — no hard cut.
+                    CrossfadeText(text: thinkingWord, font: baseFont, color: Tokens.text2)
+                }
+            }
+            .opacity(hasText ? 0 : 1)
+            .allowsHitTesting(false)
 
             // First words: start transparent, ease in as the dots ease out. Once
             // lit, `StreamingMarkdown` carries every following chunk's own fade.
             StreamingMarkdown(source: text, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .opacity(hasFirstToken ? 1 : 0)
+                .opacity(hasText ? 1 : 0)
         }
-        .animation(.easeInOut(duration: Self.fade), value: hasFirstToken)
-        .onChange(of: text.isEmpty) { _, isEmpty in
-            if !isEmpty { hasFirstToken = true }
-        }
-        .onAppear { if !text.isEmpty { hasFirstToken = true } }
+        .animation(.easeInOut(duration: Self.fade), value: hasText)
     }
 }
 
@@ -1395,29 +1467,18 @@ struct StreamingMarkdown: View {
     }
 }
 
-/// Drives the per-chunk fade: each time `token` changes (the tail grew), opacity
-/// drops to `floor` for one frame and eases back to 1 over 80ms, so the newly
-/// landed text dissolves in. `.animation(value:)` makes the ramp fire on the
-/// change without a manual `withAnimation`, and the explicit `.opacity` keeps the
-/// floor from compounding across rapid chunks.
+/// No-op. The tail block used to dim to a `floor` opacity and ease back to 1 on
+/// every chunk (a typewriter-style fade), but with a long single-paragraph answer
+/// the *whole* tail is one block, so the entire body below the first line dimmed
+/// and re-lit on each token — read as the text going pale mid-answer and only
+/// settling once the stream ended. Tail text now renders at full opacity like the
+/// settled head; streaming just reflows line by line, no fade. Kept as a modifier
+/// (rather than deleting the call site) so `StreamingMarkdown`'s head/tail split is
+/// untouched and the fade can be reintroduced here if it's ever made
+/// per-new-character instead of per-block.
 private struct TailFadeIn: ViewModifier {
     let token: Int
-    @State private var lit = false
-
-    private static let floor: Double = 0.55
-
-    func body(content: Content) -> some View {
-        content
-            .opacity(lit ? 1 : Self.floor)
-            .animation(.easeOut(duration: 0.08), value: lit)
-            // Flip to lit on the next runloop turn so the floor→1 ramp actually
-            // animates; re-arm to dim on each new token so the next chunk fades too.
-            .onChange(of: token) { _, _ in
-                lit = false
-                DispatchQueue.main.async { lit = true }
-            }
-            .onAppear { lit = true }
-    }
+    func body(content: Content) -> some View { content }
 }
 
 /// One block of an answer, extracted from `MarkdownBlocks.row(for:)` so both the

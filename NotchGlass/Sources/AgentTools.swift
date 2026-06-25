@@ -74,36 +74,6 @@ struct ReadClipboardTool: NotchTool {
     }
 }
 
-/// Open a URL in the user's default browser. A visible, user-confirmable action
-/// (the page opens in front of them) — the safe kind of side-effecting tool. The
-/// scheme is validated to http/https so the model can't open arbitrary
-/// `file://`, `x-apple-…`, or app-scheme URLs.
-struct OpenURLTool: NotchTool {
-    let name = "open_url"
-    let description = """
-    Opens a web URL in the user's default browser. Call this only when the user \
-    explicitly asks to open, visit, or go to a page. Use the full https URL.
-    """
-    let schema: [String: Any] = [
-        "type": "object",
-        "properties": [
-            "url": ["type": "string", "description": "The full http(s) URL to open."]
-        ],
-        "required": ["url"]
-    ]
-
-    func execute(_ input: [String: Any]) async throws -> String {
-        guard let s = input["url"] as? String,
-              let url = URL(string: s),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
-            return "Error: not a valid http(s) URL."
-        }
-        let ok = await MainActor.run { NSWorkspace.shared.open(url) }
-        return ok ? "Opened \(url.absoluteString)." : "Couldn't open \(url.absoluteString)."
-    }
-}
-
 /// Kimi's `$web_search` is a *builtin* server tool with an unusual contract
 /// (XII-118): the model emits a tool call, and the client must echo the call's
 /// arguments back **unchanged** for Moonshot to actually run the search
@@ -268,7 +238,6 @@ extension ToolRegistry {
         var tools: [NotchTool] = [
             DateTimeTool(),
             ReadClipboardTool(),
-            OpenURLTool(),
         ]
         if provider == .glm {
             tools.append(GLMWebSearchTool())
@@ -282,6 +251,6 @@ extension ToolRegistry {
     /// Provider-agnostic default, kept for call sites that don't yet thread a
     /// provider through (it omits any provider-specific builtin like Kimi's echo).
     static var standard: ToolRegistry { ToolRegistry([
-        DateTimeTool(), ReadClipboardTool(), OpenURLTool(),
+        DateTimeTool(), ReadClipboardTool(),
     ]) }
 }

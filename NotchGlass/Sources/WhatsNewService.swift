@@ -59,6 +59,19 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
+            version: "1.1.2",
+            date: "2026-06-25",
+            features: [
+                "While thinking, Notch now drifts through evocative mood words — Gazing, Dreaming, Shimmering — that cross-fade one into the next, instead of bare dots.",
+            ],
+            fixes: [
+                "Answers grow smoothly as they stream — no more per-line jump.",
+                "Long answers no longer go pale mid-stream and re-brighten at the end.",
+                "The screen no longer blanks for a beat while a web search runs.",
+                "Your own question is now selectable — drag to highlight and copy it.",
+            ]
+        ),
+        Entry(
             version: "1.1.1",
             date: "2026-06-24",
             fixes: [

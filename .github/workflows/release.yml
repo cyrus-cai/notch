@@ -18,6 +18,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Guard against version regression
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Refuse to publish a tag whose version is OLDER than the newest
+          # already-published release. This catches a mistaken push to a stale
+          # tag (e.g. a `--follow-tags` push re-sending an old v1.0.8) before it
+          # can overwrite "Latest" with a regression.
+          new="${GITHUB_REF_NAME#v}"
+          # Compare against the HIGHEST version across all published releases —
+          # NOT GitHub's "Latest" marker, which can itself be wrong (a stale tag
+          # re-published out of order can grab "Latest"). sort -V gives us the
+          # true newest version regardless of which release is flagged Latest.
+          latest="$(gh release list --json tagName --jq '.[].tagName' 2>/dev/null | sed 's/^v//' | sort -V | tail -n1 || true)"
+          if [ -z "$latest" ]; then
+            echo "No published release yet — nothing to compare against. Proceeding."
+            exit 0
+          fi
+          highest="$(printf '%s\n%s\n' "$new" "$latest" | sort -V | tail -n1)"
+          if [ "$new" != "$latest" ] && [ "$highest" = "$latest" ]; then
+            echo "::error::Refusing to publish v$new — it is older than the newest published release v$latest. This usually means the wrong tag was pushed (e.g. via --follow-tags). Push the intended tag explicitly: git push origin v<new>."
+            exit 1
+          fi
+          echo "Version check OK: publishing v$new (newest published is v$latest)."
+
       - name: Select Xcode 26
         run: |
           sudo xcode-select -s /Applications/Xcode_26.5.app

@@ -388,6 +388,105 @@ final class NotchModel: ObservableObject {
         }
     }
 
+    /// Present-progressive "thinking" words shown beside the dots while the AI is
+    /// still composing and no token has landed yet — the bare pre-stream wait. Picked
+    /// at random per question so the moment of thought reads with a little mood
+    /// instead of a fixed "Thinking…". Drawn from the Orange Moon imagery.
+    static let thinkingWords = [
+        "Gazing...", "Glowing...", "Drifting...", "Imagining...", "Whispering...",
+        "Hoping...", "Dreaming...", "Waiting...", "Wandering...", "Lingering...",
+        "Floating...", "Shimmering...", "Musing...", "Pondering...", "Yearning...",
+        "Reminiscing...", "Fading...", "Echoing...", "Searching...", "Wondering...",
+    ]
+
+    /// The current rotating thinking word. Re-rolled at the start of each answer and
+    /// every `thinkingWordInterval` while the wait is on screen, avoiding an immediate
+    /// repeat. This is the *mood word only* — it is NOT the thing the UI displays
+    /// directly. The UI reads `thinkingStatus`, which decides between this word and a
+    /// live tool-activity line so the two can never both show at once.
+    @Published private var thinkingWord: String = NotchModel.thinkingWords.randomElement() ?? "drifting"
+
+    /// A live tool-activity line ("Searching the web…", "Reading the results…") when a
+    /// tool is running, else nil. Set by the harness via `updateActivity`.
+    @Published private var thinkingActivity: String? = nil
+
+    /// Latched true the first time a tool runs this round. Before any tool, the wait is
+    /// the bare three dots (no word). Once the round has touched a tool, it stays in
+    /// "word mode" for the rest of the wait — the activity line while a tool runs, then
+    /// the rotating mood word through the compose gap. Reset at the start of each round.
+    @Published private var hasUsedToolThisRound = false
+
+    /// The single source of truth for the pre-stream status line beside the dots:
+    ///   • before any tool runs → empty (the wait is pure dots, no word);
+    ///   • while a tool runs     → the live activity line ("Searching the web…");
+    ///   • after a tool, no tool currently running → the rotating mood word.
+    /// One value, so a word and an activity line can never show at once.
+    var thinkingStatus: String {
+        if let thinkingActivity { return thinkingActivity }
+        return hasUsedToolThisRound ? thinkingWord : ""
+    }
+
+    /// The live tool-activity line on its own, exposed read-only so the streaming
+    /// turn can render it as an INDEPENDENT row (above the answer) rather than
+    /// folding it into the dots/answer cross-fade. Non-nil exactly while a tool is
+    /// running ("Searching the web…", "Reading the results…"); nil otherwise. Kept
+    /// separate from `thinkingStatus` because the activity line must stay visible
+    /// even after the model has emitted a leading-whitespace preface — sharing the
+    /// dots' `hasText` gate is what hid it mid-search.
+    var currentActivity: String? { thinkingActivity }
+
+    /// The rotating mood word on its own (no activity merged in), exposed read-only
+    /// so `StreamingTurnContent`'s dots row shows *only* the mood word — never the
+    /// activity label, which now lives in its own row.
+    var currentThinkingWord: String { thinkingWord }
+
+    /// Pick a fresh thinking word, avoiding an immediate repeat.
+    private func rerollThinkingWord() {
+        let pool = NotchModel.thinkingWords.filter { $0 != thinkingWord }
+        thinkingWord = pool.randomElement() ?? NotchModel.thinkingWords.randomElement() ?? thinkingWord
+    }
+
+    /// How long each mood word lingers before rotating to the next. Slow enough to
+    /// read as a settling mood, not a ticker.
+    private static let thinkingWordInterval: TimeInterval = 2.4
+
+    /// Slowly rotates the mood word while the pre-stream wait is on screen, so a long
+    /// search/compose round (10s+ across several tool rounds) breathes instead of
+    /// freezing on one word. Scheduled in `.common` mode so it keeps firing during the
+    /// panel's animations/tracking. Started when `.load` begins, stopped the moment the
+    /// first token lands or the round ends.
+    private var thinkingWordTimer: Timer? = nil
+
+    func startThinkingWordRotation() {
+        thinkingWordTimer?.invalidate()
+        thinkingActivity = nil
+        // Each round starts in pure-dots mode; only a tool flips it into word mode.
+        hasUsedToolThisRound = false
+        rerollThinkingWord()
+        let t = Timer(timeInterval: NotchModel.thinkingWordInterval, repeats: true) { [weak self] _ in
+            self?.rerollThinkingWord()
+        }
+        t.tolerance = 0.4
+        RunLoop.main.add(t, forMode: .common)
+        thinkingWordTimer = t
+    }
+
+    func stopThinkingWordRotation() {
+        thinkingWordTimer?.invalidate()
+        thinkingWordTimer = nil
+        thinkingActivity = nil
+        hasUsedToolThisRound = false
+    }
+
+    /// Funnel the harness's activity label into the single `thinkingStatus` value. A
+    /// non-nil label means a tool is running — which also latches the round into "word
+    /// mode" so that after the tool clears, the wait shows the mood word (not back to
+    /// bare dots). `nil` clears the live line, falling back to the mood word.
+    func setThinkingActivity(_ label: String?) {
+        if label != nil { hasUsedToolThisRound = true }
+        thinkingActivity = label
+    }
+
     /// The recurrence suffix shown live in the Remind hint *before* Enter (" \u{00B7} Daily"
     /// / " \u{00B7} Weekly \u{00B7} Mon" / " \u{00B7} Monthly"), so the user sees the recurrence
     /// was parsed while they can still correct it — anticipatory, not retrospective. Reads
@@ -1619,6 +1718,9 @@ final class NotchModel: ObservableObject {
             system = notchSystemPrompt + ReplyTokens.enrichedMarker
         }
 
+        // Fresh thinking word for this answer's pre-stream wait, rotating slowly
+        // while we wait so a long search/compose round doesn't freeze on one word.
+        startThinkingWordRotation()
         mode = .load
 
         // The task owns a value-type snapshot of the thread it's answering, plus
@@ -1656,6 +1758,9 @@ final class NotchModel: ObservableObject {
                         thread[i].text = acc
                     }
                     if self.isOnScreen(answerID: answerID) {
+                        // First real token ends the pre-stream wait: freeze the
+                        // rotating thinking word (the dots/word fade out now anyway).
+                        self.stopThinkingWordRotation()
                         // First chunk: flip to the result view so the answer appears
                         // to grow in place out of the thinking state.
                         if self.mode == .load { self.mode = .result }
@@ -1710,6 +1815,7 @@ final class NotchModel: ObservableObject {
                     }
                 }
                 if Task.isCancelled { return }
+                self.stopThinkingWordRotation()
                 if let i = thread.firstIndex(where: { $0.id == answerID }) {
                     thread[i].streaming = false
                 }
@@ -1719,6 +1825,7 @@ final class NotchModel: ObservableObject {
                 // superseded by a newer round on the same screen; nothing to persist
             } catch {
                 if Task.isCancelled { return }
+                self.stopThinkingWordRotation()
                 let partial = acc.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !partial.isEmpty {
                     // A mid-stream drop *after* the first chunk: we already have a real
@@ -2029,15 +2136,15 @@ final class NotchModel: ObservableObject {
     private func markFinished(id: UUID) {
         guard let i = turns.firstIndex(where: { $0.id == id }) else { return }
         turns[i].streaming = false
-        turns[i].toolActivity = nil
+        setThinkingActivity(nil)
     }
 
-    /// Set or clear the transient agent tool-activity label on the streaming
-    /// assistant turn (e.g. "🔍 Searching the web…"); `nil` clears it. Runtime-only;
-    /// never persisted.
+    /// Funnel the harness's transient tool-activity label (e.g. "Searching the web…")
+    /// into the single `thinkingStatus` value so it *replaces* the rotating mood word
+    /// rather than rendering as a second, parallel line. `nil` falls back to the word.
     private func updateActivity(id: UUID, label: String?) {
-        guard let i = turns.firstIndex(where: { $0.id == id }) else { return }
-        turns[i].toolActivity = label
+        guard isOnScreen(answerID: id) else { return }
+        setThinkingActivity(label)
     }
 
     /// Append a search round's sources to the on-screen assistant turn (deduped by

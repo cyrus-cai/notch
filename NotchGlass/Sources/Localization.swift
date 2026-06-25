@@ -319,8 +319,8 @@ enum Strings {
         "agent.activity.composing": "Reading the results…",
         "agent.activity.clipboard": "Reading the clipboard…",
         "agent.activity.time": "Checking the time…",
-        "agent.activity.open": "Opening…",
         "agent.activity.working": "Working…",
+        "agent.activity.thinking": "Thinking…",
 
         // Source badge (under a search-grounded answer)
         "source.badge.help": "Sources — hover to expand, then open a page",
@@ -499,8 +499,8 @@ enum Strings {
         "agent.activity.composing": "正在整理搜索结果…",
         "agent.activity.clipboard": "正在读取剪贴板…",
         "agent.activity.time": "正在查看时间…",
-        "agent.activity.open": "正在打开…",
         "agent.activity.working": "处理中…",
+        "agent.activity.thinking": "思考中…",
 
         "source.badge.help": "来源——悬停展开，再打开原网页",
         "source.badge.fallback": "来源",
@@ -678,8 +678,8 @@ enum Strings {
         "agent.activity.composing": "正在整理搜尋結果…",
         "agent.activity.clipboard": "正在讀取剪貼簿…",
         "agent.activity.time": "正在查看時間…",
-        "agent.activity.open": "正在開啟…",
         "agent.activity.working": "處理中…",
+        "agent.activity.thinking": "思考中…",
 
         "source.badge.help": "來源——懸停展開，再打開原網頁",
         "source.badge.fallback": "來源",

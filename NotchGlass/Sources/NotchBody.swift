@@ -15,8 +15,15 @@ struct NotchBody: View {
     /// the panel key; a tiny delay lets that settle first).
     @State private var focused = false
     /// Natural (intrinsic) height of the answer text, reported by a preference
-    /// reader. Drives the scroll area's height so short answers stay short.
-    @State private var measuredAnswerHeight: CGFloat = 120
+    /// reader. Used ONLY to decide whether the thread has outgrown `answerMaxHeight`
+    /// and must switch to the clipped+scrolling layout — it does NOT drive the
+    /// height of the un-clipped layout. (It used to: the scroll frame tracked this
+    /// measured value, and since the measurement lags the content by a layout pass,
+    /// every streamed line nudged the frame a beat late and the spring on it
+    /// overshot — the per-line "jump". Now a short answer just sizes to its own
+    /// content with no measure→frame feedback loop, so it grows smoothly in the same
+    /// frame the text lands.)
+    @State private var measuredAnswerHeight: CGFloat = 0
     /// Phase (0→1) of the light that sweeps *across the confirmation text* after a
     /// copy. The follow-up field's placeholder momentarily becomes "Copied to
     /// clipboard", and a soft highlight glides over those glyphs once — the shimmer
@@ -863,9 +870,14 @@ struct NotchBody: View {
             // content below. Roughly the rhythm the old Divider held (its 9pt
             // top/bottom pad plus the hairline) so the spacing reads the same.
             Spacer().frame(height: 18)
-            ThinkingDots()
-                .padding(.vertical, 5)
-                .padding(.horizontal, 2)
+            // Text-only wait line — no animated dots. Before any tool runs the status
+            // is empty, so fall back to "Thinking…" rather than leaving the line blank.
+            Group {
+                let label = model.thinkingStatus.isEmpty ? L("agent.activity.thinking") : model.thinkingStatus
+                CrossfadeText(text: label, font: 15, color: Tokens.text2)
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 2)
         }
     }
 
@@ -1045,7 +1057,77 @@ struct NotchBody: View {
     /// as a follow-up streams in. The bottom fade is the "more below" cue.
     private var conversationScroll: some View {
         let clipped = measuredAnswerHeight > answerMaxHeight
-        return ScrollViewReader { proxy in
+        return Group {
+            if clipped {
+                clippedConversation
+            } else {
+                growingConversation
+            }
+        }
+        // Measure the thread's INTRINSIC height — what it wants to be with no ceiling
+        // — to drive ONLY the `clipped` switch above. This can't read the visible
+        // layout's height: the clipped layout is pinned to `answerMaxHeight` (300), so
+        // measuring it would report 300, which isn't > 300, and `clipped` would
+        // flip-flop on the boundary. Instead a hidden, unconstrained copy of the same
+        // turn stack reports its natural height. It's laid out but never drawn
+        // (`.hidden()`), and overlaid at zero size so it never affects this view's
+        // layout. The measurement lagging the content by a pass is harmless now — it
+        // feeds a boolean threshold, not a frame height, so it can't jump.
+        .background(alignment: .top) {
+            // The hidden copy reports its NATURAL height via the GeometryReader in its
+            // background. The copy is given the same width as the real thread (matched
+            // through the enclosing layout) but left vertically unconstrained, so the
+            // reader sees the intrinsic content height. `.hidden()` keeps it invisible;
+            // it sits in a `.background` collapsed to this view's own frame, so however
+            // tall the probe wants to be it can't push this view taller — a background
+            // takes the primary content's size, overflow just isn't drawn.
+            growingConversation
+                // Take the thread's full intrinsic height regardless of the height
+                // this background slot proposes (300 when the visible layout is the
+                // clipped scroller) — otherwise the probe would cap at 300 and the
+                // `clipped` switch couldn't tell 300 from 1000, so it'd flip-flop on
+                // the boundary. `fixedSize(vertical:)` makes it report its true height.
+                .fixedSize(horizontal: false, vertical: true)
+                .hidden()
+                .allowsHitTesting(false)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: AnswerHeightKey.self, value: geo.size.height)
+                    }
+                )
+        }
+        .onPreferenceChange(AnswerHeightKey.self) { measuredAnswerHeight = $0 }
+        // The ONE place a height change is animated: the cross-over between the two
+        // layouts (a short answer growing past the 300pt ceiling into the clipped
+        // scroller). Critically damped (1.0) so it settles without the overshoot that
+        // produced the per-line bounce; short so it stays tight. Within a single
+        // layout there's no `.frame(height:)` to animate, so day-to-day streaming
+        // growth carries no animation here at all — it just reflows.
+        .animation(.spring(response: 0.3, dampingFraction: 1.0), value: clipped)
+    }
+
+    /// Short-answer layout: the thread sizes to its own content, NO ScrollView, NO
+    /// fixed frame height. New lines extend the stack in the same layout pass they
+    /// land — the height *is* the content height, so there's nothing lagging behind
+    /// to jump. This is the common case (most answers fit under `answerMaxHeight`).
+    private var growingConversation: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(model.turns) { turn in
+                turnView(turn)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(turn.id)
+            }
+        }
+        .padding(.trailing, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Long-answer layout: once the thread outgrows `answerMaxHeight` it pins to that
+    /// ceiling and scrolls, with both edges fading and the tail following the stream.
+    /// Only mounted when `clipped`, so a short answer never pays for the ScrollView or
+    /// the measure→frame coupling that drove the jump.
+    private var clippedConversation: some View {
+        ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     ForEach(model.turns) { turn in
@@ -1059,33 +1141,13 @@ struct NotchBody: View {
                     Color.clear.frame(height: 2).id(scrollBottomID)
                 }
                 .padding(.trailing, 8)
-                // Top/bottom breathing room INSIDE the scroll content — but ONLY when
-                // the thread actually overflows and the fade bands are showing, so the
-                // first/last lines have room to dissolve into them. For a short answer
-                // that fits (no fade), this padding must be ZERO: it's measured into
-                // `measuredAnswerHeight` below, which drives the scroll's frame height,
-                // so an unconditional 2×edgeFade (60pt) would inflate the frame past
-                // the real content and leave a dead band under short answers. Gating it
-                // on `clipped` keeps the resting result view exactly as tall as its text.
-                .padding(.top, clipped ? edgeFade : 0)
-                .padding(.bottom, clipped ? edgeFade : 0)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(
-                            key: AnswerHeightKey.self, value: geo.size.height
-                        )
-                    }
-                )
+                // Breathing room so the first/last lines dissolve into the edge fades
+                // rather than ending on a hard cut.
+                .padding(.top, edgeFade)
+                .padding(.bottom, edgeFade)
             }
-            .frame(height: min(measuredAnswerHeight, answerMaxHeight))
+            .frame(height: answerMaxHeight)
             .scrollIndicators(.never)
-            .onPreferenceChange(AnswerHeightKey.self) { newHeight in
-                measuredAnswerHeight = newHeight
-                // The content just relaid out (a turn appended, or the answer grew).
-                // Re-pin the bottom in the SAME pass, with no animation, so the
-                // submit's height jump can't leave the scroll stranded at the top.
-                proxy.scrollTo(scrollBottomID, anchor: .bottom)
-            }
             // Submitting a follow-up appends two turns and flips mode
             // result→load→result, which rebuilds the ScrollView and resets its
             // offset to the top. Snap straight back to the bottom (no animation) so
@@ -1101,13 +1163,14 @@ struct NotchBody: View {
                     proxy.scrollTo(scrollBottomID, anchor: .bottom)
                 }
             }
+            // Entering the clipped layout (just crossed the ceiling) lands at the top
+            // by default; pin to the bottom so the newest text stays in view.
+            .onAppear { proxy.scrollTo(scrollBottomID, anchor: .bottom) }
         }
-        // The shared soft fade at both edges, but only once the thread overflows —
-        // a short conversation that fits stays crisp top-to-bottom. The scroll
-        // content carries matching top/bottom padding (`edgeFade`) so the taper
-        // falls across breathing room, not over live text.
-        .scrollEdgeFade(top: clipped, bottom: clipped, fade: edgeFade)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: measuredAnswerHeight)
+        // The shared soft fade at both edges — the scroll content carries matching
+        // top/bottom padding (`edgeFade`) so the taper falls across breathing room,
+        // not over live text.
+        .scrollEdgeFade(top: true, bottom: true, fade: edgeFade)
     }
 
     /// Height of the taper at each scroll edge, in points. Generous on purpose so
@@ -1153,6 +1216,10 @@ struct NotchBody: View {
                         .foregroundStyle(Tokens.text2)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        // The question itself is selectable too — drag to highlight and
+                        // copy it, same as the answer below. (It's a settled user turn,
+                        // never streaming, so there's no tail-follow scroll to fight.)
+                        .textSelection(.enabled)
                 }
             }
         } else if turn.streaming {
@@ -1163,27 +1230,27 @@ struct NotchBody: View {
             // scroll (onChange → scrollTo(.bottom)) would collapse an in-progress
             // drag-selection. The settled branch below re-enables it the instant
             // the stream finishes.
-            VStack(alignment: .leading, spacing: 6) {
-                // Agent tool activity: while the harness runs a tool ("Searching the
-                // web…"), a quiet one-line cue sits above the answer so the wait
-                // reads as the assistant doing work, not as a stall. No icon — just
-                // the words. The harness holds it on screen a minimum time
-                // (`minActivityVisible`) so a fast tool can't flicker; the
-                // `.animation(value:)` here fades it through a full appear → settle
-                // → disappear cycle rather than hard-cutting.
-                if let activity = turn.toolActivity {
-                    Text(activity)
-                        .font(.sf(12))
-                        .tracking(0.1)
-                        .foregroundStyle(Tokens.text3)
-                        .transition(.opacity)
+            // Two mutually-exclusive states, never folded into one `hasText` gate
+            // (that's what blanked the screen mid-search — a leading "\n" looked like
+            // an answer and hid the activity line). While a tool runs, ONLY the
+            // activity row shows ("Searching the web…"), independent of whatever
+            // preface text has landed; the answer view isn't mounted, so a lone "\n"
+            // can't render as a blank block. The instant the tool clears, the activity
+            // row goes and `StreamingTurnContent` takes over — dots+mood-word until the
+            // real answer's first token, then the answer streaming in.
+            VStack(alignment: .leading, spacing: 4) {
+                if let activity = model.currentActivity {
+                    CrossfadeText(text: activity, font: 15, color: Tokens.text2)
+                } else {
+                    StreamingTurnContent(text: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() }, thinkingWord: model.currentThinkingWord)
+                        // No inset here: the settled branch renders `MarkdownBlocks` with
+                        // none, so any padding on the streaming copy would vanish on the
+                        // streaming→settled swap and shift the whole answer by that much
+                        // (the 2pt up-left jump at completion). Keep both paths flush.
+                        .textSelection(.disabled)
                 }
-                StreamingTurnContent(text: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
-                    .padding(.vertical, 2)
-                    .padding(.horizontal, 2)
-                    .textSelection(.disabled)
             }
-            .animation(.easeInOut(duration: 0.25), value: turn.toolActivity)
+            .animation(.easeInOut(duration: 0.12), value: model.currentActivity != nil)
         } else {
             // A settled answer carries its own quiet "file this in Notes" button
             // directly beneath it — one per answer, so a long thread can save any

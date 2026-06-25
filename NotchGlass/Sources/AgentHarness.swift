@@ -393,7 +393,6 @@ struct AgentHarness {
                 return L(isRepeatRound ? "agent.activity.refining" : "agent.activity.search")
             case "read_clipboard": return L("agent.activity.clipboard")
             case "current_datetime": return L("agent.activity.time")
-            case "open_url": return L("agent.activity.open")
             default: break
             }
         }
