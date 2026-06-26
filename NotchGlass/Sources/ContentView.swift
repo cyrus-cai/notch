@@ -43,9 +43,36 @@ struct ContentView: View {
                 // (or being opened) when the user returns from a switch, so the
                 // identity change never interrupts a visible animation.
                 .id(loc.language)
+
+            // The thinking dots — a small standalone trio that sits in the menu-bar
+            // row just LEFT of the physical notch while the AI is in its pre-stream
+            // wait. It's intentionally OUTSIDE the island (its own free-floating view)
+            // and shows ONLY while the panel is collapsed: when the panel is open it
+            // already carries its own thinking state, so a second trio outside would be
+            // redundant. So the dots are the *folded-away* affordance — the cursor left
+            // mid-think, the panel retracted, and these tell you it's still working.
+            // Cleared the moment the answer starts streaming or the round ends.
+            if model.thinking, !model.isOpen(on: metrics.displayID) {
+                NotchThinkingDots()
+                    // Top-center is the notch's anchor. Shift the pill so its RIGHT
+                    // edge sits `gap` clear of the notch's left edge (hence the extra
+                    // half-pill-width in the offset), and drop it into the menu-bar row.
+                    .offset(x: -(Tokens.notchWidth / 2 + NotchThinkingDots.gap
+                                 + NotchThinkingDots.width / 2),
+                            y: (metrics.restHeight - NotchThinkingDots.height) / 2)
+                    // Appears with a soft fade; leaves by flying into the notch.
+                    .transition(.thinkingDots)
+                    .allowsHitTesting(false)
+            }
         }
         .frame(width: metrics.canvasWidth, alignment: .top)
         .ignoresSafeArea()
+        // Round start/end drives the fly-into-notch exit — a snappy spring so the
+        // tuck reads as one quick, intentional motion (not a slow drift). Panel
+        // fold/expand keeps the gentle in-place fade (the dots and the panel are
+        // handing off, not animating "into" anything).
+        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: model.thinking)
+        .animation(.easeInOut(duration: 0.2), value: model.isOpen(on: metrics.displayID))
         .background(KeyEventCatcher { event in
             // ⌘↵ opens (or toggles shut) the What's New release-notes panel — the
             // keyboard path that matches the input-row cue. keyCode 36 is Return.
@@ -73,6 +100,19 @@ struct ContentView: View {
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                     if !model.showHistory { model.showHistory = true }
                     model.showHistoryFilter = true
+                }
+                return true
+            }
+            // ⌘N starts a fresh conversation from anywhere in a thread — the
+            // keyboard twin of the ← back chevron, but it fires even mid-typing
+            // a follow-up (the ⌘ modifier means it never collides with caret
+            // movement or text entry, so unlike bare ← it needn't gate on an
+            // empty field). No-op on the idle prompt — already a fresh chat.
+            // keyCode 45 is N.
+            if event.keyCode == 45, event.modifierFlags.contains(.command),
+               model.mode != .idle {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                    model.newChat()
                 }
                 return true
             }
@@ -468,5 +508,90 @@ struct KeyEventCatcher: NSViewRepresentable {
             }
         }
         deinit { if let m = monitor { NSEvent.removeMonitor(m) } }
+    }
+}
+
+/// The standalone thinking dots shown beside the physical notch during the AI's
+/// pre-stream wait. Unlike the in-panel `ThinkingDots`, this trio floats free over
+/// the menu bar / wallpaper — so it rides its own little pill of genuine Liquid
+/// Glass (`glassCapsule`), with BLACK dots on top. The glass refracts the wallpaper
+/// behind it and carries the same specular rim as the island, so the dots read on a
+/// light wallpaper as well as a dark one. Its `width`/`height`/`gap` are exposed so
+/// the canvas can place it precisely just to the left of the notch.
+struct NotchThinkingDots: View {
+    /// Layout constants the canvas reads to position the trio left of the notch.
+    static let dotSize: CGFloat = 5
+    static let spacing: CGFloat = 5
+    static let padH: CGFloat = 9          // glass pill horizontal padding
+    static let padV: CGFloat = 5          // glass pill vertical padding
+    static let gap: CGFloat = 12          // true edge-to-edge breathing room from the notch
+    /// Full pill size (dots + padding) — the canvas offsets against these so the
+    /// pill lands flush in the menu-bar row, the stated `gap` clear of the notch.
+    static let width: CGFloat = dotSize * 3 + spacing * 2 + padH * 2
+    static let height: CGFloat = dotSize + padV * 2
+
+    @State private var phase = false
+
+    var body: some View {
+        HStack(spacing: Self.spacing) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(.black)
+                    .frame(width: Self.dotSize, height: Self.dotSize)
+                    .scaleEffect(phase ? 1.0 : 0.7)
+                    .opacity(phase ? 0.9 : 0.35)
+                    .animation(
+                        .easeInOut(duration: 0.62)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(i) * 0.16),
+                        value: phase
+                    )
+            }
+        }
+        .padding(.horizontal, Self.padH)
+        .padding(.vertical, Self.padV)
+        // Genuine Liquid Glass pill (same material family as the island chips), so
+        // the black dots sit on refracting glass rather than bare wallpaper. `brighter`
+        // gives the fill a touch more lift so the black dots keep contrast even when the
+        // glass is floating over a dark wallpaper.
+        .glassCapsule(in: Capsule(), brighter: true)
+        .onAppear { phase = true }
+    }
+}
+
+/// The pill's exit when the round ends: it slides RIGHT toward the notch while
+/// shrinking and fading, as if drawn back into the bezel — far nicer than a flat
+/// fade. The pill sits to the LEFT of the notch, so a positive x-offset travels it
+/// inward; the scale anchors on the trailing (notch-side) edge so it collapses
+/// toward the notch, not toward its own centre.
+private struct FlyIntoNotchEffect: ViewModifier, Animatable {
+    /// 0 at rest, 1 fully flown in (gone). The travel distance is keyed to the pill
+    /// width so it visually clears its resting slot and tucks under the notch edge.
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(1 - 0.6 * progress, anchor: .trailing)
+            .offset(x: (NotchThinkingDots.width + NotchThinkingDots.gap) * progress)
+            .opacity(Double(1 - progress))
+    }
+}
+
+extension AnyTransition {
+    /// Asymmetric: appears with a gentle in-place fade (the panel just folded and
+    /// handed off to the dots), and leaves by flying into the notch (the round
+    /// finished). Removal rides a slightly snappy ease so it reads as one quick,
+    /// intentional tuck rather than a slow drift.
+    static var thinkingDots: AnyTransition {
+        .asymmetric(
+            insertion: .opacity,
+            removal: .modifier(
+                active: FlyIntoNotchEffect(progress: 1),
+                identity: FlyIntoNotchEffect(progress: 0)
+            )
+        )
     }
 }

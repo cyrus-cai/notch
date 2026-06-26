@@ -45,6 +45,32 @@ struct InlineSettingsView: View {
     /// is informational only, since the env override wins over what's typed.
     private var envOverride: Bool { APIKeyStore.hasEnvOverride(for: provider) }
 
+    /// Exa search key state — a separate, provider-agnostic key (Exa is a search
+    /// backend, not an LLM provider). When set, it replaces every model's built-in
+    /// web search. Mirrors the provider key's edit/mask/saved lifecycle, minus the
+    /// Test button and live-model coupling (there's nothing to test a search key
+    /// against here, and it doesn't gate a model list).
+    @State private var exaKey: String = APIKeyStore.storedExaKey()
+    @State private var editingExaKey: Bool =
+        APIKeyStore.storedExaKey().isEmpty && !APIKeyStore.hasExaEnvOverride()
+    @State private var exaSaved = false
+    /// True while `EXA_API_KEY` forces the Exa key — field is then informational.
+    private var exaEnvOverride: Bool { APIKeyStore.hasExaEnvOverride() }
+
+    private var canSaveExa: Bool {
+        guard !exaEnvOverride else { return false }
+        return editingExaKey
+            && exaKey != APIKeyStore.storedExaKey()
+    }
+
+    /// The stored Exa key rendered safe for display (same head/tail masking as the
+    /// provider key).
+    private var maskedExaKey: String {
+        let key = APIKeyStore.currentExaKey() ?? APIKeyStore.storedExaKey()
+        guard key.count > 12 else { return String(repeating: "•", count: max(key.count, 8)) }
+        return "\(key.prefix(4))••••••••\(key.suffix(4))"
+    }
+
     /// OpenRouter normally connects via the one-click OAuth row; this flips to the
     /// standard paste field for users who'd rather supply a key by hand.
     @State private var manualKeyEntry = false
@@ -79,6 +105,7 @@ struct InlineSettingsView: View {
     /// setting gets a home without redesigning the panel.
     enum Section: String, CaseIterable, Identifiable {
         case model = "Model"             // provider, API key, model override
+        case search = "Search"           // optional Exa web-search key
         case translation = "Translation" // preferred target language for Translate
         case general = "General"         // app-level toggles (display placement, Dock icon)
         case about = "About"             // version + self-update
@@ -89,6 +116,7 @@ struct InlineSettingsView: View {
         var title: String {
             switch self {
             case .model:       return L("sidebar.model")
+            case .search:      return L("sidebar.search")
             case .translation: return L("sidebar.translation")
             case .general:     return L("sidebar.general")
             case .about:       return L("sidebar.about")
@@ -162,6 +190,8 @@ struct InlineSettingsView: View {
                         }
                         modelRow
                         footer
+                    case .search:
+                        exaKeyRow
                     case .translation:
                         translationLanguageRow
                     case .general:
@@ -444,6 +474,103 @@ struct InlineSettingsView: View {
         }
     }
 
+    /// The Exa search-key row — same grid and edit/mask lifecycle as `keyRow`, but
+    /// for the provider-agnostic search backend. No Test button (nothing model-side
+    /// to probe) and a one-line hint below explaining the override + where to get a
+    /// key. Hidden field stays masked once saved, like the provider key.
+    private var exaKeyRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Text(L("model.exaApiKey"))
+                    .font(.sf(13, weight: .medium))
+                    .foregroundStyle(Tokens.text2)
+                    .lineLimit(1)
+                    .frame(width: 76, alignment: .leading)
+
+                ZStack(alignment: .leading) {
+                    if editingExaKey {
+                        if exaKey.isEmpty {
+                            Text(L("model.exaPasteKey"))
+                                .font(.sf(13))
+                                .foregroundStyle(Tokens.text2)
+                                .allowsHitTesting(false)
+                        }
+                        TextField("", text: $exaKey)
+                            .textFieldStyle(.plain)
+                            .font(.sf(13))
+                            .foregroundStyle(Tokens.text1)
+                            .disabled(exaEnvOverride)
+                            .onSubmit { saveExaKey() }
+                    } else {
+                        Text(maskedExaKey)
+                            .font(.sf(13))
+                            .foregroundStyle(Tokens.text2)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.white.opacity(editingExaKey ? 0.06 : 0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(.white.opacity(editingExaKey ? 0.12 : 0.07), lineWidth: 0.5)
+                )
+                .opacity(exaEnvOverride ? 0.5 : 1)
+
+                if editingExaKey {
+                    // Cancel only when there's a stored key to fall back to.
+                    if !APIKeyStore.storedExaKey().isEmpty {
+                        Button(L("model.cancel")) { stopEditingExaKey() }
+                            .buttonStyle(.plain)
+                            .font(.sf(11, weight: .semibold))
+                            .foregroundStyle(Tokens.text2)
+                    }
+                } else if !exaEnvOverride {
+                    Button(L("model.change")) { editingExaKey = true }
+                        .buttonStyle(.plain)
+                        .font(.sf(11, weight: .semibold))
+                        .foregroundStyle(Tokens.text1)
+                }
+                if editingExaKey || canSaveExa || exaSaved {
+                    Button(exaSaved ? L("model.saved") : L("model.save")) { saveExaKey() }
+                        .buttonStyle(.plain)
+                        .font(.sf(11, weight: .semibold))
+                        .foregroundStyle(exaSaved ? Tokens.text2 : (canSaveExa ? Tokens.text1 : Tokens.text4))
+                        .disabled(!canSaveExa && !exaSaved)
+                        .animation(.easeOut(duration: 0.2), value: exaSaved)
+                }
+            }
+
+            // Hint hangs under the control column (matching the test-verdict indent).
+            Group {
+                if exaEnvOverride {
+                    Text(L("model.footer.env", "EXA_API_KEY"))
+                } else {
+                    Text(exaHintText)
+                }
+            }
+            .font(.sf(11))
+            .foregroundStyle(Tokens.text4)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, 88)
+        }
+    }
+
+    /// The Exa hint with `exa.ai` as a clickable link, built as one `AttributedString`
+    /// so the sentence stays a single `Text` while only the host opens the signup page.
+    private var exaHintText: AttributedString {
+        var text = AttributedString(L("model.exaHint"))
+        var host = AttributedString(L("model.exaHint.host"))
+        host.link = URL(string: "https://exa.ai")
+        host.foregroundColor = Tokens.text2
+        text.append(host)
+        return text
+    }
+
     /// The connectivity-test result, shown as a restrained inline pill rather than
     /// the old harsh filled-circle-plus-red-text. A small status dot (the only
     /// saturated mark), the verdict in a softened status color, sitting on a faint
@@ -632,6 +759,28 @@ struct InlineSettingsView: View {
         apiKey = APIKeyStore.stored(for: provider)
         testResult = nil
         withAnimation(.easeOut(duration: 0.16)) { editingKey = false }
+    }
+
+    /// Persist the Exa key (or clear it when blank), then tell the backend so the
+    /// next turn rebuilds its tool registry — turning Exa search on/off live. Flips
+    /// the button to "Saved" for a beat, then settles back into the masked summary.
+    private func saveExaKey() {
+        APIKeyStore.saveExaKey(exaKey)
+        // Reflect what's actually stored (a trimmed/cleared value) back into state.
+        exaKey = APIKeyStore.storedExaKey()
+        NotificationCenter.default.post(name: .aiBackendChanged, object: nil)
+        withAnimation(.easeOut(duration: 0.16)) { editingExaKey = false }
+        withAnimation(.easeOut(duration: 0.2)) { exaSaved = true }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            await MainActor.run { withAnimation(.easeOut(duration: 0.2)) { exaSaved = false } }
+        }
+    }
+
+    /// Abandon the Exa edit and fall back to the stored key's masked summary.
+    private func stopEditingExaKey() {
+        exaKey = APIKeyStore.storedExaKey()
+        withAnimation(.easeOut(duration: 0.16)) { editingExaKey = false }
     }
 
     /// What the model chip shows: the saved id, or the resolved default when the

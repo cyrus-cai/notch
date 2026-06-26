@@ -1244,16 +1244,22 @@ struct InlineMarkdownText: View {
 
 /// One parsed block of an answer. We intentionally support only the block kinds
 /// an in-notch assistant actually produces — headings, lists, fenced code blocks,
-/// and horizontal rules — plus plain paragraphs. Everything else (quotes, tables)
-/// falls through to a paragraph, so unknown syntax still reads cleanly rather
-/// than breaking. Inline `**bold**` / `*italic*` / `code` is handled per-line by
-/// `InlineMarkdownText`; code blocks render verbatim without inline parsing.
+/// GFM tables, and horizontal rules — plus plain paragraphs. Everything else
+/// (quotes, etc.) falls through to a paragraph, so unknown syntax still reads
+/// cleanly rather than breaking. Inline `**bold**` / `*italic*` / `code` is
+/// handled per-line by `InlineMarkdownText`; code blocks render verbatim without
+/// inline parsing.
 enum MarkdownBlock {
     case heading(level: Int, text: String)
     case bullet(text: String)
     case ordered(number: Int, text: String)
     case paragraph(text: String)
     case code(language: String?, text: String)
+    /// A GitHub-flavoured pipe table. `header` is the first row; `rows` are the
+    /// body rows below the `|---|` separator. Every row is normalised to
+    /// `header.count` cells (short rows padded, long rows truncated) so the grid
+    /// is always rectangular. Cell text keeps its inline markdown.
+    case table(header: [String], rows: [[String]])
     case divider
 }
 
@@ -1292,6 +1298,34 @@ enum MarkdownParser {
 
             if line.isEmpty {
                 i += 1
+                continue
+            }
+
+            // GFM pipe table: the current line plus a following `|---|:--:|`
+            // separator. Detect it before the divider/heading checks so a header
+            // row isn't mistaken for a paragraph and the `---` separator isn't
+            // mistaken for a horizontal rule. Consumes the header, the separator,
+            // and every contiguous body row.
+            if i + 1 < lines.count,
+               isTableSeparator(lines[i + 1].trimmingCharacters(in: .whitespaces)),
+               line.contains("|") {
+                let header = tableCells(line)
+                var rows: [[String]] = []
+                i += 2   // skip the header (handled) and the separator line
+                while i < lines.count {
+                    let bodyRaw = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard !bodyRaw.isEmpty, bodyRaw.contains("|") else { break }
+                    // Normalise each body row to the header's column count.
+                    var cells = tableCells(bodyRaw)
+                    if cells.count < header.count {
+                        cells.append(contentsOf: Array(repeating: "", count: header.count - cells.count))
+                    } else if cells.count > header.count {
+                        cells = Array(cells.prefix(header.count))
+                    }
+                    rows.append(cells)
+                    i += 1
+                }
+                blocks.append(.table(header: header, rows: rows))
                 continue
             }
 
@@ -1354,6 +1388,47 @@ enum MarkdownParser {
             return String(line.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
         }
         return nil
+    }
+
+    /// A GFM table separator row: `|---|---|`, `| :--- | ---: |`, `--- | ---`,
+    /// etc. Every cell must be made of only `-`, `:`, and spaces, with at least
+    /// one `-`, and there must be at least one cell. Used to confirm the line
+    /// *above* is a table header before we commit to table parsing.
+    private static func isTableSeparator(_ line: String) -> Bool {
+        guard line.contains("-") else { return false }
+        let cells = tableCells(line)
+        guard !cells.isEmpty else { return false }
+        return cells.allSatisfy { cell in
+            !cell.isEmpty && cell.allSatisfy { $0 == "-" || $0 == ":" } && cell.contains("-")
+        }
+    }
+
+    /// Split a pipe-table row into trimmed cell strings. Tolerates an optional
+    /// leading/trailing `|` (so both `| a | b |` and `a | b` work) and ignores a
+    /// pipe escaped as `\|` inside a cell.
+    private static func tableCells(_ line: String) -> [String] {
+        var trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("|") { trimmed.removeFirst() }
+        if trimmed.hasSuffix("|") { trimmed.removeLast() }
+
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        for ch in trimmed {
+            if escaped {
+                current.append(ch)
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else if ch == "|" {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(ch)
+            }
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
     }
 
     /// `1. item` / `2) item` → (number, text).
@@ -1461,6 +1536,11 @@ struct StreamingMarkdown: View {
             return t.count
         case .code(_, let t):
             return t.count
+        case .table(let header, let rows):
+            // Grow as cells stream in: keys on total rendered character count so a
+            // table still building its last row re-fades only as it changes.
+            return header.reduce(0) { $0 + $1.count }
+                + rows.reduce(0) { $0 + $1.reduce(0) { $0 + $1.count } }
         case .divider:
             return -1
         }
@@ -1520,6 +1600,9 @@ struct MarkdownBlockRow: View {
         case .code(_, let text):
             CodeBlockView(text: text, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
 
+        case .table(let header, let rows):
+            MarkdownTableView(header: header, rows: rows, baseFont: baseFont, color: color)
+
         case .divider:
             Rectangle()
                 .fill(Tokens.hairline)
@@ -1545,6 +1628,68 @@ struct MarkdownBlockRow: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+/// A GFM pipe table rendered as a `Grid`: the header row reads slightly bolder
+/// and dimmer (a column label), a hairline rules off the header, and body rows
+/// align in shared columns so cells line up no matter how the text wraps. Each
+/// cell keeps its inline markdown (`**bold**`, `code`, …) via `InlineMarkdownText`.
+/// The whole island is boxed by a faint hairline so it reads as one unit on the
+/// glass rather than four loose columns of text.
+private struct MarkdownTableView: View {
+    let header: [String]
+    let rows: [[String]]
+    let baseFont: CGFloat
+    let color: Color
+
+    private var columnCount: Int { header.count }
+
+    var body: some View {
+        Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 0) {
+            GridRow {
+                ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
+                    cellText(cell, weight: .semibold, opacity: 0.85)
+                }
+            }
+            .padding(.vertical, 6)
+
+            Divider().overlay(Tokens.hairline).gridCellColumns(max(columnCount, 1))
+
+            ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                GridRow {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                        cellText(cell, weight: .regular, opacity: 1)
+                    }
+                }
+                .padding(.vertical, 6)
+
+                if index < rows.count - 1 {
+                    Divider().overlay(Tokens.hairline.opacity(0.6))
+                        .gridCellColumns(max(columnCount, 1))
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 2)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Tokens.hairline, lineWidth: 0.5)
+        )
+    }
+
+    private func cellText(_ raw: String, weight: Font.Weight, opacity: Double) -> some View {
+        InlineMarkdownText(raw)
+            .font(.sf(baseFont - 1, weight: weight))
+            .tracking(-0.05)
+            .foregroundStyle(color.opacity(opacity))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
     }
 }
 
@@ -1705,41 +1850,82 @@ struct SourceBadge: View {
     /// "tmtpost + 3" — the first source's short site name, plus a count of the
     /// rest. A single source just shows its site, no "+".
     private var pillLabel: String {
-        let lead = sources.first?.site ?? L("source.badge.fallback")
+        let lead = (sources.first?.site).map(\.siteCapitalized) ?? L("source.badge.fallback")
         let extra = sources.count - 1
         return extra > 0 ? "\(lead) + \(extra)" : lead
     }
 }
 
-/// The floating source list — a self-contained dark card with a hairline border
-/// and soft shadow so it reads as a layer above the answer, not part of it.
-/// Rendered by an ancestor overlay (escaping the scroll clip) and positioned over
-/// the badge by the caller. `keepOpen`/`dismiss` let it hold the badge open while
-/// the cursor is over its rows.
+extension String {
+    /// Fully uppercase a site label ("sina" → "SINA", "marketwatch" →
+    /// "MARKETWATCH"). Numeric/mixed names like "21jingji" keep their digits and
+    /// just upper their letters ("21JINGJI").
+    var siteCapitalized: String { uppercased() }
+}
+
+/// The floating source list — a self-contained card backed by the **same Liquid
+/// Glass** the island uses (`nativeGlass`: genuine `.glassEffect(.clear)` on
+/// macOS 26+, blurred fallback below) so the wallpaper refracts through it and the
+/// panel reads as a piece of the same glass surface floated out, not a flat opaque
+/// block. A soft dark veil under the glass keeps the source rows legible over any
+/// wallpaper, and a specular hairline rim + soft shadow seat it as a layer above
+/// the answer. Rendered by an ancestor overlay (escaping the scroll clip) and
+/// positioned over the badge by the caller. `keepOpen`/`dismiss` let it hold the
+/// badge open while the cursor is over its rows.
 struct SourcePopoverPanel: View {
     let sources: [WebSource]
     let keepOpen: () -> Void
     let dismiss: () -> Void
 
+    // Show at most this many rows; the rest scroll. ~18pt per row (11pt line +
+    // 2pt padding top/bottom) plus the 7pt inter-row gap.
+    private static let visibleRows = 8
+    private static let rowHeight: CGFloat = 18
+    private static let rowSpacing: CGFloat = 7
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(sources) { source in
-                SourceRow(source: source)
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        // Cap the visible height at `visibleRows` rows; shorter lists size down to
+        // their own content (no empty space, no scroll). Computing the height
+        // explicitly — rather than letting `.fixedSize` measure it — lets the
+        // ScrollView scroll the overflow once there are more rows than fit.
+        let shownRows = CGFloat(min(sources.count, Self.visibleRows))
+        let visibleHeight = max(0, shownRows * Self.rowHeight + (shownRows - 1) * Self.rowSpacing)
+        let scrolls = sources.count > Self.visibleRows
+        ScrollView(.vertical, showsIndicators: scrolls) {
+            VStack(alignment: .leading, spacing: Self.rowSpacing) {
+                ForEach(sources) { source in
+                    SourceRow(source: source)
+                }
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(height: visibleHeight)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         // A fixed width gives the rows a definite bound to truncate long titles
         // against (instead of stretching the popup to the longest line).
-        .frame(width: 320, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(Color.black.opacity(0.92))
-        )
+        .frame(width: 380, alignment: .leading)
+        .background {
+            // Real Liquid Glass: the high-transparency `.clear` material refracts
+            // the wallpaper through the whole card; a soft dark veil over it keeps
+            // the rows readable against bright backgrounds (the same recipe the
+            // quick-tools popover uses — glass over a legibility veil).
+            shape.fill(.clear).nativeGlass(in: shape)
+                .overlay(shape.fill(Color.black.opacity(0.55)))
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(Tokens.hairline, lineWidth: 0.5)
+            // Specular hairline rim — a top-bright → bottom-faint edge, the
+            // signature glass bevel, instead of a flat uniform outline.
+            shape.strokeBorder(
+                LinearGradient(
+                    colors: [.white.opacity(0.22), .white.opacity(0.06)],
+                    startPoint: .top, endPoint: .bottom
+                ),
+                lineWidth: 0.75
+            )
         )
+        .clipShape(shape)
         .shadow(color: .black.opacity(0.5), radius: 18, y: 6)
         // Hovering the panel keeps the badge open; leaving it dismisses — so the
         // round-trip pill → row works, and moving away closes.
@@ -1757,8 +1943,8 @@ private struct SourceRow: View {
         Button {
             if let url = URL(string: source.url) { NSWorkspace.shared.open(url) }
         } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(source.site)
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Text(source.site.siteCapitalized)
                     .font(.sf(11, weight: .semibold))
                     .foregroundStyle(Tokens.text3)
                     .lineLimit(1)
@@ -1768,17 +1954,36 @@ private struct SourceRow: View {
                     .foregroundStyle(hovering ? Tokens.text2 : Tokens.text4)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                if let date = source.date {
-                    Text(date)
+                if let date = source.date, let day = Self.dayOnly(date) {
+                    Text(day)
                         .font(.sf(10))
                         .foregroundStyle(Tokens.text4)
                         .fixedSize()
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+
+    /// Show just the calendar day, not a full timestamp. Providers report dates
+    /// inconsistently — some send a clean "2026-06-23", others a full ISO instant
+    /// like "2026-06-20T10:26:35.000Z". Take the leading "YYYY-MM-DD" when the
+    /// string is ISO-shaped; otherwise pass it through unchanged (a non-ISO label
+    /// like "Jun 2026" stays as-is). Returns nil for empty input so the row hides
+    /// the date entirely.
+    static func dayOnly(_ raw: String) -> String? {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return nil }
+        // ISO-shaped: the date is the part before any "T" (or space) separator.
+        let datePart = s.prefix { $0 != "T" && $0 != " " }
+        // Only trust the truncation when it really is a YYYY-MM-DD prefix; for any
+        // other shape, show the original string untouched.
+        let isISODay = datePart.count == 10
+            && datePart.allSatisfy { $0.isNumber || $0 == "-" }
+        return isISODay ? String(datePart) : s
     }
 }

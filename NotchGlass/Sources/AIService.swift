@@ -56,18 +56,54 @@ extension AIService {
     func complete(prompt: String) async throws -> String {
         var out = ""
         let messages = [ChatMessage(role: "user", content: prompt)]
-        for try await chunk in stream(system: notchSystemPrompt, messages: messages) { out += chunk }
+        for try await chunk in stream(system: notchSystemPromptDated(), messages: messages) { out += chunk }
         return out
     }
 }
 
 /// The system prompt the prototype used for its in-notch assistant. Kept here so
 /// a real implementation can reuse the exact persona.
+///
+/// The web-search clause matters: the persona is otherwise "concise, under 90
+/// words", which on its own nudges the model to answer in one shot from memory
+/// and skip the extra round a tool call costs. That's exactly wrong for anything
+/// time-sensitive — the model's training data is stale and today is later than
+/// its cutoff. So the persona explicitly makes "search first" the default for
+/// changeable facts, and licenses the extra round / a few more words to do it,
+/// instead of leaving the decision to the tool description alone.
 let notchSystemPrompt = """
 You are a helpful assistant living in the notch of a Mac. Answer the user's \
 question concisely and warmly in the user's language. Keep it under 90 words, \
 no markdown headers.
+
+You can search the web and read the current date. When the answer turns on \
+information that can change over time — news, current events, prices or rates, \
+rankings, "latest"/"newest", which version is current, who currently holds a \
+role, whether something has shipped, anything dated this year — search first \
+and answer from the results, citing the source's date. Do not answer such \
+questions from memory: your training data is stale and today is later than your \
+cutoff. When unsure whether something may have changed, search. A search is \
+worth the extra round and a few more words — don't skip it just to stay short.
 """
+
+/// The persona with the current local date inlined as the first line, so the
+/// model knows up front that "now" is later than its training cutoff and treats
+/// its memory as potentially stale — turning the bare `current_datetime` tool
+/// (which the model has to *think* to call) into an unconditional fact it always
+/// has. The single-shot `complete` path and the agent path both build the prompt
+/// through here. Rendered in the user's interface language to match the answer,
+/// mirroring `DateTimeTool`'s locale handling.
+func notchSystemPromptDated() -> String {
+    let fmt = DateFormatter()
+    fmt.dateStyle = .full
+    fmt.timeStyle = .none
+    switch Localization.shared.language.resolved {
+    case .en:     fmt.locale = Foundation.Locale(identifier: "en_US")
+    case .zhHans: fmt.locale = Foundation.Locale(identifier: "zh_Hans")
+    case .zhHant: fmt.locale = Foundation.Locale(identifier: "zh_Hant")
+    }
+    return "Today is \(fmt.string(from: Date())).\n\n" + notchSystemPrompt
+}
 
 /// System prompt for summarizing a conversation into a short recent-list title.
 /// The title is derived from the *actual* exchange (not the user's first message),
@@ -969,10 +1005,14 @@ extension OpenAICompatAIService: AgentCapableService {
                     // back by the harness; `.chatModelSwap` (OpenAI) swaps the model
                     // and adds a parameter. Resolve the effective model + any extra
                     // search tool/body up front, then build the request once.
+                    // When the user has configured Exa, it replaces every
+                    // provider's native search (it rides as a client-side tool in
+                    // `tools` instead — see `ToolRegistry.standard(for:)`), so the
+                    // vendor's own server search stands down.
                     var effectiveModel = model
                     var searchTool: [String: Any]? = nil
                     var bodyExtras: [String: Any] = [:]
-                    switch provider.serverSearch {
+                    switch (APIKeyStore.exaActive ? nil : provider.serverSearch) {
                     case .tool(let t):
                         searchTool = t
                     case .builtin(let t, let extras):
@@ -1155,8 +1195,12 @@ extension AnthropicAIService: AgentCapableService {
                     // in the Anthropic Console; if not, the API returns a
                     // `web_search_tool_result_error` block and the model answers
                     // without it.
+                    // Exa, when configured, replaces native search for every
+                    // provider (it rides as a client-side tool instead), so
+                    // Anthropic's server-side web_search stands down too.
                     var wireTools = Self.wireTools(tools)
-                    if case .tool(let searchTool)? = provider.serverSearch {
+                    if !APIKeyStore.exaActive,
+                       case .tool(let searchTool)? = provider.serverSearch {
                         wireTools.append(searchTool)
                     }
                     var body: [String: Any] = [

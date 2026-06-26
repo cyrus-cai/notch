@@ -59,6 +59,17 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
+            version: "1.1.3",
+            date: "2026-06-27",
+            features: [
+                "Set your own Exa search key in Settings → Search to power web search for every model.",
+                "Thinking dots now stay lit beside the notch even after the panel folds away mid-answer.",
+            ],
+            fixes: [
+                "A question now shows in Recent right away with an \"Answering…\" marker.",
+            ]
+        ),
+        Entry(
             version: "1.1.2",
             date: "2026-06-25",
             features: [

@@ -95,6 +95,53 @@ enum APIKeyStore {
         UserDefaults.standard.set(trimmed, forKey: defaultsKey(for: provider))
     }
 
+    // MARK: - Auxiliary (non-provider) service keys
+
+    // Exa is a *search backend*, not an LLM provider, so its key lives outside the
+    // per-`Provider` namespace above. When present it replaces every provider's
+    // native web search with Exa (see `ToolRegistry.standard(for:)` and the
+    // server-search gate in `streamTurn`) — one good searcher for all backends.
+    private static let exaDefaultsKey = "aux_key.exa"
+    private static let exaEnvVar = "EXA_API_KEY"
+
+    /// The effective Exa key right now: `EXA_API_KEY` env var → stored entry.
+    /// `nil` when neither is set (then no provider uses Exa).
+    static func currentExaKey() -> String? {
+        if let env = ProcessInfo.processInfo.environment[exaEnvVar],
+           !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return env
+        }
+        let stored = storedExaKey()
+        return stored.isEmpty ? nil : stored
+    }
+
+    /// The Exa key the user saved in Settings (ignores the env override), so the
+    /// field shows what's actually stored.
+    static func storedExaKey() -> String {
+        UserDefaults.standard.string(forKey: exaDefaultsKey) ?? ""
+    }
+
+    /// True when `EXA_API_KEY` is forcing a key — then the Settings field is
+    /// informational only, since the env override wins.
+    static func hasExaEnvOverride() -> Bool {
+        let env = ProcessInfo.processInfo.environment[exaEnvVar]
+        return env?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    /// Whether Exa search is active (a key is available from env or Settings).
+    /// Gates the per-provider native search off in favor of Exa for everyone.
+    static var exaActive: Bool { currentExaKey() != nil }
+
+    /// Save (or clear, when empty) the user's Exa key in `UserDefaults`.
+    static func saveExaKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: exaDefaultsKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: exaDefaultsKey)
+        }
+    }
+
     // MARK: - Optional per-provider model override
 
     /// The model id the user typed in Settings for `provider` (empty when none),

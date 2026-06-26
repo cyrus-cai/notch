@@ -379,7 +379,7 @@ struct AgentHarness {
     /// `web_search` to avoid colliding with GLM's builtin); `$web_search` is Kimi's
     /// builtin echo.
     private static func isSearchTool(_ name: String) -> Bool {
-        name == "lookup_web" || name == "$web_search"
+        name == "lookup_web" || name == "$web_search" || name == "exa_search"
     }
 
     /// A short, human-readable progress label for the running calls, e.g.
@@ -389,7 +389,7 @@ struct AgentHarness {
     private func activityLabel(for calls: [ToolInvocation], isRepeatRound: Bool) -> String {
         if let first = calls.first, calls.count == 1 {
             switch first.name {
-            case "lookup_web", "$web_search":
+            case "lookup_web", "$web_search", "exa_search":
                 return L(isRepeatRound ? "agent.activity.refining" : "agent.activity.search")
             case "read_clipboard": return L("agent.activity.clipboard")
             case "current_datetime": return L("agent.activity.time")

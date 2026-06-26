@@ -397,17 +397,24 @@ struct NotchBody: View {
     /// The copied-clip preview shown above the prompt when there's eligible
     /// clipboard content — context for the input below, so the user can see what a
     /// referential query ("summarize this") will fold in. Rendered as a *quote*: a
-    /// thin vertical accent bar leads the copied text, so it reads as the lifted,
-    /// referenced material rather than a status line. The one-tap action chips that
-    /// act on this clip live *below* the input, in `clipboardPresetChips`.
+    /// leading curly quotation mark precedes the copied text, so it reads as the
+    /// lifted, referenced material rather than a status line. The one-tap action
+    /// chips that act on this clip live *below* the input, in `clipboardPresetChips`.
     private func clipboardPreviewLine(_ clip: String) -> some View {
         let preview = clip.count > 40 ? String(clip.prefix(40)) + "…" : clip
-        return HStack(spacing: 8) {
-            // The quote's accent bar: a thin rounded rule that runs the height of the
-            // copied line, the visual cue that what follows is quoted material.
+        return HStack(alignment: .center, spacing: 8) {
+            // The quote's accent bar — a hair-thin rounded rule with a soft
+            // top-to-bottom fade, the classic blockquote cue that what follows is
+            // lifted, quoted material.
             Capsule()
-                .fill(Tokens.text4)
-                .frame(width: 2)
+                .fill(
+                    LinearGradient(
+                        colors: [Tokens.text3.opacity(0.55), Tokens.text4.opacity(0.25)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: 1.5)
             Text(preview)
                 .font(.sf(11))
                 .tracking(0.2)
@@ -754,7 +761,12 @@ struct NotchBody: View {
                             // "opens elsewhere" glyph the footer uses) so the row
                             // reads as a live jump into Notes/Reminders, not a dead
                             // label — tapping it lands on that exact note/reminder.
-                            if item.source == .ask {
+                            if item.pending {
+                                // Still answering: the question is already in the list,
+                                // and this small three-dot wave sits where the timestamp
+                                // will land once the answer settles in place.
+                                RecentPendingDots()
+                            } else if item.source == .ask {
                                 Text(relativeTime(item.t))
                                     .font(.sf(11).monospacedDigit())
                                     .tracking(0.2)
@@ -971,7 +983,10 @@ struct NotchBody: View {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: work)
                         }
                     )
-                    .fixedSize()
+                    // Horizontal fixed (the panel sets its own 380pt width); leave
+                    // vertical flexible so the panel's own maxHeight cap applies and
+                    // overflowing rows scroll instead of growing the card.
+                    .fixedSize(horizontal: true, vertical: false)
                     // Anchor the panel's BOTTOM-leading just above the badge's top,
                     // so it pops up over the answer. `.bottomLeading` alignment +
                     // an offset of (badge.minX, badge.minY) positions the panel's
@@ -1706,6 +1721,32 @@ struct HistoryRowStyle: ButtonStyle {
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.16), value: selected)
             .animation(.easeOut(duration: 0.16), value: hovering)
+    }
+}
+
+/// A compact three-dot wave for a Recent row whose answer is still streaming —
+/// the same calm cadence as `ThinkingDots`, sized down to sit in the trailing
+/// slot where the timestamp lands once the answer settles. Sits in the row at
+/// `.firstTextBaseline`, so the dots align with the title rather than floating.
+struct RecentPendingDots: View {
+    @State private var phase = false
+    var body: some View {
+        HStack(spacing: 3.5) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle()
+                    .fill(Tokens.text4)
+                    .frame(width: 3.5, height: 3.5)
+                    .opacity(phase ? 0.9 : 0.25)
+                    .animation(
+                        .easeInOut(duration: 0.62)
+                            .repeatForever(autoreverses: true)
+                            .delay(Double(i) * 0.16),
+                        value: phase
+                    )
+            }
+        }
+        .onAppear { phase = true }
+        .accessibilityLabel(L("recent.answering"))
     }
 }
 

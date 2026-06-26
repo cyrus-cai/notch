@@ -147,6 +147,15 @@ final class NotchModel: ObservableObject {
         /// still opens the app, never dead-ends.
         var link: String? = nil
 
+        /// Transient: true while the first answer for this thread is still
+        /// streaming. Set when the question is submitted so the row appears in
+        /// Recent immediately (showing the question, with a three-dot placeholder
+        /// where the timestamp goes), cleared once the answer lands (`persistThread`)
+        /// or the round fails with nothing to keep (`settlePending`). Never encoded
+        /// (absent from `CodingKeys`) — a reloaded item is always settled, so a row
+        /// can't come back from disk stuck mid-answer.
+        var pending: Bool = false
+
         /// The turns to restore on reopen: the saved thread when present, else a
         /// two-turn thread rebuilt from the legacy `q`/`a` fields. A note/reminder
         /// capture has no conversation at all — never synthesize a ghost assistant
@@ -212,6 +221,20 @@ final class NotchModel: ObservableObject {
     /// where it means "any screen").
     @Published var activeDisplay: CGDirectDisplayID? = nil
     @Published var mode: Mode = .idle
+
+    /// True while the AI is in its pre-stream *thinking* phase — from the moment a
+    /// question is submitted until the first answer token lands (or the round ends).
+    /// Drives the 3 thinking dots shown beside the physical notch. Deliberately
+    /// SEPARATE from `mode`/`open`: if the cursor leaves mid-think the panel folds
+    /// back to the resting notch, but the round keeps running detached — the dots
+    /// must stay lit beside the collapsed notch until that round produces text or
+    /// finishes, so this can't be gated on the panel being open.
+    @Published var thinking = false
+    /// The answer turn whose pre-stream wait `thinking` is currently tracking. Lets
+    /// the first-token / finish handlers clear `thinking` only for the round that
+    /// actually owns it, so a superseded round can't switch the dots off under a
+    /// newer one.
+    private var thinkingAnswerID: UUID? = nil
 
     /// The cursor's velocity at the instant the island opened — SwiftUI
     /// orientation (+x right, +y down), points/second. Hover-opens pass the
@@ -948,7 +971,12 @@ final class NotchModel: ObservableObject {
         // the open panel has nothing to fold — and must never close the island
         // that's actually in use on another display.
         if let display, let active = activeDisplay, display != active { return }
-        if mode == .load || mode == .result { return }
+        // A finished/streaming answer (`.result`) stays open as before. But during the
+        // pre-stream *thinking* wait (`.load`, nothing readable on screen yet), letting
+        // the cursor leave folds the panel back to the resting notch — the round keeps
+        // running detached and the thinking dots stay lit beside the notch until it
+        // produces text or finishes. So `.load` falls through to `beginClose` below.
+        if mode == .result { return }
         if hasText { return }
         // Mid-confirmation of a destructive clear — don't fold the panel out from
         // under the dialog if the cursor slips off the island.
@@ -1690,7 +1718,7 @@ final class NotchModel: ObservableObject {
         // visible `turns` and the saved snapshot still hold the raw `q`). Only the
         // wire copy in `context` carries the clipboard. Skipped on follow-ups: a
         // mid-conversation clipboard change is almost never "about" the new turn.
-        var system = notchSystemPrompt
+        var system = notchSystemPromptDated()
         // A forced (chip-driven) turn falls back to `pendingClipboard` — the exact text
         // the chip previewed — if a re-read comes back stale (e.g. an in-app copy bumped
         // the baseline between render and tap), so the chip always acts on what it showed.
@@ -1715,12 +1743,16 @@ final class NotchModel: ObservableObject {
             // client raises the wire `max_tokens` to match (XII-91) — at the default
             // ceiling a long clip + question + 200-word answer was truncated. Single
             // source for the marker string lives in `ReplyTokens`.
-            system = notchSystemPrompt + ReplyTokens.enrichedMarker
+            system = notchSystemPromptDated() + ReplyTokens.enrichedMarker
         }
 
         // Fresh thinking word for this answer's pre-stream wait, rotating slowly
         // while we wait so a long search/compose round doesn't freeze on one word.
         startThinkingWordRotation()
+        // Light the thinking dots for this round (cleared on the first token or when
+        // the round ends) — they ride beside the notch even if the panel folds away.
+        thinking = true
+        thinkingAnswerID = answerID
         mode = .load
 
         // The task owns a value-type snapshot of the thread it's answering, plus
@@ -1732,6 +1764,15 @@ final class NotchModel: ObservableObject {
         // nothing at all) can never leak into this thread's history row.
         let threadID = threadHistoryID
         let seedThread = turns
+
+        // A first question parks a placeholder row in Recent right now, so leaving
+        // the conversation mid-answer (collapse / newChat / close) shows the
+        // question with a three-dot "answering…" marker instead of an empty list
+        // that only fills in once the answer finishes. Follow-ups stream into the
+        // row their first turn already created. The same-id row is replaced in
+        // place by `persistThread` on completion, or removed by `settlePending` if
+        // the round yields nothing.
+        if firstTurn { parkPending(threadID: threadID, question: q) }
 
         // Cancelling here only ever supersedes within the SAME on-screen round (a
         // follow-up sent while the previous answer streams): detached tasks have
@@ -1757,6 +1798,10 @@ final class NotchModel: ObservableObject {
                     if let i = thread.firstIndex(where: { $0.id == answerID }) {
                         thread[i].text = acc
                     }
+                    // First real text for this round ends the thinking phase — clear the
+                    // dots even if the panel folded away (the round is detached but still
+                    // ours). Idempotent: only the round that owns the flag clears it.
+                    self.endThinking(for: answerID)
                     if self.isOnScreen(answerID: answerID) {
                         // First real token ends the pre-stream wait: freeze the
                         // rotating thinking word (the dots/word fade out now anyway).
@@ -1816,6 +1861,7 @@ final class NotchModel: ObservableObject {
                 }
                 if Task.isCancelled { return }
                 self.stopThinkingWordRotation()
+                self.endThinking(for: answerID)
                 if let i = thread.firstIndex(where: { $0.id == answerID }) {
                     thread[i].streaming = false
                 }
@@ -1826,6 +1872,7 @@ final class NotchModel: ObservableObject {
             } catch {
                 if Task.isCancelled { return }
                 self.stopThinkingWordRotation()
+                self.endThinking(for: answerID)
                 let partial = acc.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !partial.isEmpty {
                     // A mid-stream drop *after* the first chunk: we already have a real
@@ -1848,23 +1895,28 @@ final class NotchModel: ObservableObject {
                         self.markFinished(id: answerID)
                         self.mode = .result
                     }
-                } else if self.isOnScreen(answerID: answerID) {
+                } else {
                     // Failed before any text arrived (refused connection, bad key): no
-                    // partial round worth saving. Surface the REAL reason (XII-85) —
-                    // `ServiceError` already localizes to e.g. "Anthropic · HTTP 401" —
-                    // and raise an actionable error state (retry, or open Settings when
-                    // no key is set) instead of a dead generic line. A detached pre-text
-                    // failure is simply dropped.
-                    let reason = error.localizedDescription
-                    self.updateAnswer(id: answerID, text: reason)
-                    self.markFinished(id: answerID)
-                    self.askError = AskError(message: reason, needsSetup: !self.isConfigured)
-                    self.mode = .result
-                    // Metadata-only breadcrumb (no prompt/answer/key) — see DiagnosticsLog.
-                    DiagnosticsLog.shared.record(
-                        provider: APIKeyStore.selectedProvider.displayName,
-                        status: Self.httpStatus(from: error),
-                        error: error)
+                    // partial round worth saving. Drop the pending placeholder this
+                    // round parked in Recent so the question doesn't linger stuck on
+                    // the three dots — whether or not it's still on screen.
+                    self.settlePending(threadID)
+                    if self.isOnScreen(answerID: answerID) {
+                        // Surface the REAL reason (XII-85) — `ServiceError` already
+                        // localizes to e.g. "Anthropic · HTTP 401" — and raise an
+                        // actionable error state (retry, or open Settings when no key
+                        // is set) instead of a dead generic line.
+                        let reason = error.localizedDescription
+                        self.updateAnswer(id: answerID, text: reason)
+                        self.markFinished(id: answerID)
+                        self.askError = AskError(message: reason, needsSetup: !self.isConfigured)
+                        self.mode = .result
+                        // Metadata-only breadcrumb (no prompt/answer/key) — see DiagnosticsLog.
+                        DiagnosticsLog.shared.record(
+                            provider: APIKeyStore.selectedProvider.displayName,
+                            status: Self.httpStatus(from: error),
+                            error: error)
+                    }
                 }
             }
         }
@@ -2130,6 +2182,17 @@ final class NotchModel: ObservableObject {
         turns[i].text = text
     }
 
+    /// End the thinking-dots phase for `id` — but only if `id` is the round that
+    /// currently owns the flag, so a superseded round finishing can't switch the dots
+    /// off under a newer one. Called on the first token and at every round terminus
+    /// (success, cancel, error), so the dots clear exactly when this round stops
+    /// thinking, whether or not its panel is still on screen.
+    private func endThinking(for id: UUID) {
+        guard thinkingAnswerID == id else { return }
+        thinking = false
+        thinkingAnswerID = nil
+    }
+
     /// Clear the `streaming` flag on the assistant turn (its caret/typing cue can
     /// stop) without otherwise touching it. Also clears any lingering tool-activity
     /// line so a finished turn never shows "searching…".
@@ -2166,6 +2229,36 @@ final class NotchModel: ObservableObject {
         return out
     }
 
+    /// Park a placeholder row for a brand-new thread the instant its question is
+    /// submitted, so Recent shows the question (with a three-dot "answering…"
+    /// marker) immediately instead of staying blank until the answer lands. Only
+    /// the FIRST turn parks one — a follow-up streams into an already-present row.
+    /// `persistThread` later replaces this same-id row in place with the finished
+    /// item; `settlePending` removes it if the round produces nothing.
+    private func parkPending(threadID: UUID, question: String) {
+        // Already have a row for this thread (shouldn't happen on a first turn, but
+        // be safe): just flag it pending rather than inserting a duplicate.
+        if let i = history.firstIndex(where: { $0.id == threadID }) {
+            history[i].pending = true
+            return
+        }
+        var item = HistoryItem(id: threadID, q: question, a: "", t: Date())
+        item.pending = true
+        history.insert(item, at: 0)
+        history = Array(history.prefix(50))
+        // Not saved to disk — a pending row carries no answer and must never
+        // survive a relaunch. `persistThread` is what writes the settled row.
+    }
+
+    /// Drop a still-pending placeholder for a thread that ended with nothing to
+    /// keep (pre-text failure / cancellation). A row that already settled into a
+    /// real answer is left untouched — only an unfinished placeholder is removed.
+    private func settlePending(_ threadID: UUID) {
+        guard let i = history.firstIndex(where: { $0.id == threadID }), history[i].pending
+        else { return }
+        history.remove(at: i)
+    }
+
     /// Called once a stream completes: persist the task's snapshot of the thread
     /// to history (one recent item per thread, updated in place as it grows).
     /// Runs whether or not the thread is still on screen — a round detached by
@@ -2177,7 +2270,10 @@ final class NotchModel: ObservableObject {
     /// it restores every turn.
     private func persistThread(_ thread: [Turn], threadID: UUID, answer ans: String) {
         let trimmed = ans.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        // Nothing worth keeping (a stream that errored before any text): drop the
+        // pending placeholder that `submit` parked here, so the question doesn't
+        // linger in Recent stuck on the three dots forever.
+        guard !trimmed.isEmpty else { settlePending(threadID); return }
 
         let firstQ = thread.first(where: { $0.role == "user" })?.text ?? ""
         // One history entry per conversation: if this thread already has a row
@@ -2293,6 +2389,13 @@ final class NotchModel: ObservableObject {
     // MARK: - History
 
     func openHistory(_ item: HistoryItem) {
+        // Still answering: this row is a placeholder (no turns, empty answer) whose
+        // live stream runs detached — there's nothing to reopen yet, and rebuilding
+        // a two-turn thread here would show a stuck-empty assistant bubble cut off
+        // from the stream. Leave the list as-is; the row settles into a normal,
+        // tappable item the moment the answer lands.
+        guard !item.pending else { return }
+
         showHistory = false
         highlightedHistoryIndex = nil
 

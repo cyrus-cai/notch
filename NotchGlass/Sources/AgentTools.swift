@@ -217,6 +217,132 @@ struct GLMWebSearchTool: SourcedTool {
     }
 }
 
+/// Provider-agnostic web search via **Exa** (`https://api.exa.ai/search`). Unlike
+/// `GLMWebSearchTool` (which reuses the GLM provider's key and only exists because
+/// GLM's in-chat search silently no-ops), Exa is a standalone search backend with
+/// its own key (`APIKeyStore.currentExaKey()` / `EXA_API_KEY`). When that key is
+/// present this tool is registered for *every* provider and the providers' own
+/// native server-side search is suppressed — Exa becomes the single searcher for
+/// all backends (the point: a better, fresher, cheaper replacement than each
+/// vendor's built-in search). Like the GLM tool it is a `SourcedTool`: one call
+/// yields both the model-facing grounded text and the `[WebSource]` badge data.
+///
+/// Request shape follows Exa's coding-agent guide: `type:"auto"` (balanced
+/// relevance/speed), `numResults`, and `contents:{highlights:true}` for
+/// token-efficient, query-relevant excerpts. Response: `results[]` each carrying
+/// `title`, `url`, `publishedDate`, and a `highlights` string array (with `text`
+/// as a fallback when a result has no highlights).
+struct ExaWebSearchTool: SourcedTool {
+    let name = "exa_search"
+    let description = """
+    Searches the web for current, real-time information and returns the top \
+    results with sources and dates. Call this whenever the answer depends on \
+    information that may have changed or is past your knowledge cutoff — news, \
+    current events, today's prices or rates, the latest version of something, or \
+    anything time-sensitive. Prefer a focused query. If the results don't contain \
+    the answer, say so rather than guessing.
+    """
+    let schema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "query": ["type": "string", "description": "The search query."]
+        ],
+        "required": ["query"],
+    ]
+
+    private static let endpoint = URL(string: "https://api.exa.ai/search")!
+    private static let timeout: TimeInterval = 15
+    private static let maxResults = 6
+
+    func execute(_ input: [String: Any]) async throws -> String {
+        try await runSourced(input).text
+    }
+
+    func runSourced(_ input: [String: Any]) async throws -> (text: String, sources: [WebSource]) {
+        guard let query = (input["query"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else {
+            return ("Error: empty search query.", [])
+        }
+        guard let key = APIKeyStore.currentExaKey() else {
+            return ("Error: no Exa API key configured, can't search.", [])
+        }
+
+        var req = URLRequest(url: Self.endpoint)
+        req.httpMethod = "POST"
+        req.timeoutInterval = Self.timeout
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Exa authenticates with an `x-api-key` header, not a Bearer token.
+        req.setValue(key, forHTTPHeaderField: "x-api-key")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "query": query,
+            "type": "auto",
+            "numResults": Self.maxResults,
+            "contents": ["highlights": true],
+        ])
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                return ("Search failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).", [])
+            }
+            return Self.parse(data, query: query)
+        } catch {
+            return ("Search failed: \(error.localizedDescription)", [])
+        }
+    }
+
+    /// Parse Exa's `{ results: [{title, url, publishedDate, highlights:[...],
+    /// text}] }` once into BOTH the model-facing text (a compact, dated, sourced
+    /// block it grounds on — with an explicit "no results" so it never invents an
+    /// answer) and the structured `[WebSource]` for the UI badge. The snippet is
+    /// the joined `highlights`, falling back to `text` when a result has none.
+    private static func parse(_ data: Data, query: String) -> (text: String, sources: [WebSource]) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = obj["results"] as? [[String: Any]], !results.isEmpty else {
+            let miss = "The search returned no results for \"\(query)\". Do not fabricate "
+                     + "an answer — tell the user the search found nothing on this."
+            return (miss, [])
+        }
+        let top = results.prefix(maxResults)
+        let blocks = top.enumerated().map { (i, r) -> String in
+            let title = (r["title"] as? String) ?? "(untitled)"
+            let date = (r["publishedDate"] as? String).flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+            let link = (r["url"] as? String).flatMap { $0.isEmpty ? nil : "\n   \($0)" } ?? ""
+            var snippet = snippetText(from: r)
+            if snippet.count > 500 { snippet = String(snippet.prefix(500)) + "…" }
+            return "[\(i + 1)] \(title)\(date)\n   \(snippet)\(link)"
+        }
+        let text = "Web search results for \"\(query)\":\n\n" + blocks.joined(separator: "\n\n")
+
+        var seen = Set<String>()
+        let sources: [WebSource] = top.compactMap { r in
+            guard let link = r["url"] as? String,
+                  let scheme = URL(string: link)?.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  !seen.contains(link) else { return nil }
+            seen.insert(link)
+            let title = (r["title"] as? String) ?? link
+            let date = (r["publishedDate"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return WebSource(title: title, url: link, date: date)
+        }
+        return (text, sources)
+    }
+
+    /// The result's query-relevant excerpt: the joined `highlights` array, or the
+    /// full `text` when highlights are absent (e.g. a result Exa couldn't excerpt).
+    private static func snippetText(from r: [String: Any]) -> String {
+        if let highlights = r["highlights"] as? [String] {
+            let joined = highlights
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " … ")
+            if !joined.isEmpty { return joined }
+        }
+        return (r["text"] as? String) ?? ""
+    }
+}
+
 // MARK: - Default registry
 
 extension ToolRegistry {
@@ -234,16 +360,29 @@ extension ToolRegistry {
     ///  • **Kimi** — its builtin search needs a client-side echo, so the
     ///    `$web_search` passthrough is added so the harness can echo the call back.
     /// (The defunct DuckDuckGo `WebSearchTool` was removed — see XII-116/XII-118.)
+    ///
+    /// **Exa override:** when the user has configured an Exa key
+    /// (`APIKeyStore.exaActive`), Exa replaces search for *every* provider — the
+    /// `ExaWebSearchTool` is registered here and each provider's own native search
+    /// is suppressed (the server-search gate in `streamTurn` and the GLM/Kimi
+    /// client tools below all defer to Exa). One fresher/cheaper searcher for all
+    /// backends, instead of each vendor's built-in.
     static func standard(for provider: Provider) -> ToolRegistry {
         var tools: [NotchTool] = [
             DateTimeTool(),
             ReadClipboardTool(),
         ]
-        if provider == .glm {
-            tools.append(GLMWebSearchTool())
-        }
-        if provider.builtinSearchName == "$web_search" {
-            tools.append(KimiWebSearchPassthrough())
+        if APIKeyStore.exaActive {
+            // Exa is the single searcher for all providers; the providers' own
+            // search (GLM client tool, Kimi echo, native server search) stands down.
+            tools.append(ExaWebSearchTool())
+        } else {
+            if provider == .glm {
+                tools.append(GLMWebSearchTool())
+            }
+            if provider.builtinSearchName == "$web_search" {
+                tools.append(KimiWebSearchPassthrough())
+            }
         }
         return ToolRegistry(tools)
     }
