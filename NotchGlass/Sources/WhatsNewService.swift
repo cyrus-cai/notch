@@ -17,13 +17,15 @@ final class WhatsNewService: ObservableObject {
     static let shared = WhatsNewService()
 
     /// One published release. `version` is the only required field; `date` is an
-    /// optional adornment. The notes are split into two sections the panel renders
-    /// under their own headings — `features` (what's new) and `fixes` (what got
-    /// fixed). Either can be empty; an empty section is omitted entirely.
+    /// optional adornment. The notes are split into three sections the panel renders
+    /// under their own headings — `features` (brand-new capabilities),
+    /// `improvements` (refinements to things that already existed), and `fixes`
+    /// (what got fixed). Any can be empty; an empty section is omitted entirely.
     struct Entry: Identifiable, Equatable {
         var version: String
         var date: String?
         var features: [String]
+        var improvements: [String]
         var fixes: [String]
 
         var id: String { version }
@@ -32,10 +34,12 @@ final class WhatsNewService: ObservableObject {
             version: String,
             date: String? = nil,
             features: [String] = [],
+            improvements: [String] = [],
             fixes: [String] = []
         ) {
             self.version = version; self.date = date
-            self.features = features; self.fixes = fixes
+            self.features = features; self.improvements = improvements
+            self.fixes = fixes
         }
     }
 
@@ -51,13 +55,22 @@ final class WhatsNewService: ObservableObject {
 
     /// The release notes, written straight into the app. **Edit here each release.**
     ///
-    /// Each release has two sections — `features` (what's new) and `fixes` (what
-    /// got fixed). Write for the user, not the code: say what changed for *them*
-    /// and why it's nice, in plain language. Skip internal/refactor churn they'd
-    /// never notice. Leave a section empty (omit it) if there's nothing for it.
+    /// Each release has three sections — `features` (brand-new capabilities),
+    /// `improvements` (refinements to existing behaviour), and `fixes` (what got
+    /// fixed). Write for the user, not the code: say what changed for *them* and
+    /// why it's nice, in plain language. Skip internal/refactor churn they'd never
+    /// notice. Leave a section empty (omit it) if there's nothing for it.
     /// English-only by design. Order doesn't matter — `sorted` puts the newest
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
+        Entry(
+            version: "1.1.4",
+            date: "2026-06-27",
+            improvements: [
+                "Recent's settings and Clear controls now sit in a fixed bar at the bottom-left.",
+                "Faster to open a long history.",
+            ]
+        ),
         Entry(
             version: "1.1.3",
             date: "2026-06-27",

@@ -130,6 +130,18 @@ struct NotchBody: View {
             // the next open's baseline→real jump would animate (and stall) again.
             if !isShowing { didMeasureImmersiveHeader = false }
         }
+        // When the answer grows past `answerMaxHeight` and the clipped layout mounts,
+        // followUpRow moves from a VStack sibling to a ZStack child in a new structural
+        // position — SwiftUI recreates the NSTextField underneath, and the `focused`
+        // Bool has no false→true edge to re-grab first-responder. refocusInput() drops
+        // then re-raises `focused` next runloop, so the follow-up caret survives the
+        // crossover without a click. Only the false→true edge of `isAnswerClipped`
+        // matters (the moment the answer first crosses the ceiling this session).
+        .onChange(of: isAnswerClipped) { _, nowClipped in
+            if nowClipped, model.open {
+                refocusInput()
+            }
+        }
         .onAppear {
             if model.open {
                 refocusInput()
@@ -919,7 +931,41 @@ struct NotchBody: View {
 
     /// The tallest the answer area is ever allowed to grow. Short answers size to
     /// their own content (below this); only long ones clip + scroll at the ceiling.
+    /// This value is ALSO the threshold that flips `isAnswerClipped` — do NOT change
+    /// it to match the clipped frame height; those are intentionally different.
     private let answerMaxHeight: CGFloat = 300
+
+    /// Fixed frame height for `clippedConversation` when the follow-up input floats
+    /// over its bottom. = answerMaxHeight (300) + the .padding(.top, 24) gap that
+    /// today separates the scroll from the follow-up row (24) + followUpRow's own
+    /// rendered height (27pt content + 6+6 vertical padding = 39pt) = 363pt.
+    /// Absorbing those 63pt into the scroll frame keeps `resultView`'s total height
+    /// identical to today — the panel never resizes at the short↔long crossover,
+    /// which also keeps the source-popup y-offset formula (`rect.minY - geo.size.height`)
+    /// correct without needing to account for the shift.
+    private let clippedAnswerMaxHeight: CGFloat = 363
+
+    /// Bottom runway inside `clippedConversation`: empty scroll space the last turn
+    /// scrolls DOWN into, behind the floating follow-up input. = followUpRow box
+    /// height (39pt) + dissolve headroom above the box top (41pt) = 80pt. It lives
+    /// ABOVE the `scrollBottomID` anchor in the VStack (not in `.padding(.bottom)`),
+    /// so `scrollTo(anchor:.bottom)` pins the anchor's bottom to the viewport bottom
+    /// while the last real turn rests ~82pt above it — 31pt above the input's top
+    /// edge, entirely within the dissolve zone.
+    private let clippedBottomRunway: CGFloat = 80
+
+    /// Height of the bottom blur band — kept 4pt SHORTER than the runway so the band
+    /// tapers fully to clear before it touches the last resting row (mirrors the
+    /// `immersiveBottomBlurReach = immersiveBottomReach - 4` convention). At idle the
+    /// last row sits ~82pt above the viewport bottom and the band reaches 76pt up —
+    /// 6pt of clearance, so nothing haloes at rest.
+    private var clippedBottomBlurReach: CGFloat { max(clippedBottomRunway - 4, 0) }
+
+    /// True when the thread's intrinsic height exceeds `answerMaxHeight` and the
+    /// clipped+scrolling layout is active. Derived from the same @State that
+    /// `conversationScroll` already reads — promoted here so `resultView`, `body`,
+    /// and `conversationScroll` all share the identical boolean without duplication.
+    private var isAnswerClipped: Bool { measuredAnswerHeight > answerMaxHeight }
 
     private var resultView: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -929,24 +975,51 @@ struct NotchBody: View {
             // 9pt top/bottom pad plus the hairline) so the layout doesn't shift.
             Spacer().frame(height: 18)
 
-            conversationScroll
-
-            // Extra breathing room between the thread and the row below so the
-            // last line never sits right under the fade / against the input.
+            // When the answer is clipped (long, scrolling), the follow-up input
+            // FLOATS over the scroll's bottom (ZStack child, alignment .bottom)
+            // rather than sitting as a VStack sibling below — so content scrolls
+            // down behind it and dissolves (fade + blur), mirroring the recent list
+            // behind the manage bar. The scroll frame is `clippedAnswerMaxHeight`
+            // (363 = 300 + the 24pt gap + the 39pt input that the sibling layout
+            // used), so the resultView's total height is identical in both layouts
+            // — the panel never resizes at the crossover, which also keeps the
+            // source-popup y-offset (`rect.minY - geo.size.height`) correct.
             //
-            // Without a live backend a follow-up would only ever return another
-            // stub placeholder, so instead of an input that can't really answer we
-            // show a call-to-action that takes the user straight to Settings to set
-            // up a model. Once configured, the normal follow-up field returns.
+            // When short (not clipped), the ZStack just wraps `conversationScroll`
+            // transparently (one child → passthrough size) and the input renders as
+            // a sibling below, exactly as before. The AnswerHeightKey probe lives in
+            // `conversationScroll`'s .background and is always mounted regardless.
+            ZStack(alignment: .bottom) {
+                conversationScroll
+
+                // Floating follow-up: only the clipped + configured + no-error case.
+                // Error / unconfigured states keep their rows as siblings below (an
+                // actionable error must never be hidden behind the scroll).
+                if isAnswerClipped && model.askError == nil && model.isConfigured {
+                    followUpRow
+                        // Lift off the viewport bottom so a sliver of dissolved
+                        // content shows beneath the box rather than it sitting flush.
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 1.0), value: isAnswerClipped)
+
+            // Row slot BELOW the ZStack. The error / "set up a model" rows always
+            // live here as siblings (in both layouts) so they push the panel taller
+            // when they appear — intentional, an actionable row must stay visible.
+            // The normal follow-up input renders here ONLY in the short layout; when
+            // clipped it floats inside the ZStack above and must NOT also render here
+            // (two NSTextFields would fight for first-responder).
+            //
             // A failed Ask gets an actionable capsule right under the answer (XII-85):
             // "Open Settings" when there's no key to retry with, "Try again" otherwise.
-            // Shown in place of the normal follow-up field so the next step is obvious
-            // instead of a dead generic line above a working input.
             if let askError = model.askError {
                 errorActionRow(askError)
-                    .padding(.top, 24)
+                    .padding(.top, isAnswerClipped ? 8 : 24)
                     .transition(.opacity)
-            } else {
+            } else if !isAnswerClipped {
+                // Short layout: follow-up input (or setup CTA) as a sibling, as before.
                 Group {
                     if model.isConfigured {
                         followUpRow
@@ -955,7 +1028,16 @@ struct NotchBody: View {
                     }
                 }
                 .padding(.top, 24)
+                .transition(.opacity)
+            } else if !model.isConfigured {
+                // Clipped + unconfigured: the setup CTA stays a sibling (it's a
+                // one-time prompt, not the live input, so floating it makes no sense).
+                setupModelRow
+                    .padding(.top, 8)
+                    .transition(.opacity)
             }
+            // (Clipped + configured + no error: followUpRow is inside the ZStack;
+            //  nothing renders here — the gap+row were absorbed into the scroll frame.)
 
             // Note/Reminder save feedback for lines filed FROM the result view (now
             // that the follow-up field routes by intent). The idle prompt shows this
@@ -973,6 +1055,10 @@ struct NotchBody: View {
                     .transition(.opacity)
             }
         }
+        // The short↔long crossover moves the follow-up between sibling and overlay;
+        // animate the sibling-slot changes on the same spring the ZStack uses so the
+        // whole transition reads as one motion.
+        .animation(.spring(response: 0.3, dampingFraction: 1.0), value: isAnswerClipped)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.lastSavedNote)
         .animation(.spring(response: 0.42, dampingFraction: 0.82), value: model.noteSaving)
         // Float the source popup here, at the result-view level — OUTSIDE the
@@ -1093,7 +1179,7 @@ struct NotchBody: View {
     /// clips + scrolls; a `ScrollViewReader` keeps the latest turn pinned in view
     /// as a follow-up streams in. The bottom fade is the "more below" cue.
     private var conversationScroll: some View {
-        let clipped = measuredAnswerHeight > answerMaxHeight
+        let clipped = isAnswerClipped
         return Group {
             if clipped {
                 clippedConversation
@@ -1159,10 +1245,21 @@ struct NotchBody: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Long-answer layout: once the thread outgrows `answerMaxHeight` it pins to that
-    /// ceiling and scrolls, with both edges fading and the tail following the stream.
-    /// Only mounted when `clipped`, so a short answer never pays for the ScrollView or
-    /// the measure→frame coupling that drove the jump.
+    /// Long-answer layout: once the thread outgrows `answerMaxHeight` it pins to
+    /// `clippedAnswerMaxHeight` (363pt) and scrolls, with the follow-up input floating
+    /// over the bottom. The taller frame absorbs the 24pt gap + 39pt input the sibling
+    /// layout used, so the panel's total height is unchanged at the crossover.
+    ///
+    /// **Tail-follow geometry (why the runway sits ABOVE the anchor):**
+    /// `scrollTo(scrollBottomID, anchor: .bottom)` aligns the anchor's BOTTOM edge with
+    /// the viewport's bottom. If the runway were `.padding(.bottom)` (below the anchor),
+    /// the anchor would land at the viewport bottom and the last turn would sit right
+    /// at the bottom — hidden behind the floating input. Instead the runway is a Spacer
+    /// placed IN the VStack ABOVE the anchor:
+    ///     [last turn] [Spacer 80pt] [Color.clear 2pt .id(scrollBottomID)]
+    /// so `anchor:.bottom` puts the anchor at the viewport bottom, the 80pt runway sits
+    /// just above it, and the last turn rests ~82pt above the viewport bottom — 31pt
+    /// above the input's top edge, entirely in the dissolve zone.
     private var clippedConversation: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -1172,18 +1269,27 @@ struct NotchBody: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .id(turn.id)
                     }
-                    // Trailing pad inside the scroll so the final line can clear the
-                    // fade band when scrolled to the bottom, plus an anchor the
-                    // reader scrolls to so new turns always land in view.
+                    // The bottom runway: empty scroll space the last turn slides DOWN
+                    // into behind the floating follow-up input. Positioned HERE — above
+                    // the anchor — so `scrollTo(anchor:.bottom)` leaves the last turn
+                    // ~82pt above the viewport bottom (see the doc comment's geometry).
+                    Spacer(minLength: 0)
+                        .frame(height: clippedBottomRunway)
+                    // The anchor the reader scrolls to so new turns always land in view.
+                    // Sits at the very end of the runway, so anchor:.bottom clears the
+                    // runway above it for the dissolve.
                     Color.clear.frame(height: 2).id(scrollBottomID)
                 }
                 .padding(.trailing, 8)
-                // Breathing room so the first/last lines dissolve into the edge fades
-                // rather than ending on a hard cut.
+                // Top breathing room so the first line dissolves into the top edge fade
+                // rather than ending on a hard cut. The bottom has its own runway Spacer
+                // inside the VStack (above), so no matching .padding(.bottom) is needed.
                 .padding(.top, edgeFade)
-                .padding(.bottom, edgeFade)
             }
-            .frame(height: answerMaxHeight)
+            // Taller than `answerMaxHeight` (300): absorbs the 24pt gap + 39pt
+            // follow-up row that no longer sit as VStack siblings, keeping the panel
+            // the same total height. The `isAnswerClipped` threshold stays at 300.
+            .frame(height: clippedAnswerMaxHeight)
             .scrollIndicators(.never)
             // Submitting a follow-up appends two turns and flips mode
             // result→load→result, which rebuilds the ScrollView and resets its
@@ -1204,10 +1310,17 @@ struct NotchBody: View {
             // by default; pin to the bottom so the newest text stays in view.
             .onAppear { proxy.scrollTo(scrollBottomID, anchor: .bottom) }
         }
-        // The shared soft fade at both edges — the scroll content carries matching
-        // top/bottom padding (`edgeFade`) so the taper falls across breathing room,
-        // not over live text.
-        .scrollEdgeFade(top: true, bottom: true, fade: edgeFade)
+        // Per-edge fades: the top keeps `edgeFade` (64pt); the bottom matches the
+        // runway (80pt) so the taper falls entirely across the runway empty space,
+        // dissolving content to nothing before it reaches the opaque input box.
+        .scrollEdgeFade(top: true, bottom: true, topFade: edgeFade, bottomFade: clippedBottomRunway)
+        // Progressive blur on the bottom runway, mirroring the immersive manage bar's
+        // ConditionalBottomBlur: rows scrolling down into the runway frost out as they
+        // go behind the input. Kept 4pt shorter than the runway (`clippedBottomBlurReach`
+        // = 76pt) so the band clears the last resting row (~82pt up) — no halo at rest.
+        // maxRadius 22 matches the manage bar (comparable chrome). Always active —
+        // clippedConversation is only ever mounted when `isAnswerClipped`.
+        .modifier(ConditionalBottomBlur(active: true, height: clippedBottomBlurReach, maxRadius: 22))
     }
 
     /// Height of the taper at each scroll edge, in points. Generous on purpose so

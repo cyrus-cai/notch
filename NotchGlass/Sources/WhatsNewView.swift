@@ -106,6 +106,9 @@ struct WhatsNewView: View {
             if !entry.features.isEmpty {
                 noteGroup(heading: L("whatsnew.section.features"), lines: entry.features)
             }
+            if !entry.improvements.isEmpty {
+                noteGroup(heading: L("whatsnew.section.improvements"), lines: entry.improvements)
+            }
             if !entry.fixes.isEmpty {
                 noteGroup(heading: L("whatsnew.section.fixes"), lines: entry.fixes)
             }

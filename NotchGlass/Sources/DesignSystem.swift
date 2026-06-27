@@ -159,20 +159,23 @@ extension View {
 /// A variable ("progressive") blur on the TOP band of a view — sharp at the
 /// bottom, blurring harder the closer a pixel sits to the top edge. SwiftUI has
 /// no native variable blur on the 14.0 baseline, so we approximate the smooth
-/// ramp by stacking a few uniformly-blurred copies of the same content, each
-/// masked to a gradient band: the strongest blur is masked to the very top, the
-/// gentlest reaches further down, and the un-blurred original shows through
-/// below. Composited together they read as one continuous frost that deepens
-/// upward — the look of rows dissolving *behind* the floating input header.
+/// ramp with ONE uniformly-blurred copy of the content masked to a gradient
+/// band: the mask is fully opaque at the very top and tapers to clear at the
+/// band's lower edge, so the frost reads as deepening upward — the look of rows
+/// dissolving *behind* the floating input header — while the un-blurred original
+/// shows through below. (An earlier version stacked four blurred copies for a
+/// stepped ramp; that rebuilt the whole up-to-50-row list four times per edge on
+/// every open and was the multi-second click-to-expand stall. The gradient mask
+/// already carries the ramp, so the single flattened copy reads the same.)
 ///
 /// This is the partner to `ScrollEdgeFade`: that mask handles *opacity* (rows
 /// thin out toward the top), this handles *focus* (rows frost out toward the
 /// top). Used together, content scrolling up under the input stays faintly
 /// perceivable — present, but pushed back — instead of hard-clipping.
 ///
-/// Kept to a small fixed layer count: each layer is another render of the
-/// content, so this is only worth applying to a region that actually overflows
-/// and scrolls under a header. A short list that fits needs neither.
+/// The blurred copy is a full render of the content (flattened once via
+/// `.drawingGroup()`), so this is only worth applying to a region that actually
+/// overflows and scrolls under a header. A short list that fits needs neither.
 ///
 /// **The band must end ABOVE the first resting row, or its blurred glyphs halo.**
 /// This frost works by blurring the content itself — there is no separate material
@@ -196,17 +199,10 @@ struct ProgressiveTopBlur: ViewModifier {
     /// Peak blur radius at the very top edge. Each layer steps up toward this.
     var maxRadius: CGFloat = 7
 
-    /// Four frost layers read as a smooth ramp without the cost of a dozen renders.
-    /// Each layer's blur radius and the depth its mask reaches are paced so the
-    /// strongest frost hugs the top and the lightest blends into the sharp content
-    /// below. Four (vs three) keeps the ramp smooth at the heavier radius the
-    /// immersive prompt now uses, without banding.
-    private let layers = 4
-
     func body(content: Content) -> some View {
         // `.overlay` (taking the content's own size, so it never disturbs layout)
-        // lays the blurred copies on top, so a row scrolling up INTO the band reads
-        // as frosting out. That only haloes if a resting row sits inside the band —
+        // lays a blurred copy on top, so a row scrolling up INTO the band reads as
+        // frosting out. That only haloes if a resting row sits inside the band —
         // which the caller prevents by keeping the band above the first row (see the
         // doc comment). Within the runway there is no text to brighten.
         content.overlay(
@@ -215,43 +211,38 @@ struct ProgressiveTopBlur: ViewModifier {
                 // The blur band as a fraction of the view height, clamped so it
                 // never swallows the whole region on a short view.
                 let band = min(height / h, 0.9)
-                ZStack {
-                    ForEach(0..<layers, id: \.self) { i in
-                        // i = 0 is the gentlest, reaching deepest; the last layer
-                        // is the strongest, hugging the very top. Step the radius
-                        // up and the mask depth in toward the top edge.
-                        let t = CGFloat(i + 1) / CGFloat(layers)   // 0…1
-                        let radius = maxRadius * t
-                        // This layer's frost is visible from the top down to
-                        // `depth`, then fades out — deeper layers (gentle) reach
-                        // further, shallow layers (strong) stay near the top.
-                        let depth = band * (1 - t) + band * 0.34
-                        content
-                            // NOTE: deliberately NOT `.drawingGroup()`-flattened here.
-                            // Flattening caches the blur for smoother animation frames,
-                            // but it also forces all up-to-50 rows to rasterize into a
-                            // Metal texture (×4 layers) on the FIRST frame the immersive
-                            // list mounts — which landed right in the click-to-expand
-                            // window and stalled the open by ~0.5s. The plain path keeps
-                            // the open responsive; the in-flight blur cost is minor since
-                            // only the few rows inside the top band are ever blurred.
-                            .blur(radius: radius)
-                            .mask(
-                                LinearGradient(
-                                    stops: [
-                                        .init(color: .black, location: 0),
-                                        .init(color: .black, location: max(depth - band * 0.34, 0)),
-                                        .init(color: .clear, location: depth),
-                                        .init(color: .clear, location: 1),
-                                    ],
-                                    startPoint: .top, endPoint: .bottom
-                                )
-                            )
-                    }
-                }
-                // The frost base must not intercept clicks — the live, sharp content
-                // on top owns all hit-testing (taps on rows).
-                .allowsHitTesting(false)
+                // ONE blurred copy, not a stack of four. The earlier version
+                // re-rendered the entire (up-to-50-row) `content` four times — a
+                // ForEach(0..<4) where each iteration built, laid out and blurred the
+                // whole list. That 4× tree build landed on the main thread the instant
+                // the immersive list mounted (plus a matching 4× in the bottom mirror =
+                // 8 full-list renders per open), which is what stalled the click-to-
+                // expand for seconds on a long history. The smooth top-deepening ramp
+                // is already carried by the gradient MASK below, so a single uniform
+                // blur masked by that ramp reads the same as the stepped stack at a
+                // quarter of the cost. `.drawingGroup()` flattens this one copy into a
+                // single Metal texture so the blur runs on a cached raster (constant
+                // cost, independent of row count) rather than re-rasterizing the live
+                // tree every frame — safe here because this overlay copy never
+                // hit-tests or animates the rows; the live, sharp `content` underneath
+                // owns all interaction.
+                content
+                    .drawingGroup()
+                    .blur(radius: maxRadius)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black, location: max(band - band * 0.5, 0)),
+                                .init(color: .clear, location: band),
+                                .init(color: .clear, location: 1),
+                            ],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    // The frost base must not intercept clicks — the live, sharp
+                    // content on top owns all hit-testing (taps on rows).
+                    .allowsHitTesting(false)
             }
         )
     }
@@ -291,36 +282,30 @@ struct ProgressiveBottomBlur: ViewModifier {
     /// Peak blur radius at the very bottom edge. Each layer steps up toward this.
     var maxRadius: CGFloat = 7
 
-    private let layers = 4
-
     func body(content: Content) -> some View {
+        // Mirror of `ProgressiveTopBlur`: ONE flattened blurred copy, gradient-masked
+        // to the bottom band, not a four-deep stack. See the top variant for why the
+        // 4× full-list re-render was the click-to-expand stall and why a single
+        // `.drawingGroup()`-rasterized blur reads identically here.
         content.overlay(
             GeometryReader { geo in
                 let h = max(geo.size.height, 1)
                 let band = min(height / h, 0.9)
-                ZStack {
-                    ForEach(0..<layers, id: \.self) { i in
-                        let t = CGFloat(i + 1) / CGFloat(layers)   // 0…1
-                        let radius = maxRadius * t
-                        // Depth measured from the BOTTOM up: deeper (gentle) layers
-                        // reach further up, shallow (strong) layers hug the bottom.
-                        let depth = band * (1 - t) + band * 0.34
-                        content
-                            .blur(radius: radius)
-                            .mask(
-                                LinearGradient(
-                                    stops: [
-                                        .init(color: .clear, location: 0),
-                                        .init(color: .clear, location: 1 - depth),
-                                        .init(color: .black, location: min(1 - depth + band * 0.34, 1)),
-                                        .init(color: .black, location: 1),
-                                    ],
-                                    startPoint: .top, endPoint: .bottom
-                                )
-                            )
-                    }
-                }
-                .allowsHitTesting(false)
+                content
+                    .drawingGroup()
+                    .blur(radius: maxRadius)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: .clear, location: 1 - band),
+                                .init(color: .black, location: min(1 - band + band * 0.5, 1)),
+                                .init(color: .black, location: 1),
+                            ],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    .allowsHitTesting(false)
             }
         )
     }

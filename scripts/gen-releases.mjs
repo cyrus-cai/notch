@@ -99,6 +99,7 @@ function parseEntries(src) {
     version: scalar(body, 'version'),
     date: scalar(body, 'date'),
     features: listField(body, 'features'),
+    improvements: listField(body, 'improvements'),
     fixes: listField(body, 'fixes'),
   })).filter((e) => e.version);
 }
@@ -147,6 +148,7 @@ function renderEntries(entries) {
     html += `        <span class="rel-date">${esc(fmtDate(e.date))}</span>\n`;
     html += `      </div>\n`;
     html += renderGroup('New', 'rel.new', e.features);
+    html += renderGroup('Improved', 'rel.improved', e.improvements);
     html += renderGroup('Fixed', 'rel.fixed', e.fixes);
     html += `    </div>`;
     return html;
