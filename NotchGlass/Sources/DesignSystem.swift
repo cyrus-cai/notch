@@ -106,21 +106,25 @@ struct ScrollEdgeFade: ViewModifier {
     /// (so its top never overflows) can fade only the bottom, and vice versa.
     var top: Bool
     var bottom: Bool
-    /// Height of each taper, in points. Generous on purpose so the fade is a long
-    /// gradient, not a thin line that still reads as a cut.
-    var fade: CGFloat = 64
+    /// Height of each taper, in points — set independently per edge so one edge can
+    /// fade over a long gradient while the other only feathers a thin sliver.
+    /// Generous by default so a fade reads as a gradient, not a hard cut.
+    var topFade: CGFloat = 64
+    var bottomFade: CGFloat = 64
 
     func body(content: Content) -> some View {
         content.mask(
             GeometryReader { geo in
                 let h = max(geo.size.height, 1)
-                // Clamp so the two tapers can't overlap on a short area.
-                let f = min(fade / h, 0.45)
+                // Clamp each taper independently, and cap the pair so they can't
+                // overlap and punch a hole through a short area.
+                let ft = min(topFade / h, 0.45)
+                let fb = min(bottomFade / h, 0.45)
                 LinearGradient(
                     stops: [
                         .init(color: .black.opacity(top ? 0 : 1), location: 0),
-                        .init(color: .black, location: top ? f : 0),
-                        .init(color: .black, location: bottom ? 1 - f : 1),
+                        .init(color: .black, location: top ? ft : 0),
+                        .init(color: .black, location: bottom ? 1 - fb : 1),
                         .init(color: .black.opacity(bottom ? 0 : 1), location: 1),
                     ],
                     startPoint: .top, endPoint: .bottom
@@ -133,9 +137,20 @@ struct ScrollEdgeFade: ViewModifier {
 extension View {
     /// Apply the shared scroll edge fade (see `ScrollEdgeFade`). Pass `top` /
     /// `bottom` to choose which edges taper; usually gated on whether the content
-    /// actually overflows, so a short list/thread stays crisp.
+    /// actually overflows, so a short list/thread stays crisp. `topFade` /
+    /// `bottomFade` set each taper's length independently (default 64pt both).
+    func scrollEdgeFade(
+        top: Bool,
+        bottom: Bool,
+        topFade: CGFloat = 64,
+        bottomFade: CGFloat = 64
+    ) -> some View {
+        modifier(ScrollEdgeFade(top: top, bottom: bottom, topFade: topFade, bottomFade: bottomFade))
+    }
+
+    /// Convenience: the same taper length on both edges (the common case).
     func scrollEdgeFade(top: Bool, bottom: Bool, fade: CGFloat = 64) -> some View {
-        modifier(ScrollEdgeFade(top: top, bottom: bottom, fade: fade))
+        scrollEdgeFade(top: top, bottom: bottom, topFade: fade, bottomFade: fade)
     }
 }
 
@@ -248,6 +263,82 @@ extension View {
     /// `scrollEdgeFade(top:)` for the matching opacity taper.
     func progressiveTopBlur(height: CGFloat, maxRadius: CGFloat = 7) -> some View {
         modifier(ProgressiveTopBlur(height: height, maxRadius: maxRadius))
+    }
+
+    /// Frost the BOTTOM band — the mirror of `progressiveTopBlur`, for rows passing
+    /// behind floating bottom chrome (the manage bar). Pair with
+    /// `scrollEdgeFade(bottom:)` for the matching opacity taper.
+    func progressiveBottomBlur(height: CGFloat, maxRadius: CGFloat = 7) -> some View {
+        modifier(ProgressiveBottomBlur(height: height, maxRadius: maxRadius))
+    }
+}
+
+/// The bottom-edge mirror of `ProgressiveTopBlur`: a variable blur on the BOTTOM
+/// band — sharp above, blurring harder the closer a pixel sits to the bottom edge.
+/// Used so rows scrolling DOWN into the runway behind the floating manage bar frost
+/// out the same way rows scrolling UP behind the input do. Same stacked-layer
+/// approximation, just with the gradient flipped (strongest layer hugs the bottom).
+///
+/// **The band must end BELOW the last resting row**, or its blurred glyphs halo —
+/// the same rule as the top, mirrored: the band reaches only across the bottom
+/// *runway* (the empty inset below the last row that rows scroll down into behind
+/// the manage bar), and tapers fully to clear before it touches the last row's
+/// resting position. At idle no row is inside the band, so nothing haloes.
+struct ProgressiveBottomBlur: ViewModifier {
+    /// Height of the blur band, in points, measured from the bottom edge up.
+    /// Above this the content is fully sharp.
+    var height: CGFloat
+    /// Peak blur radius at the very bottom edge. Each layer steps up toward this.
+    var maxRadius: CGFloat = 7
+
+    private let layers = 4
+
+    func body(content: Content) -> some View {
+        content.overlay(
+            GeometryReader { geo in
+                let h = max(geo.size.height, 1)
+                let band = min(height / h, 0.9)
+                ZStack {
+                    ForEach(0..<layers, id: \.self) { i in
+                        let t = CGFloat(i + 1) / CGFloat(layers)   // 0…1
+                        let radius = maxRadius * t
+                        // Depth measured from the BOTTOM up: deeper (gentle) layers
+                        // reach further up, shallow (strong) layers hug the bottom.
+                        let depth = band * (1 - t) + band * 0.34
+                        content
+                            .blur(radius: radius)
+                            .mask(
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: .clear, location: 0),
+                                        .init(color: .clear, location: 1 - depth),
+                                        .init(color: .black, location: min(1 - depth + band * 0.34, 1)),
+                                        .init(color: .black, location: 1),
+                                    ],
+                                    startPoint: .top, endPoint: .bottom
+                                )
+                            )
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+        )
+    }
+}
+
+/// Apply `ProgressiveBottomBlur` only when `active`, mounting/unmounting the blur
+/// stack (mirror of `ConditionalTopBlur`) so the compact list never pays for it.
+struct ConditionalBottomBlur: ViewModifier {
+    var active: Bool
+    var height: CGFloat
+    var maxRadius: CGFloat = 7
+
+    func body(content: Content) -> some View {
+        if active {
+            content.progressiveBottomBlur(height: height, maxRadius: maxRadius)
+        } else {
+            content
+        }
     }
 }
 

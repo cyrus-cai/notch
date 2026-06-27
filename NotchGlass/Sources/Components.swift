@@ -734,6 +734,9 @@ struct GlassIconButton: View {
 /// like "Clear" so they read as part of the glass island, not flat link text.
 struct GlassTextButton: View {
     var title: String
+    /// Text size; the capsule's padding scales with it so the pill stays
+    /// proportional. Defaults to the original 11pt.
+    var fontSize: CGFloat = 11
     var action: () -> Void
 
     @State private var hovering = false
@@ -741,10 +744,10 @@ struct GlassTextButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.sf(11, weight: .medium))
+                .font(.sf(fontSize, weight: .medium))
                 .foregroundStyle(hovering ? Tokens.text2 : Tokens.text4)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
                 .glassCapsule(in: Capsule(), brighter: hovering)
                 .contentShape(Capsule())
         }
@@ -1213,7 +1216,15 @@ struct StreamingTurnContent: View {
 /// transform the prototype applied to AI answers.
 struct InlineMarkdownText: View {
     let raw: String
-    init(_ raw: String) { self.raw = raw }
+    /// Colour for surviving links. Defaults to primary ink so links read in the
+    /// same white family as the body text — on our dark glass the stock system
+    /// blue is both illegible and off-palette, so links are styled as ink +
+    /// underline (the underline, not a colour shift, is what marks them tappable).
+    var linkColor: Color = Tokens.text1
+    init(_ raw: String, linkColor: Color = Tokens.text1) {
+        self.raw = raw
+        self.linkColor = linkColor
+    }
 
     var body: some View {
         Text(attributed)
@@ -1229,10 +1240,19 @@ struct InlineMarkdownText: View {
             // The markdown parser also turns `[label](url)` into a tappable link.
             // The answer text comes from an LLM endpoint we don't fully trust, so a
             // rogue/compromised backend could embed `[ok](file:///…)` or a custom
-            // scheme that fires on click. We render answers as read-only text, so
-            // strip every `.link` run — keep the styling, drop the clickable URL.
+            // scheme that fires on click. Allow only http/https — real web links the
+            // user can open — and strip every other `.link` run (keep its styling,
+            // drop the clickable URL), so file:// and custom schemes stay inert.
+            // Surviving links get our ink colour + an underline instead of the
+            // stock blue, which is illegible on the dark glass.
             for run in parsed.runs where run.link != nil {
-                parsed[run.range].link = nil
+                let scheme = run.link?.scheme?.lowercased()
+                if scheme != "http" && scheme != "https" {
+                    parsed[run.range].link = nil
+                } else {
+                    parsed[run.range].foregroundColor = linkColor
+                    parsed[run.range].underlineStyle = .single
+                }
             }
             return parsed
         }
@@ -1575,7 +1595,7 @@ struct MarkdownBlockRow: View {
         switch block {
         case .heading(let level, let text):
             let size = max(baseFont, baseFont + CGFloat(7 - min(level, 5)) * 1.5)
-            InlineMarkdownText(text)
+            InlineMarkdownText(text, linkColor: color)
                 .font(.sf(size, weight: .semibold))
                 .tracking(-0.1)
                 .foregroundStyle(color)
@@ -1589,7 +1609,7 @@ struct MarkdownBlockRow: View {
             listRow(marker: "\(number).", text: text)
 
         case .paragraph(let text):
-            InlineMarkdownText(text)
+            InlineMarkdownText(text, linkColor: color)
                 .font(.sf(baseFont))
                 .tracking(-0.05)
                 .lineSpacing(baseFont * 0.6)
@@ -1619,7 +1639,7 @@ struct MarkdownBlockRow: View {
                 .font(.sf(baseFont, weight: .medium).monospacedDigit())
                 .foregroundStyle(color.opacity(0.7))
                 .frame(minWidth: 16, alignment: .trailing)
-            InlineMarkdownText(text)
+            InlineMarkdownText(text, linkColor: color)
                 .font(.sf(baseFont))
                 .tracking(-0.05)
                 .lineSpacing(baseFont * 0.5)
@@ -1683,7 +1703,7 @@ private struct MarkdownTableView: View {
     }
 
     private func cellText(_ raw: String, weight: Font.Weight, opacity: Double) -> some View {
-        InlineMarkdownText(raw)
+        InlineMarkdownText(raw, linkColor: color.opacity(opacity))
             .font(.sf(baseFont - 1, weight: weight))
             .tracking(-0.05)
             .foregroundStyle(color.opacity(opacity))
@@ -1850,17 +1870,10 @@ struct SourceBadge: View {
     /// "tmtpost + 3" — the first source's short site name, plus a count of the
     /// rest. A single source just shows its site, no "+".
     private var pillLabel: String {
-        let lead = (sources.first?.site).map(\.siteCapitalized) ?? L("source.badge.fallback")
+        let lead = sources.first?.site ?? L("source.badge.fallback")
         let extra = sources.count - 1
         return extra > 0 ? "\(lead) + \(extra)" : lead
     }
-}
-
-extension String {
-    /// Fully uppercase a site label ("sina" → "SINA", "marketwatch" →
-    /// "MARKETWATCH"). Numeric/mixed names like "21jingji" keep their digits and
-    /// just upper their letters ("21JINGJI").
-    var siteCapitalized: String { uppercased() }
 }
 
 /// The floating source list — a self-contained card backed by the **same Liquid
@@ -1944,7 +1957,7 @@ private struct SourceRow: View {
             if let url = URL(string: source.url) { NSWorkspace.shared.open(url) }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Text(source.site.siteCapitalized)
+                Text(source.site)
                     .font(.sf(11, weight: .semibold))
                     .foregroundStyle(Tokens.text3)
                     .lineLimit(1)

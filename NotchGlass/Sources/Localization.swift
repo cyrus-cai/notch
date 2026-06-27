@@ -143,8 +143,8 @@ enum Strings {
 
         // Model section
         "model.provider": "Provider",
-        "model.provider.noSearchGroup": "Not recommended · no web search",
-        "model.provider.noSearchReason": "These can't search the web — answers rely on training data only.",
+        "model.provider.noSearchGroup": "No built-in web search",
+        "model.provider.noSearchReason": "No native web search. Add a search key in Settings → Search to enable it.",
         "model.apiKey": "API key",
         "model.pasteKey": "Paste your API key",
         "model.exaApiKey": "Search key",
@@ -346,8 +346,8 @@ enum Strings {
         "sidebar.about": "关于",
 
         "model.provider": "服务商",
-        "model.provider.noSearchGroup": "不推荐 · 不支持联网搜索",
-        "model.provider.noSearchReason": "这些服务商无法联网搜索，回答只能依赖训练数据。",
+        "model.provider.noSearchGroup": "无内置联网搜索",
+        "model.provider.noSearchReason": "没有原生联网搜索。在 设置 → 搜索 里填搜索密钥即可启用。",
         "model.apiKey": "API 密钥",
         "model.pasteKey": "粘贴你的 API 密钥",
         "model.exaApiKey": "搜索密钥",
@@ -531,8 +531,8 @@ enum Strings {
         "sidebar.about": "關於",
 
         "model.provider": "服務商",
-        "model.provider.noSearchGroup": "不推薦 · 不支援聯網搜尋",
-        "model.provider.noSearchReason": "這些服務商無法聯網搜尋，回答只能依賴訓練資料。",
+        "model.provider.noSearchGroup": "無內建聯網搜尋",
+        "model.provider.noSearchReason": "沒有原生聯網搜尋。在 設定 → 搜尋 裡填搜尋密鑰即可啟用。",
         "model.apiKey": "API 金鑰",
         "model.pasteKey": "貼上你的 API 金鑰",
         "model.exaApiKey": "搜尋金鑰",

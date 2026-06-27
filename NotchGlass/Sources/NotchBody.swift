@@ -54,13 +54,6 @@ struct NotchBody: View {
     /// filter icon is tapped so the caret lands in the expanded field without a
     /// second click; reset when the filter collapses so it can re-arm next time.
     @State private var filterFocused = false
-    /// Whether the immersive recent list is resting at its top. Drives the floating
-    /// header's "manage" controls: RECENT + gear + Clear show while the list is at
-    /// the top, then fade out the moment it scrolls, so rows sliding up behind the
-    /// input meet only the prompt — no control row to collide with. Flipped by a 1pt
-    /// sentinel at the top of the scroll content (see `setHistoryAtTop`).
-    @State private var historyAtTop = true
-
     /// Measured height of the immersive floating header (input, plus the quote
     /// preview and action chips when a clipboard quote is pending). The list's top
     /// runway and frost band are derived from this so the first row always rests
@@ -205,6 +198,7 @@ struct NotchBody: View {
                 // (The immersive variant above handles the overflowing case.)
                 if !model.hasText && !model.history.isEmpty && model.showHistory {
                     historySection
+                        .padding(.top, 12)
                         .transition(moduleTransition)
                 }
 
@@ -261,91 +255,77 @@ struct NotchBody: View {
     /// over its top as a translucent header. The list's content reaches up behind
     /// the header (`immersiveTopReach`), so rows scroll under the input and frost +
     /// fade out rather than ending on a hard cut — the panel reads as one
-    /// continuous surface. The header (input + RECENT controls) draws ON TOP of the
-    /// scroll via z-order, but a soft scrim under it (not an opaque fill) keeps the
-    /// prompt legible while the rows behind stay perceivable.
+    /// continuous surface. The manage bar (gear + Clear) FLOATS over the bottom-left
+    /// as fixed chrome: the list runs full-height *behind* it, so rows can scroll
+    /// down past the buttons and stay partly visible through/around the glass.
     private var immersiveHistoryView: some View {
         ZStack(alignment: .top) {
-            // Back: the tall list, its top runway tucked behind the header.
             historyList(immersive: true)
         }
-        .overlay(alignment: .top) {
-
-            // Front: the floating header — NO background of its own. The glass shell
-            // must read identically whether the panel is collapsed or expanded, so the
-            // prompt sits directly on the same translucent material as the resting
-            // state; a dark scrim here repainted the top into an opaque black slab and
-            // broke that. Legibility of the rows passing behind comes entirely from the
-            // list's own top fade + blur (see `historyList(immersive:)`), and the
-            // manage controls (RECENT + gear + Clear) simply lift away once the list
-            // scrolls, so nothing they could collide with stays on screen.
-            VStack(alignment: .leading, spacing: 0) {
-                // A pending clipboard quote rides INSIDE the floating header: the
-                // preview line above the prompt (the context the query folds in) and
-                // the one-tap action chips below it. Unlike the RECENT controls these
-                // stay put while scrolling — they belong to the input, not to list
-                // management — and the runway (`immersiveTopReach`, measured from this
-                // header's real height) grows to keep the first row clear of them.
-                if let clip = model.pendingClipboard {
-                    clipboardPreviewLine(clip)
+            .overlay(alignment: .top) {
+                // Front: the floating header — NO background of its own. The glass
+                // shell must read identically whether the panel is collapsed or
+                // expanded, so the prompt sits directly on the same translucent
+                // material as the resting state. Legibility of the rows passing
+                // behind comes entirely from the list's own top fade + blur (see
+                // `historyList(immersive:)`).
+                VStack(alignment: .leading, spacing: 0) {
+                    // A pending clipboard quote rides INSIDE the floating header:
+                    // the preview line above the prompt (the context the query folds
+                    // in). The runway (`immersiveTopReach`, measured from this
+                    // header's real height) grows to keep the first row clear.
+                    if let clip = model.pendingClipboard {
+                        clipboardPreviewLine(clip)
+                    }
+                    idleInputRow
+                    // No preset chips here: this IS the expanded Recent state, and
+                    // the list owns the space below the prompt. Chips fold away to
+                    // avoid a visible collision with the RECENT rows — matching the
+                    // flat layout's same suppression when showHistory is open.
                 }
-                idleInputRow
-                // No preset chips here: this header IS the expanded Recent state, and
-                // the list owns the space directly below the prompt. The flat layout
-                // suppresses the chips whenever `showHistory` is open for exactly this
-                // reason (a visible collision with the RECENT rows); the immersive
-                // variant is that same open list, just tall enough to scroll — so the
-                // chips fold away here too, matching the flat path. The clipboard
-                // quote preview above still rides along (it's context for the query,
-                // not a shortcut menu), only the action chips drop.
-                if !historyScrolled {
-                    recentHeaderRow
-                        .padding(.top, 6)
-                        // Fade + slide up as it leaves, so dismissing the controls
-                        // reads as them lifting away behind the prompt.
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
+                .padding(.bottom, 6)
+                // Measure the header's real height so runway/frost track it.
+                // A quote header is taller than a bare input; the preference feeds
+                // measuredImmersiveHeaderHeight so immersiveTopReach adapts.
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: ImmersiveHeaderHeightKey.self, value: geo.size.height
+                        )
+                    }
+                )
             }
-            .padding(.bottom, 6)
-            // Measure the header's real height so the runway/frost band below track it
-            // (a quote+chips header is much taller than a bare input). Mirror the
-            // `AnswerHeightKey` pattern: report via preference, store in @State.
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(
-                        key: ImmersiveHeaderHeightKey.self, value: geo.size.height
-                    )
-                }
-            )
-        }
-        .onPreferenceChange(ImmersiveHeaderHeightKey.self) { h in
-            let measured = max(h, NotchBody.immersiveHeaderBaseline)
-            if didMeasureImmersiveHeader {
-                // A later change (quote appearing/clearing) slides the runway so the
-                // list shifts smoothly rather than snapping.
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            .onPreferenceChange(ImmersiveHeaderHeightKey.self) { h in
+                let measured = max(h, NotchBody.immersiveHeaderBaseline)
+                if didMeasureImmersiveHeader {
+                    // A later change (quote appearing/clearing) slides the runway
+                    // so the list shifts smoothly rather than snapping.
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                        measuredImmersiveHeaderHeight = measured
+                    }
+                } else {
+                    // First measurement of this open: land it silently. Animating
+                    // here forces an animated second layout pass that stalls the
+                    // expand start.
+                    didMeasureImmersiveHeader = true
                     measuredImmersiveHeaderHeight = measured
                 }
-            } else {
-                // First measurement of this open: land it silently. Animating here
-                // forces an animated second layout pass that stalls the expand start.
-                didMeasureImmersiveHeader = true
-                measuredImmersiveHeaderHeight = measured
             }
-        }
-        .transition(moduleTransition)
-    }
-
-    /// True once the immersive list has scrolled away from its top.
-    private var historyScrolled: Bool { !historyAtTop }
-
-    /// Flip the at-top flag on the standard module spring so the manage controls
-    /// fade/collapse rather than snap. Driven by the top sentinel's appear/disappear.
-    private func setHistoryAtTop(_ atTop: Bool) {
-        guard historyAtTop != atTop else { return }
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
-            historyAtTop = atTop
-        }
+            // Fixed bottom chrome: gear + Clear, FLOATING over the bottom-left of the
+            // full-height list. Because it's an overlay (not a sibling), the list runs
+            // its whole height behind it — rows scroll down past the buttons and stay
+            // partly visible through/around the translucent glass capsules. The glass
+            // material gives the buttons enough body to stay legible over moving rows.
+            .overlay(alignment: .bottomLeading) {
+                // Pull the bar tighter into the bottom-left corner than the body's
+                // 20pt horizontal / 22pt bottom insets would leave it: negative
+                // padding tucks it ~10pt closer on each edge, still clear of the
+                // 30pt NotchShape corner arc at the bar's height.
+                manageBar
+                    .padding(.leading, -10)
+                    .padding(.bottom, -8)
+            }
+            .transition(moduleTransition)
     }
 
     // MARK: - Note save feedback
@@ -414,11 +394,11 @@ struct NotchBody: View {
                         endPoint: .bottom
                     )
                 )
-                .frame(width: 1.5)
+                .frame(width: 2)
             Text(preview)
                 .font(.sf(11))
                 .tracking(0.2)
-                .foregroundStyle(Tokens.text3)
+                .foregroundStyle(Tokens.text4)
                 .lineLimit(1)
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -594,7 +574,7 @@ struct NotchBody: View {
     /// of the glass island. Only shown alongside the expanded history (the settings
     /// affordance lives in the same "manage" row as Clear).
     private var settingsEntry: some View {
-        GlassIconButton(systemName: "gearshape", help: L("recent.settings"), size: 26) {
+        GlassIconButton(systemName: "gearshape", help: L("recent.settings"), size: 30) {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                 model.toggleSettings()
             }
@@ -613,14 +593,15 @@ struct NotchBody: View {
         }
     }
 
-    /// The manage controls (gear, Clear) for the recent list. Shared by the
-    /// compact `historySection` header and the immersive floating header, so the
-    /// row reads the same in both layouts. Both controls only exist while the
-    /// recent list is expanded, so the idle panel stays minimal. No "RECENT"
-    /// label — the list speaks for itself, so the heading would just be noise.
-    private var recentHeaderRow: some View {
+    /// The manage bar: gear (settings) then Clear, pinned to the BOTTOM-LEFT of the
+    /// recent panel in both the compact and immersive layouts. Controls are
+    /// left-aligned (Spacer at the trailing end). Always visible — no scroll-state
+    /// gate; it's fixed chrome below the list, not part of the floating header.
+    ///
+    /// Used by `historySection` (compact) as a VStack sibling below the list, and by
+    /// `immersiveHistoryView` as a VStack sibling below the scroll frame.
+    private var manageBar: some View {
         HStack(spacing: 6) {
-            Spacer()
             // The filter has no chip of its own — it's summoned with ⌘F (handled in
             // ContentView's key catcher) and unfurls the field below the header.
             settingsEntry
@@ -628,23 +609,26 @@ struct NotchBody: View {
             // history on first tap. The card itself is rendered centered over the
             // whole island (see NotchIsland) — not anchored here — so it lands in
             // the middle of the panel instead of down by the pill.
-            GlassTextButton(title: L("recent.clear")) {
+            GlassTextButton(title: L("recent.clear"), fontSize: 12) {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                     model.confirmingClear = true
                 }
             }
+            Spacer()   // push the controls to the LEFT; Spacer sits at the trailing end
         }
-        .padding(.horizontal, 8)
+        // Leading inset trimmed (the outer body already pads 20pt) so the bar tucks
+        // further into the bottom-left corner; the trailing 8 just keeps the Spacer
+        // honest. Bottom-left placement is finished by the call-site bottom padding.
+        .padding(.leading, 2)
+        .padding(.trailing, 8)
     }
 
-    /// RECENT header + the scrollable list, as one block so the open animation
-    /// moves the whole module together.
+    /// The compact recent list (≤6 visible rows) with the manage bar (gear + Clear)
+    /// pinned at the BOTTOM-LEFT below the list rows — matching the immersive layout.
+    /// The open animation moves the whole block together via the moduleTransition at
+    /// the call site (which also supplies the 12pt gap above the list).
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            recentHeaderRow
-                .padding(.top, 12)
-                .padding(.bottom, 4)
-
             // Live filter — hidden behind the filter icon by default. Only shown
             // once the list is long enough to be worth searching (matches historyList's
             // own > 6 overflow calibration) AND the user has explicitly expanded it.
@@ -686,18 +670,28 @@ struct NotchBody: View {
             }
 
             historyList()
+
+            // Manage bar below the list rows — bottom-left, matching the immersive
+            // layout. The .padding(.top, 12) at the historySection call site in
+            // idleView supplies the gap above the list; this bar closes the section.
+            // No bottom inset: the body's own 22pt bottom padding is the breathing
+            // room, and this keeps the bar low like the immersive variant.
+            manageBar
+                .padding(.top, 6)
         }
     }
 
-    /// Plain-input header baseline: the height the floating header measures with just
-    /// the input + RECENT controls row (no quote). Seeds `measuredImmersiveHeaderHeight`
-    /// so the very first frame already reserves the right runway, and combined with
-    /// `immersiveHeaderGap` reproduces the original 84pt reach for the no-quote case.
-    private static let immersiveHeaderBaseline: CGFloat = 72
+    /// Plain-input header baseline: the height the floating header now measures with
+    /// just the input (the manage bar moved to the bottom, out of the header). The
+    /// `inputRow` carries `.frame(height: 48)` and the floating-header VStack wraps it
+    /// with `.padding(.bottom, 6)` → 54pt measured for the no-quote case. The seed is
+    /// set to exactly 54 so the `max(h, baseline)` clamp matches the real first-frame
+    /// measurement and never over-reserves runway.
+    private static let immersiveHeaderBaseline: CGFloat = 54
 
     /// Breathing room between the bottom of the floating header and the first row's
-    /// resting top. `baseline (72) + gap (12) = 84`, the runway the no-quote layout
-    /// always used; a quote/chips header measures taller and the runway grows with it.
+    /// resting top. `baseline (54) + gap (12) = 66`, the runway the no-quote layout
+    /// uses; a quote header measures taller and the runway grows with it.
     private let immersiveHeaderGap: CGFloat = 12
 
     /// How far the immersive list's content reaches UP behind the floating header so
@@ -719,9 +713,24 @@ struct NotchBody: View {
     /// and shrinks back for a plain input, always ending just above the first row.
     private var immersiveBlurReach: CGFloat { max(immersiveTopReach - 4, 0) }
 
+    /// How far the immersive list's content reaches DOWN behind the floating manage
+    /// bar — the bottom mirror of `immersiveTopReach`. It's the runway the last rows
+    /// scroll down into and dissolve (fade + frost) behind the gear/Clear chrome, so
+    /// reaching the very bottom of the list reads as rows sliding under the buttons,
+    /// not stopping above them. Sized to clear the bar (gear 30 + 4pt bottom pad ≈
+    /// 34) plus a little headroom so a row can travel fully behind it.
+    private let immersiveBottomReach: CGFloat = 44
+
+    /// Height of the bottom frost band — the mirror of `immersiveBlurReach`. Kept
+    /// SHORTER than the bottom runway so the band tapers to clear before it reaches
+    /// the last row's resting position (no blurred-glyph halo at rest); only rows
+    /// travelling down into the runway behind the bar frost out.
+    private var immersiveBottomBlurReach: CGFloat { max(immersiveBottomReach - 4, 0) }
+
     /// Total height of the immersive scroll region — deliberately taller than the
     /// compact 220 so the recent list fills the panel and reads as one continuous
-    /// surface flowing under the header. Older rows are a scroll (or ↓) away.
+    /// surface flowing under the header. The manage bar floats over its bottom-left;
+    /// rows run their whole height behind it. Older rows are a scroll (or ↓) away.
     private let immersiveListHeight: CGFloat = 320
 
     /// The recent list. `immersive` swaps the compact, below-the-header list for
@@ -823,32 +832,38 @@ struct NotchBody: View {
                     .id(item.id)
                 }
             }
-            // Breathing room only BELOW the last row, so the bottom fade tapers over
-            // this gap rather than slicing a row. In the immersive layout the TOP
-            // also gets an inset (`immersiveTopReach`): it's the runway the rows
-            // scroll up into, behind the floating input, so the first row rests
-            // *below* the input at idle but can travel up under it. The compact
-            // layout keeps its top tight under the (non-floating) RECENT header.
+            // In the immersive layout the TOP gets an inset (`immersiveTopReach`):
+            // the runway rows scroll up into, behind the floating input, so the first
+            // row rests *below* the input at idle but can travel up under it. The
+            // compact layout keeps its top tight under the (non-floating) RECENT
+            // header. The bottom inset differs by layout: the immersive list runs its
+            // rows full-height behind the floating manage bar (so the last rows stay
+            // visible through/around the buttons) and only needs a little clearance
+            // off the rounded corner; the compact list reserves the full edgeFade so
+            // its bottom taper falls over empty space, not a row.
             .padding(.top, immersive ? immersiveTopReach : 0)
-            .padding(.bottom, overflowing ? edgeFade : 0)
-            // Immersive only: watch the real scroll offset (via the AppKit clip view)
-            // so the floating header can hide its manage controls the moment the list
-            // leaves the top. A few points of slack absorbs rest-state jitter.
-            .background {
-                if immersive {
-                    ScrollOffsetObserver { y in setHistoryAtTop(y <= 6) }
-                }
-            }
+            // Immersive: a bottom runway rows scroll DOWN into behind the manage bar
+            // (always present — the immersive layout only mounts for an overflowing
+            // list). Compact: the edgeFade reserve, only when actually overflowing.
+            .padding(.bottom, immersive ? immersiveBottomReach : (overflowing ? edgeFade : 0))
         }
-        // Immersive: a tall surface that fills the panel and flows under the header.
-        // Compact: ~6 rows before the list scrolls, so a short Recent list doesn't
-        // reserve a tall empty band under the header. Older rows are a scroll (↓) away.
+        // Immersive: a tall surface that fills the whole panel; the manage bar floats
+        // over its bottom-left. Compact: ~6 rows before the list scrolls, so a short
+        // Recent list doesn't reserve a tall empty band. Older rows are a scroll away.
         .frame(maxHeight: immersive ? immersiveListHeight : 220)
         .scrollIndicators(.never)
-        // Compact: only the bottom fades (the RECENT header caps the top). Immersive:
-        // BOTH edges taper — the top dissolves the rows sliding up behind the input,
-        // the bottom tells the user there's more below. Gated on overflow either way.
-        .scrollEdgeFade(top: immersive, bottom: overflowing, fade: edgeFade)
+        // Compact: only the bottom fades (the RECENT header caps the top), at the
+        // shared 64pt. Immersive: BOTH edges taper — the top dissolves rows sliding
+        // up behind the input, the bottom dissolves rows sliding DOWN behind the
+        // floating manage bar (so reaching the end reads as rows sliding under the
+        // gear/Clear, mirroring the top). Each edge's taper length tracks its own
+        // runway (`immersiveTopReach` / `immersiveBottomReach`).
+        .scrollEdgeFade(
+            top: immersive,
+            bottom: immersive ? true : overflowing,
+            topFade: immersive ? immersiveTopReach : edgeFade,
+            bottomFade: immersive ? immersiveBottomReach : edgeFade
+        )
         // Immersive only: frost the rows as they scroll UP into the runway behind the
         // floating input, so they read as pushed back — present but soft — not
         // hard-clipped. The band is kept SHORTER than the runway (`immersiveBlurReach`
@@ -858,6 +873,13 @@ struct NotchBody: View {
         // where rows rest) so tuning the blur never shifts the list. Glass translucency
         // is untouched — this only softens focus, never darkens.
         .modifier(ConditionalTopBlur(active: immersive, height: immersiveBlurReach, maxRadius: 36))
+        // Immersive only: the mirror at the BOTTOM — frost rows scrolling DOWN into
+        // the runway behind the manage bar, so they dissolve under the buttons the
+        // same way the top dissolves them under the input. Band kept shorter than the
+        // bottom runway (`immersiveBottomBlurReach` < `immersiveBottomReach`) so it
+        // clears the last resting row (no halo at rest). A lighter peak radius than
+        // the top (the bar is shorter than the input header, so less depth to hide).
+        .modifier(ConditionalBottomBlur(active: immersive, height: immersiveBottomBlurReach, maxRadius: 22))
         // Keep the keyboard-highlighted row visible: stepping ↓/↑ past the visible
         // window would otherwise leave the selection offscreen. Mirrors the
         // streaming tail-follow in `conversationScroll` — a reactive scroll in its
