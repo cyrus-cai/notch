@@ -211,6 +211,7 @@ enum Strings {
         "about.updateFailed": "Update failed — get it from the releases page",
         "about.github": "GitHub",
         "about.releases": "Releases",
+        "about.privacy": "Privacy",
         "about.whatsNew": "What's New",
 
         // What's New
@@ -231,6 +232,46 @@ enum Strings {
         "hint.ask": "Ask",
         "hint.note": "Note",
         "hint.remind": "Remind",
+
+        // First-run onboarding (see OnboardingService / OnboardingView).
+        // The gesture hint teaches the summon affordance at the resting notch; the
+        // guide is the 3-step in-panel flow that opens on the first launch.
+        "onboarding.gestureHint": "hover — or ⌘,",
+        "onboarding.gestureHint.noNotch": "⌘, to open",
+        "onboarding.back": "Back",
+        "onboarding.next": "Next",
+        "onboarding.skip": "Skip",
+        // Step 1 — welcome
+        "onboarding.welcome.headline": "You type. It sorts.",
+        "onboarding.welcome.sub": "Type a half-formed thought — Notch routes it three ways:",
+        "onboarding.welcome.ask": "A question goes to AI.",
+        "onboarding.welcome.note": "Anything to keep goes to Apple Notes.",
+        "onboarding.welcome.remind": "Anything with a time goes to Apple Reminders.",
+        // Step 2 — connect a model
+        "onboarding.connect.title": "Connect a model",
+        "onboarding.connect.lead": "Ask needs an AI model. Note and Remind already work without one.",
+        "onboarding.connect.or.button": "Connect OpenRouter — free",
+        "onboarding.connect.or.short": "OpenRouter — free",
+        "onboarding.connect.or.subtitle": "Free, sign in once",
+        "onboarding.connect.byok": "Have your own key? Paste it",
+        "onboarding.connect.byok.short": "Paste a key",
+        "onboarding.connect.byok.subtitle": "OpenAI, Anthropic & more",
+        "onboarding.connect.connected": "Connected",
+        "onboarding.connect.connecting": "Connecting…",
+        "onboarding.connect.privacy": "",
+        // Step 2b — paste a key (in-guide, not Settings)
+        "onboarding.paste.title": "Paste a key",
+        "onboarding.paste.lead": "Pick your provider and paste its API key. You can change this later in Settings.",
+        "onboarding.paste.provider": "Provider",
+        "onboarding.paste.field": "Paste your %@ key",
+        "onboarding.paste.get": "Get a key",
+        "onboarding.paste.save": "Save & continue",
+        "onboarding.paste.invalid": "That doesn't look like a valid key.",
+        // Step 3 — try it
+        "onboarding.try.title": "You're set",
+        "onboarding.try.lead": "Hover the notch any time to summon Notch. Here's your first question:",
+        "onboarding.try.example": "How long does caffeine take to kick in?",
+        "onboarding.try.ask": "Ask it",
         "recur.daily": " · Daily",
         "recur.weekly": " · Weekly",
         "recur.weeklyOn": " · Weekly · %@",
@@ -289,6 +330,7 @@ enum Strings {
         "error.retry": "Try again",
         "error.openSettings": "Open Settings",
         "error.interrupted": "\n\n— connection lost; answer may be incomplete.",
+        "notify.answerReady.title": "Answer ready",
 
         // Relative time
         "time.justNow": "just now",
@@ -411,6 +453,7 @@ enum Strings {
         "about.updateFailed": "更新失败——请到发布页手动下载",
         "about.github": "GitHub",
         "about.releases": "发布页",
+        "about.privacy": "隐私政策",
         "about.whatsNew": "新功能",
 
         "whatsnew.title": "新功能",
@@ -429,6 +472,44 @@ enum Strings {
         "hint.ask": "问问",
         "hint.note": "记下",
         "hint.remind": "提醒",
+
+        // First-run onboarding (see OnboardingService / OnboardingView).
+        "onboarding.gestureHint": "悬停 — 或 ⌘,",
+        "onboarding.gestureHint.noNotch": "⌘, 打开",
+        "onboarding.back": "上一步",
+        "onboarding.next": "下一步",
+        "onboarding.skip": "跳过",
+        // Step 1 — welcome
+        "onboarding.welcome.headline": "你只管打字，它来分拣。",
+        "onboarding.welcome.sub": "随手打出脑子里的想法，Notch 替你分到三处：",
+        "onboarding.welcome.ask": "问题交给 AI。",
+        "onboarding.welcome.note": "想记下的，进备忘录。",
+        "onboarding.welcome.remind": "带时间的，进提醒事项。",
+        // Step 2 — connect a model
+        "onboarding.connect.title": "连接一个模型",
+        "onboarding.connect.lead": "“问问”需要一个 AI 模型。记笔记和提醒不用它也能用。",
+        "onboarding.connect.or.button": "连接 OpenRouter — 免费",
+        "onboarding.connect.or.short": "OpenRouter — 免费",
+        "onboarding.connect.or.subtitle": "免费，登录一次即可",
+        "onboarding.connect.byok": "有自己的密钥？点这里粘贴",
+        "onboarding.connect.byok.short": "粘贴密钥",
+        "onboarding.connect.byok.subtitle": "OpenAI、Anthropic 等",
+        "onboarding.connect.connected": "已连接",
+        "onboarding.connect.connecting": "连接中…",
+        "onboarding.connect.privacy": "",
+        // Step 2b — paste a key (in-guide, not Settings)
+        "onboarding.paste.title": "粘贴密钥",
+        "onboarding.paste.lead": "选择你的服务商，粘贴它的 API 密钥。之后可以在设置里修改。",
+        "onboarding.paste.provider": "服务商",
+        "onboarding.paste.field": "粘贴你的 %@ 密钥",
+        "onboarding.paste.get": "获取密钥",
+        "onboarding.paste.save": "保存并继续",
+        "onboarding.paste.invalid": "这看起来不是一个有效的密钥。",
+        // Step 3 — try it
+        "onboarding.try.title": "搞定",
+        "onboarding.try.lead": "随时悬停刘海就能唤出 Notch。这是你的第一个问题：",
+        "onboarding.try.example": "咖啡因要多久才起效？",
+        "onboarding.try.ask": "问它",
         "recur.daily": " · 每天",
         "recur.weekly": " · 每周",
         "recur.weeklyOn": " · 每周 · %@",
@@ -481,6 +562,7 @@ enum Strings {
         "error.retry": "重试",
         "error.openSettings": "打开设置",
         "error.interrupted": "\n\n——连接中断，回答可能不完整。",
+        "notify.answerReady.title": "回答好了",
 
         "time.justNow": "刚刚",
         "time.minutesAgo": "%lld 分钟前",
@@ -597,6 +679,7 @@ enum Strings {
         "about.updateFailed": "更新失敗——請到發佈頁手動下載",
         "about.github": "GitHub",
         "about.releases": "發佈頁",
+        "about.privacy": "隱私政策",
         "about.whatsNew": "新功能",
 
         "whatsnew.title": "新功能",
@@ -615,6 +698,44 @@ enum Strings {
         "hint.ask": "問問",
         "hint.note": "記下",
         "hint.remind": "提醒",
+
+        // First-run onboarding (see OnboardingService / OnboardingView).
+        "onboarding.gestureHint": "懸停 — 或 ⌘,",
+        "onboarding.gestureHint.noNotch": "⌘, 開啟",
+        "onboarding.back": "上一步",
+        "onboarding.next": "下一步",
+        "onboarding.skip": "跳過",
+        // Step 1 — welcome
+        "onboarding.welcome.headline": "你只管打字，它來分揀。",
+        "onboarding.welcome.sub": "隨手打出腦中的想法，Notch 替你分到三處：",
+        "onboarding.welcome.ask": "問題交給 AI。",
+        "onboarding.welcome.note": "想記下的，進備忘錄。",
+        "onboarding.welcome.remind": "帶時間的，進提醒事項。",
+        // Step 2 — connect a model
+        "onboarding.connect.title": "連接一個模型",
+        "onboarding.connect.lead": "「問問」需要一個 AI 模型。記筆記和提醒不用它也能用。",
+        "onboarding.connect.or.button": "連接 OpenRouter — 免費",
+        "onboarding.connect.or.short": "OpenRouter — 免費",
+        "onboarding.connect.or.subtitle": "免費，登入一次即可",
+        "onboarding.connect.byok": "有自己的密鑰？點這裡貼上",
+        "onboarding.connect.byok.short": "貼上密鑰",
+        "onboarding.connect.byok.subtitle": "OpenAI、Anthropic 等",
+        "onboarding.connect.connected": "已連接",
+        "onboarding.connect.connecting": "連接中…",
+        "onboarding.connect.privacy": "",
+        // Step 2b — paste a key (in-guide, not Settings)
+        "onboarding.paste.title": "貼上密鑰",
+        "onboarding.paste.lead": "選擇你的服務商，貼上它的 API 密鑰。之後可以在設定裡修改。",
+        "onboarding.paste.provider": "服務商",
+        "onboarding.paste.field": "貼上你的 %@ 密鑰",
+        "onboarding.paste.get": "取得密鑰",
+        "onboarding.paste.save": "儲存並繼續",
+        "onboarding.paste.invalid": "這看起來不是一個有效的密鑰。",
+        // Step 3 — try it
+        "onboarding.try.title": "搞定",
+        "onboarding.try.lead": "隨時懸停瀏海就能喚出 Notch。這是你的第一個問題：",
+        "onboarding.try.example": "咖啡因要多久才起效？",
+        "onboarding.try.ask": "問它",
         "recur.daily": " · 每天",
         "recur.weekly": " · 每週",
         "recur.weeklyOn": " · 每週 · %@",
@@ -667,6 +788,7 @@ enum Strings {
         "error.retry": "重試",
         "error.openSettings": "打開設定",
         "error.interrupted": "\n\n——連線中斷，回答可能不完整。",
+        "notify.answerReady.title": "回答好了",
 
         "time.justNow": "剛剛",
         "time.minutesAgo": "%lld 分鐘前",

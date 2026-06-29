@@ -4,6 +4,9 @@ import SwiftUI
 /// everything else is empty space that lets clicks fall through to apps below.
 struct ContentView: View {
     @ObservedObject var model: NotchModel
+    /// First-run state — drives the breathing gesture hint under the resting notch
+    /// on the very first launch (see `OnboardingService`).
+    @ObservedObject private var onboarding = OnboardingService.shared
     /// The live string store. Observing it here, at the root of every panel, plus
     /// the `.id(loc.language)` below, rebuilds the whole SwiftUI subtree when the
     /// App Language changes — so every `L(_:)` lookup re-evaluates at once, no
@@ -64,6 +67,21 @@ struct ContentView: View {
                     .transition(.thinkingDots)
                     .allowsHitTesting(false)
             }
+
+            // First-run gesture hint: a slow breathing glow under the resting notch
+            // with one line ("hover — or ⌘,"). Like the thinking dots, it's a
+            // free-floating sibling shown ONLY while collapsed, and only on the very
+            // first launch — it dies the first time the panel opens and never
+            // returns (see `OnboardingService`). Suppressed if the panel is already
+            // open or while the thinking dots own the same spot.
+            if onboarding.showGestureHint,
+               !model.isOpen(on: metrics.displayID),
+               !model.thinking {
+                NotchGestureHint(hasHardwareNotch: metrics.hasHardwareNotch)
+                    .offset(y: metrics.restHeight)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
         }
         .frame(width: metrics.canvasWidth, alignment: .top)
         .ignoresSafeArea()
@@ -73,6 +91,9 @@ struct ContentView: View {
         // handing off, not animating "into" anything).
         .animation(.spring(response: 0.34, dampingFraction: 0.78), value: model.thinking)
         .animation(.easeInOut(duration: 0.2), value: model.isOpen(on: metrics.displayID))
+        // Fade the first-run gesture hint out (rather than snapping) the moment the
+        // panel opens for the first time and `markPanelOpened()` retires it.
+        .animation(.easeInOut(duration: 0.3), value: onboarding.showGestureHint)
         .background(KeyEventCatcher { event in
             // ⌘↵ opens (or toggles shut) the What's New release-notes panel — the
             // keyboard path that matches the input-row cue. keyCode 36 is Return.
@@ -80,7 +101,7 @@ struct ContentView: View {
             // here and shouldn't snatch a streaming answer away. Settings yields to
             // it (opening What's New folds settings, like the gear folds the list).
             if event.keyCode == 36, event.modifierFlags.contains(.command),
-               model.mode == .idle {
+               model.mode == .idle, !model.showOnboarding {
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                     if model.showWhatsNew {
                         model.closeWhatsNew()
@@ -126,6 +147,14 @@ struct ContentView: View {
                 if model.confirmingClear {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                         model.confirmingClear = false
+                    }
+                    return true
+                }
+                // Guided first run open → Esc skips it (returns to the prompt and
+                // records it done, like the header's Skip).
+                if model.showOnboarding {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                        model.closeOnboarding()
                     }
                     return true
                 }
@@ -182,6 +211,61 @@ struct ContentView: View {
             }
             return false
         })
+    }
+}
+
+/// The first-run gesture hint: a slow breathing glow centered under the resting
+/// notch, with one line teaching the summon affordance. Quiet and in-character —
+/// the glow uses the same cool top / warm-neutral palette as the glass edge light,
+/// not a loud accent colour, so it reads as the notch itself inviting a hover
+/// rather than a banner stuck on top. It shows only on the very first launch and
+/// fades away the first time the panel opens (`OnboardingService.markPanelOpened`).
+private struct NotchGestureHint: View {
+    /// On a notched Mac the glow points at the hardware notch and the line names
+    /// the hover. On a notch-less screen (external display / older Mac) there's no
+    /// notch to hover, so the glow is dropped and the line names ⌘, alone.
+    let hasHardwareNotch: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var breathing = false
+
+    var body: some View {
+        VStack(spacing: 9) {
+            if hasHardwareNotch {
+                // A soft cool-white radial bloom, hinged to the notch's bottom edge.
+                // It breathes between a dim rest and a brighter peak — slow enough to
+                // read as ambient, never as a blinking cursor.
+                Ellipse()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color.white.opacity(0.22),
+                                Color.white.opacity(0.0),
+                            ],
+                            center: .top,
+                            startRadius: 0,
+                            endRadius: 70
+                        )
+                    )
+                    .frame(width: Tokens.notchWidth + 64, height: 44)
+                    .scaleEffect(x: 1, y: breathing ? 1.12 : 0.9, anchor: .top)
+                    .opacity(breathing ? 0.9 : 0.35)
+                    .blur(radius: 6)
+            }
+
+            Text(hasHardwareNotch
+                 ? L("onboarding.gestureHint")
+                 : L("onboarding.gestureHint.noNotch"))
+                .font(.sf(12.5))
+                .tracking(0.2)
+                .foregroundStyle(Tokens.text2)
+        }
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
+                breathing = true
+            }
+        }
     }
 }
 

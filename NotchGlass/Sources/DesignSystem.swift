@@ -26,6 +26,14 @@ enum Tokens {
     // neutral ink instead: no coloured dots, no green pills.
     static let danger  = Color(red: 1.00, green: 0.42, blue: 0.42)
 
+    // Connect accent — the one positive-action tint, used on the onboarding
+    // "Connect OpenRouter" CTA. A soft, low-saturation blue that reads as the
+    // primary path without shouting against the dark glass.
+    static let accent  = Color(red: 0.40, green: 0.62, blue: 1.00)
+    // Success — the brief checkmark when a connection lands. Muted to match the
+    // glass; shown only for the ~0.6s confirmation beat, never as a standing pill.
+    static let success = Color(red: 0.40, green: 0.82, blue: 0.55)
+
     /// Placeholder text for the prompt — a soft, faint hint, clearly LIGHTER than
     /// real typed text so it reads as a transient suggestion rather than content.
     /// Kept low on the scale so "Ask anything" whispers instead of shouting.
@@ -44,6 +52,7 @@ enum Tokens {
     static let openWidthResult: CGFloat = 600
     static let openWidthSettings: CGFloat = 580   // inline settings form
     static let openWidthWhatsNew: CGFloat = 600   // release-notes reading column
+    static let openWidthOnboarding: CGFloat = 720  // first-run guide: left controls + right demo pane
 }
 
 extension Font {

@@ -49,6 +49,75 @@ enum ReplyTokens {
     }
 }
 
+/// Auto-retry for transient streaming failures. The very first Ask after
+/// onboarding (and any cold request) can hit a one-off that has nothing to do
+/// with the user's setup: a dropped connection, a slow-first-token timeout, a
+/// free-model rate-limit (429), a backend 5xx, or a stream that opens and then
+/// finishes without a single token. Surfacing those as a dead error — when a
+/// second attempt would just work — is the bad experience we're killing. So the
+/// transport retries the connect/first-token phase a couple of times with
+/// backoff before giving up. It only ever retries *before any token has been
+/// yielded* (the call sites enforce this), so a reply is never duplicated.
+enum StreamRetry {
+    /// Up to this many *extra* attempts after the first (so 3 tries total). Small
+    /// on purpose: the goal is to ride out a blip, not to hammer a down backend.
+    static let maxRetries = 2
+
+    /// Backoff before the Nth retry (1-based): ~0.5s, then ~1.5s. Capped so a
+    /// `Retry-After` we honor below can't push the wait absurdly long.
+    static let maxBackoff: TimeInterval = 6
+
+    static func backoff(forRetry n: Int) -> TimeInterval {
+        min(maxBackoff, 0.5 * pow(3, Double(n - 1)))   // 0.5, 1.5, 4.5, …
+    }
+
+    /// Whether an error from the connect/first-token phase is worth retrying.
+    /// Retry the transient class — network drops, timeouts, 429, and 5xx — but
+    /// NOT a definitive client error (401/403/400/404): a bad/missing key or a
+    /// malformed request won't fix itself, so we fail fast and let the UI offer
+    /// "Open Settings" instead of stalling through pointless retries.
+    static func isRetryable(_ error: Error) -> Bool {
+        if let svc = error as? OpenAICompatAIService.ServiceError {
+            switch svc {
+            case .http(_, let status, _):
+                return status == 429 || (500..<600).contains(status)
+            case .malformedResponse:
+                return true   // no/!HTTPURLResponse — treat as a transient blip
+            }
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+                 .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                 .resourceUnavailable, .badServerResponse:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
+    }
+
+    /// The `Retry-After` header (seconds), clamped to `maxBackoff`, if present on
+    /// a 429/503. Lets us wait roughly as long as the provider asks instead of
+    /// guessing — without ever blocking for an unbounded time.
+    static func retryAfter(_ response: URLResponse?) -> TimeInterval? {
+        guard let http = response as? HTTPURLResponse,
+              let raw = http.value(forHTTPHeaderField: "Retry-After"),
+              let secs = TimeInterval(raw.trimmingCharacters(in: .whitespaces))
+        else { return nil }
+        return min(maxBackoff, max(0, secs))
+    }
+
+    /// Sleep for the chosen backoff before retry `n`, preferring the provider's
+    /// `Retry-After` when it gave one. Throws `CancellationError` if the
+    /// surrounding task was cancelled mid-wait (a newer round superseded us).
+    static func waitBeforeRetry(_ n: Int, response: URLResponse? = nil) async throws {
+        let secs = retryAfter(response) ?? backoff(forRetry: n)
+        try await Task.sleep(nanoseconds: UInt64(secs * 1_000_000_000))
+    }
+}
+
 extension AIService {
     /// Convenience for callers that just want the whole answer to a single
     /// question: wraps it as a one-message conversation, drains the stream, and
@@ -79,14 +148,23 @@ no markdown headers.
 When you mention a link, write it as a Markdown inline link — [visible text](url) \
 — never a bare URL, so it renders as a clickable link rather than plain text.
 
-You can search the web and read the current date. When the answer turns on \
+You can search the web and read the current date. Be cautious with any \
 information that can change over time — news, current events, prices or rates, \
 rankings, "latest"/"newest", which version is current, who currently holds a \
-role, whether something has shipped, anything dated this year — search first \
-and answer from the results, citing the source's date. Do not answer such \
-questions from memory: your training data is stale and today is later than your \
-cutoff. When unsure whether something may have changed, search. A search is \
-worth the extra round and a few more words — don't skip it just to stay short.
+role, whether something has shipped, anything dated this year. Do not answer \
+such questions from memory: your training data is stale and today is later than \
+your cutoff, so treat your recollection as likely out of date. Search first and \
+answer from the results. When there's any doubt whether something may have \
+changed, err toward searching rather than trusting memory. A search is worth \
+the extra round and a few more words — don't skip it just to stay short. \
+You don't need to spell out your source every time; cite it only when it \
+matters — when the claim is contested, surprising, or the user would want to \
+check it — and otherwise just answer. \
+When you search, prefer English-language queries and lean on English-language \
+sources, even when answering in another language — they tend to be more \
+timely and reliable. Only fall back to a Chinese-language query when the topic \
+is inherently local (a China-specific product, person, policy, or event) and \
+English sources are thin. Then answer in the user's language as usual.
 """
 
 /// The persona with the current local date inlined as the first line, so the
@@ -558,65 +636,101 @@ struct OpenAICompatAIService: AIService {
     func stream(system: String, messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    var req = URLRequest(url: endpoint)
-                    req.httpMethod = "POST"
-                    req.timeoutInterval = Self.streamTimeout
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-                    for (field, value) in provider.extraHeaders {
-                        req.setValue(value, forHTTPHeaderField: field)
-                    }
+                // System prompt first, then the running conversation verbatim —
+                // so a follow-up is answered with every prior turn in context.
+                let chat = [Message(role: "system", content: system)]
+                    + messages.map { Message(role: $0.role, content: $0.content) }
 
-                    // System prompt first, then the running conversation verbatim —
-                    // so a follow-up is answered with every prior turn in context.
-                    let chat = [Message(role: "system", content: system)]
-                        + messages.map { Message(role: $0.role, content: $0.content) }
-                    let body = RequestBody(
-                        model: model,
-                        messages: chat,
-                        maxTokens: ReplyTokens.budget(forSystem: system),
-                        tokenFieldName: provider.maxTokensField,
-                        temperature: 0.7,
-                        stream: true
-                    )
-                    req.httpBody = try JSONEncoder().encode(body)
+                // Retry the connect/first-token phase on a transient blip (network
+                // drop, timeout, 429, 5xx, or a stream that finishes with zero
+                // tokens). We only ever re-attempt while `yieldedAny` is false, so
+                // a partially-streamed reply is never replayed/duplicated.
+                var yieldedAny = false
+                var attempt = 0
+                while true {
+                    do {
+                        var req = URLRequest(url: endpoint)
+                        req.httpMethod = "POST"
+                        req.timeoutInterval = Self.streamTimeout
+                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                        for (field, value) in provider.extraHeaders {
+                            req.setValue(value, forHTTPHeaderField: field)
+                        }
 
-                    let (bytes, response) = try await URLSession.shared.bytes(for: req)
-                    guard let http = response as? HTTPURLResponse else {
-                        throw ServiceError.malformedResponse(provider: provider.displayName)
-                    }
-                    guard (200..<300).contains(http.statusCode) else {
-                        // Drain the error body (capped) for a useful message.
-                        let bodyText = await Self.drainErrorBody(bytes.lines)
-                        throw ServiceError.http(provider: provider.displayName,
-                                                status: http.statusCode, body: bodyText)
-                    }
+                        let body = RequestBody(
+                            model: model,
+                            messages: chat,
+                            maxTokens: ReplyTokens.budget(forSystem: system),
+                            tokenFieldName: provider.maxTokensField,
+                            temperature: 0.7,
+                            stream: true
+                        )
+                        req.httpBody = try JSONEncoder().encode(body)
 
-                    // Server-Sent Events: each event is a `data: {json}` line,
-                    // terminated by `data: [DONE]`. We append only `delta.content`
-                    // and deliberately skip `reasoning_content` (the model's
-                    // think-aloud) so the notch shows the answer, not the
-                    // scratchpad.
-                    let decoder = JSONDecoder()
-                    for try await line in bytes.lines {
-                        if Task.isCancelled { break }
-                        guard line.hasPrefix("data:") else { continue }
-                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if payload.isEmpty { continue }
-                        if payload == "[DONE]" { break }
-                        guard let data = payload.data(using: .utf8),
-                              let chunk = try? decoder.decode(StreamChunk.self, from: data),
-                              let piece = chunk.choices.first?.delta.content,
-                              !piece.isEmpty
-                        else { continue }
-                        continuation.yield(piece)
+                        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                        guard let http = response as? HTTPURLResponse else {
+                            throw ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+                        guard (200..<300).contains(http.statusCode) else {
+                            // Drain the error body (capped) for a useful message.
+                            let bodyText = await Self.drainErrorBody(bytes.lines)
+                            throw ServiceError.http(provider: provider.displayName,
+                                                    status: http.statusCode, body: bodyText)
+                        }
+
+                        // Server-Sent Events: each event is a `data: {json}` line,
+                        // terminated by `data: [DONE]`. We append only `delta.content`
+                        // and deliberately skip `reasoning_content` (the model's
+                        // think-aloud) so the notch shows the answer, not the
+                        // scratchpad.
+                        let decoder = JSONDecoder()
+                        for try await line in bytes.lines {
+                            if Task.isCancelled { break }
+                            guard line.hasPrefix("data:") else { continue }
+                            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                            if payload.isEmpty { continue }
+                            if payload == "[DONE]" { break }
+                            guard let data = payload.data(using: .utf8),
+                                  let chunk = try? decoder.decode(StreamChunk.self, from: data),
+                                  let piece = chunk.choices.first?.delta.content,
+                                  !piece.isEmpty
+                            else { continue }
+                            yieldedAny = true
+                            continuation.yield(piece)
+                        }
+                        if Task.isCancelled { continuation.finish(); return }
+                        // A clean finish that produced no text is a transient empty
+                        // response (free models do this): retry it like a failure
+                        // while we still can, otherwise surface it as an error so the
+                        // user isn't left staring at a silent blank.
+                        if !yieldedAny && attempt < StreamRetry.maxRetries {
+                            attempt += 1
+                            try await StreamRetry.waitBeforeRetry(attempt)
+                            continue
+                        }
+                        if !yieldedAny {
+                            throw ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+                        continuation.finish()
+                        return
+                    } catch is CancellationError {
+                        continuation.finish()
+                        return
+                    } catch {
+                        // Only retry transient classes, and only before any token
+                        // reached the UI. Anything else (bad key, exhausted retries)
+                        // ends the stream with the real error for the UI to surface.
+                        if !yieldedAny, attempt < StreamRetry.maxRetries,
+                           StreamRetry.isRetryable(error) {
+                            attempt += 1
+                            do { try await StreamRetry.waitBeforeRetry(attempt) }
+                            catch { continuation.finish(); return }
+                            continue
+                        }
+                        continuation.finish(throwing: error)
+                        return
                     }
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -700,61 +814,88 @@ struct AnthropicAIService: AIService {
     func stream(system: String, messages: [ChatMessage]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    var req = URLRequest(url: provider.endpoint)
-                    req.httpMethod = "POST"
-                    req.timeoutInterval = OpenAICompatAIService.streamTimeout
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-                    req.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
+                // See `OpenAICompatAIService.stream` for the retry rationale: ride
+                // out a transient connect/first-token blip, but only ever before
+                // any token reached the UI so a reply is never duplicated.
+                var yieldedAny = false
+                var attempt = 0
+                while true {
+                    do {
+                        var req = URLRequest(url: provider.endpoint)
+                        req.httpMethod = "POST"
+                        req.timeoutInterval = OpenAICompatAIService.streamTimeout
+                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                        req.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
 
-                    // Anthropic takes the persona as a top-level `system` field and
-                    // the conversation as `messages` (user/assistant only, no system
-                    // role in the array) — both arrive ready to forward verbatim, so
-                    // a follow-up carries the full prior context.
-                    let body = RequestBody(
-                        model: model,
-                        system: system,
-                        messages: messages.map { .init(role: $0.role, content: $0.content) },
-                        maxTokens: ReplyTokens.budget(forSystem: system),
-                        stream: true
-                    )
-                    req.httpBody = try JSONEncoder().encode(body)
+                        // Anthropic takes the persona as a top-level `system` field and
+                        // the conversation as `messages` (user/assistant only, no system
+                        // role in the array) — both arrive ready to forward verbatim, so
+                        // a follow-up carries the full prior context.
+                        let body = RequestBody(
+                            model: model,
+                            system: system,
+                            messages: messages.map { .init(role: $0.role, content: $0.content) },
+                            maxTokens: ReplyTokens.budget(forSystem: system),
+                            stream: true
+                        )
+                        req.httpBody = try JSONEncoder().encode(body)
 
-                    let (bytes, response) = try await URLSession.shared.bytes(for: req)
-                    guard let http = response as? HTTPURLResponse else {
-                        throw OpenAICompatAIService.ServiceError.malformedResponse(provider: provider.displayName)
-                    }
-                    guard (200..<300).contains(http.statusCode) else {
-                        let bodyText = await OpenAICompatAIService.drainErrorBody(bytes.lines)
-                        throw OpenAICompatAIService.ServiceError.http(provider: provider.displayName,
-                                                                      status: http.statusCode, body: bodyText)
-                    }
+                        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                        guard let http = response as? HTTPURLResponse else {
+                            throw OpenAICompatAIService.ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+                        guard (200..<300).contains(http.statusCode) else {
+                            let bodyText = await OpenAICompatAIService.drainErrorBody(bytes.lines)
+                            throw OpenAICompatAIService.ServiceError.http(provider: provider.displayName,
+                                                                          status: http.statusCode, body: bodyText)
+                        }
 
-                    // SSE: lines come as `event: <type>` then `data: {json}`. We
-                    // don't need the event line — the JSON carries its own `type`,
-                    // and we only act on `content_block_delta` / `text_delta`,
-                    // appending `delta.text`. Everything else (message_start,
-                    // ping, content_block_stop, message_stop, …) is skipped.
-                    let decoder = JSONDecoder()
-                    for try await line in bytes.lines {
-                        if Task.isCancelled { break }
-                        guard line.hasPrefix("data:") else { continue }
-                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if payload.isEmpty { continue }
-                        guard let data = payload.data(using: .utf8),
-                              let event = try? decoder.decode(StreamEvent.self, from: data),
-                              event.type == "content_block_delta",
-                              let piece = event.delta?.text,
-                              !piece.isEmpty
-                        else { continue }
-                        continuation.yield(piece)
+                        // SSE: lines come as `event: <type>` then `data: {json}`. We
+                        // don't need the event line — the JSON carries its own `type`,
+                        // and we only act on `content_block_delta` / `text_delta`,
+                        // appending `delta.text`. Everything else (message_start,
+                        // ping, content_block_stop, message_stop, …) is skipped.
+                        let decoder = JSONDecoder()
+                        for try await line in bytes.lines {
+                            if Task.isCancelled { break }
+                            guard line.hasPrefix("data:") else { continue }
+                            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                            if payload.isEmpty { continue }
+                            guard let data = payload.data(using: .utf8),
+                                  let event = try? decoder.decode(StreamEvent.self, from: data),
+                                  event.type == "content_block_delta",
+                                  let piece = event.delta?.text,
+                                  !piece.isEmpty
+                            else { continue }
+                            yieldedAny = true
+                            continuation.yield(piece)
+                        }
+                        if Task.isCancelled { continuation.finish(); return }
+                        if !yieldedAny && attempt < StreamRetry.maxRetries {
+                            attempt += 1
+                            try await StreamRetry.waitBeforeRetry(attempt)
+                            continue
+                        }
+                        if !yieldedAny {
+                            throw OpenAICompatAIService.ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+                        continuation.finish()
+                        return
+                    } catch is CancellationError {
+                        continuation.finish()
+                        return
+                    } catch {
+                        if !yieldedAny, attempt < StreamRetry.maxRetries,
+                           StreamRetry.isRetryable(error) {
+                            attempt += 1
+                            do { try await StreamRetry.waitBeforeRetry(attempt) }
+                            catch { continuation.finish(); return }
+                            continue
+                        }
+                        continuation.finish(throwing: error)
+                        return
                     }
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -991,126 +1132,164 @@ extension OpenAICompatAIService: AgentCapableService {
                     tools: [ToolSpec]) -> AsyncThrowingStream<TurnEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    var req = URLRequest(url: provider.endpoint)
-                    req.httpMethod = "POST"
-                    req.timeoutInterval = Self.streamTimeout
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-                    for (field, value) in provider.extraHeaders {
-                        req.setValue(value, forHTTPHeaderField: field)
-                    }
-
-                    // Server-side web search (XII-118): for OpenAI-compatible
-                    // vendors the native search rides in three different shapes.
-                    // `.tool` (GLM) adds a tools-array entry; `.builtin` (Kimi)
-                    // adds a builtin tool plus required body fields and is echoed
-                    // back by the harness; `.chatModelSwap` (OpenAI) swaps the model
-                    // and adds a parameter. Resolve the effective model + any extra
-                    // search tool/body up front, then build the request once.
-                    // When the user has configured Exa, it replaces every
-                    // provider's native search (it rides as a client-side tool in
-                    // `tools` instead — see `ToolRegistry.standard(for:)`), so the
-                    // vendor's own server search stands down.
-                    var effectiveModel = model
-                    var searchTool: [String: Any]? = nil
-                    var bodyExtras: [String: Any] = [:]
-                    switch (APIKeyStore.exaActive ? nil : provider.serverSearch) {
-                    case .tool(let t):
-                        searchTool = t
-                    case .builtin(let t, let extras):
-                        searchTool = t
-                        bodyExtras = extras
-                    case .chatModelSwap(let m, let extras):
-                        effectiveModel = m
-                        bodyExtras = extras
-                    case nil:
-                        break
-                    }
-
-                    // The model's own client-side tools plus, when present, the
-                    // provider's server-search entry. Kept in one array so a turn
-                    // can both call a local tool and search.
-                    var wireTools = Self.wireTools(tools)
-                    if let searchTool { wireTools.append(searchTool) }
-
-                    var body: [String: Any] = [
-                        "model": effectiveModel,
-                        "messages": Self.wireMessages(system: system, messages: messages),
-                        provider.maxTokensField: ReplyTokens.budget(forSystem: system),
-                        "temperature": 0.7,
-                        "stream": true,
-                    ]
-                    if !wireTools.isEmpty { body["tools"] = wireTools }
-                    for (k, v) in bodyExtras { body[k] = v }
-                    req.httpBody = try AgentWire.body(body)
-
-                    let (bytes, response) = try await URLSession.shared.bytes(for: req)
-                    guard let http = response as? HTTPURLResponse else {
-                        throw ServiceError.malformedResponse(provider: provider.displayName)
-                    }
-                    guard (200..<300).contains(http.statusCode) else {
-                        let bodyText = await Self.drainErrorBody(bytes.lines)
-                        throw ServiceError.http(provider: provider.displayName,
-                                                status: http.statusCode, body: bodyText)
-                    }
-
-                    // Tool calls arrive in fragments across many SSE chunks: the
-                    // first delta for a call carries its `index`, `id`, and
-                    // `function.name`; subsequent deltas for the same `index`
-                    // append to `function.arguments`. We accumulate per index and
-                    // emit one `toolCall` per call once the stream completes.
-                    var callsByIndex: [Int: (id: String, name: String, args: String)] = [:]
-                    var finishReason: String? = nil
-
-                    for try await line in bytes.lines {
-                        if Task.isCancelled { break }
-                        guard line.hasPrefix("data:") else { continue }
-                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if payload.isEmpty { continue }
-                        if payload == "[DONE]" { break }
-                        guard let data = payload.data(using: .utf8),
-                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let choices = obj["choices"] as? [[String: Any]],
-                              let choice = choices.first
-                        else { continue }
-
-                        if let fr = choice["finish_reason"] as? String { finishReason = fr }
-                        guard let delta = choice["delta"] as? [String: Any] else { continue }
-
-                        if let content = delta["content"] as? String, !content.isEmpty {
-                            continuation.yield(.text(content))
+                // Retry the connect/first-event phase on a transient blip, only
+                // while nothing meaningful has reached the harness yet. For a tool
+                // turn "meaningful" is text OR a tool call — a turn that legitimately
+                // emits only a tool call (search-then-answer) must NOT be retried as
+                // if empty. See `OpenAICompatAIService.stream` for the rationale.
+                var emittedAny = false
+                var attempt = 0
+                while true {
+                    do {
+                        var req = URLRequest(url: provider.endpoint)
+                        req.httpMethod = "POST"
+                        req.timeoutInterval = Self.streamTimeout
+                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                        for (field, value) in provider.extraHeaders {
+                            req.setValue(value, forHTTPHeaderField: field)
                         }
-                        if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
-                            for tc in toolCalls {
-                                let idx = tc["index"] as? Int ?? 0
-                                var entry = callsByIndex[idx] ?? (id: "", name: "", args: "")
-                                if let id = tc["id"] as? String, !id.isEmpty { entry.id = id }
-                                if let fn = tc["function"] as? [String: Any] {
-                                    if let n = fn["name"] as? String, !n.isEmpty { entry.name = n }
-                                    if let a = fn["arguments"] as? String { entry.args += a }
+
+                        // Server-side web search (XII-118): for OpenAI-compatible
+                        // vendors the native search rides in three different shapes.
+                        // `.tool` (GLM) adds a tools-array entry; `.builtin` (Kimi)
+                        // adds a builtin tool plus required body fields and is echoed
+                        // back by the harness; `.chatModelSwap` (OpenAI) swaps the model
+                        // and adds a parameter. Resolve the effective model + any extra
+                        // search tool/body up front, then build the request once.
+                        // When the user has configured Exa, it replaces every
+                        // provider's native search (it rides as a client-side tool in
+                        // `tools` instead — see `ToolRegistry.standard(for:)`), so the
+                        // vendor's own server search stands down.
+                        var effectiveModel = model
+                        var searchTool: [String: Any]? = nil
+                        var bodyExtras: [String: Any] = [:]
+                        switch (APIKeyStore.exaActive ? nil : provider.serverSearch) {
+                        case .tool(let t):
+                            searchTool = t
+                        case .builtin(let t, let extras):
+                            searchTool = t
+                            bodyExtras = extras
+                        case .chatModelSwap(let m, let extras):
+                            effectiveModel = m
+                            bodyExtras = extras
+                        case nil:
+                            break
+                        }
+
+                        // The model's own client-side tools plus, when present, the
+                        // provider's server-search entry. Kept in one array so a turn
+                        // can both call a local tool and search.
+                        var wireTools = Self.wireTools(tools)
+                        if let searchTool { wireTools.append(searchTool) }
+
+                        var body: [String: Any] = [
+                            "model": effectiveModel,
+                            "messages": Self.wireMessages(system: system, messages: messages),
+                            provider.maxTokensField: ReplyTokens.budget(forSystem: system),
+                            "temperature": 0.7,
+                            "stream": true,
+                        ]
+                        if !wireTools.isEmpty { body["tools"] = wireTools }
+                        for (k, v) in bodyExtras { body[k] = v }
+                        req.httpBody = try AgentWire.body(body)
+
+                        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                        guard let http = response as? HTTPURLResponse else {
+                            throw ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+                        guard (200..<300).contains(http.statusCode) else {
+                            let bodyText = await Self.drainErrorBody(bytes.lines)
+                            throw ServiceError.http(provider: provider.displayName,
+                                                    status: http.statusCode, body: bodyText)
+                        }
+
+                        // Tool calls arrive in fragments across many SSE chunks: the
+                        // first delta for a call carries its `index`, `id`, and
+                        // `function.name`; subsequent deltas for the same `index`
+                        // append to `function.arguments`. We accumulate per index and
+                        // emit one `toolCall` per call once the stream completes.
+                        var callsByIndex: [Int: (id: String, name: String, args: String)] = [:]
+                        var finishReason: String? = nil
+                        var yieldedText = false
+
+                        for try await line in bytes.lines {
+                            if Task.isCancelled { break }
+                            guard line.hasPrefix("data:") else { continue }
+                            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                            if payload.isEmpty { continue }
+                            if payload == "[DONE]" { break }
+                            guard let data = payload.data(using: .utf8),
+                                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                  let choices = obj["choices"] as? [[String: Any]],
+                                  let choice = choices.first
+                            else { continue }
+
+                            if let fr = choice["finish_reason"] as? String { finishReason = fr }
+                            guard let delta = choice["delta"] as? [String: Any] else { continue }
+
+                            if let content = delta["content"] as? String, !content.isEmpty {
+                                yieldedText = true
+                                emittedAny = true
+                                continuation.yield(.text(content))
+                            }
+                            if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
+                                for tc in toolCalls {
+                                    let idx = tc["index"] as? Int ?? 0
+                                    var entry = callsByIndex[idx] ?? (id: "", name: "", args: "")
+                                    if let id = tc["id"] as? String, !id.isEmpty { entry.id = id }
+                                    if let fn = tc["function"] as? [String: Any] {
+                                        if let n = fn["name"] as? String, !n.isEmpty { entry.name = n }
+                                        if let a = fn["arguments"] as? String { entry.args += a }
+                                    }
+                                    callsByIndex[idx] = entry
                                 }
-                                callsByIndex[idx] = entry
                             }
                         }
-                    }
+                        if Task.isCancelled { continuation.finish(); return }
 
-                    // Emit the assembled tool calls in index order.
-                    for idx in callsByIndex.keys.sorted() {
-                        let c = callsByIndex[idx]!
-                        guard !c.name.isEmpty else { continue }
-                        // Some vendors omit an id; synthesize a stable one so the
-                        // result can be matched back.
-                        let id = c.id.isEmpty ? "call_\(idx)" : c.id
-                        continuation.yield(.toolCall(id: id, name: c.name,
-                                                     input: AgentWire.decodeArgs(c.args)))
+                        let namedCalls = callsByIndex.keys.sorted().compactMap { idx -> (id: String, name: String, args: String)? in
+                            let c = callsByIndex[idx]!
+                            guard !c.name.isEmpty else { return nil }
+                            // Some vendors omit an id; synthesize a stable one so the
+                            // result can be matched back.
+                            return (id: c.id.isEmpty ? "call_\(idx)" : c.id, name: c.name, args: c.args)
+                        }
+
+                        // A turn that produced neither text nor a tool call is an
+                        // empty response — retry it like a transient failure while we
+                        // still can, otherwise surface it as an error.
+                        if !yieldedText && namedCalls.isEmpty && !emittedAny {
+                            if attempt < StreamRetry.maxRetries {
+                                attempt += 1
+                                try await StreamRetry.waitBeforeRetry(attempt)
+                                continue
+                            }
+                            throw ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+
+                        // Emit the assembled tool calls in index order.
+                        for c in namedCalls {
+                            continuation.yield(.toolCall(id: c.id, name: c.name,
+                                                         input: AgentWire.decodeArgs(c.args)))
+                        }
+                        continuation.yield(.finished(stopReason: finishReason))
+                        continuation.finish()
+                        return
+                    } catch is CancellationError {
+                        continuation.finish()
+                        return
+                    } catch {
+                        if !emittedAny, attempt < StreamRetry.maxRetries,
+                           StreamRetry.isRetryable(error) {
+                            attempt += 1
+                            do { try await StreamRetry.waitBeforeRetry(attempt) }
+                            catch { continuation.finish(); return }
+                            continue
+                        }
+                        continuation.finish(throwing: error)
+                        return
                     }
-                    continuation.yield(.finished(stopReason: finishReason))
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -1180,122 +1359,156 @@ extension AnthropicAIService: AgentCapableService {
                     tools: [ToolSpec]) -> AsyncThrowingStream<TurnEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    var req = URLRequest(url: provider.endpoint)
-                    req.httpMethod = "POST"
-                    req.timeoutInterval = OpenAICompatAIService.streamTimeout
-                    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-                    req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                // Retry the connect/first-event phase on a transient blip, only
+                // while nothing meaningful (text OR a tool call) has reached the
+                // harness — so a search-then-answer turn isn't mistaken for empty
+                // and a partial reply is never duplicated. See
+                // `OpenAICompatAIService.stream` for the rationale.
+                var emittedAny = false
+                var attempt = 0
+                while true {
+                    do {
+                        var req = URLRequest(url: provider.endpoint)
+                        req.httpMethod = "POST"
+                        req.timeoutInterval = OpenAICompatAIService.streamTimeout
+                        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+                        req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
-                    // Client-side tools plus, when present, Anthropic's native
-                    // server-side web search (XII-118). It rides in the same
-                    // `tools` array; the search runs server-side and streams back
-                    // through this same SSE loop as `server_tool_use` /
-                    // `web_search_tool_result` blocks (skipped below as unknown
-                    // block types — the cited answer text streams as normal
-                    // `text_delta`). Requires the user to have enabled web search
-                    // in the Anthropic Console; if not, the API returns a
-                    // `web_search_tool_result_error` block and the model answers
-                    // without it.
-                    // Exa, when configured, replaces native search for every
-                    // provider (it rides as a client-side tool instead), so
-                    // Anthropic's server-side web_search stands down too.
-                    var wireTools = Self.wireTools(tools)
-                    if !APIKeyStore.exaActive,
-                       case .tool(let searchTool)? = provider.serverSearch {
-                        wireTools.append(searchTool)
-                    }
-                    var body: [String: Any] = [
-                        "model": model,
-                        "system": system,
-                        "messages": Self.wireMessages(messages),
-                        "max_tokens": ReplyTokens.budget(forSystem: system),
-                        "stream": true,
-                    ]
-                    if !wireTools.isEmpty { body["tools"] = wireTools }
-                    req.httpBody = try AgentWire.body(body)
+                        // Client-side tools plus, when present, Anthropic's native
+                        // server-side web search (XII-118). It rides in the same
+                        // `tools` array; the search runs server-side and streams back
+                        // through this same SSE loop as `server_tool_use` /
+                        // `web_search_tool_result` blocks (skipped below as unknown
+                        // block types — the cited answer text streams as normal
+                        // `text_delta`). Requires the user to have enabled web search
+                        // in the Anthropic Console; if not, the API returns a
+                        // `web_search_tool_result_error` block and the model answers
+                        // without it.
+                        // Exa, when configured, replaces native search for every
+                        // provider (it rides as a client-side tool instead), so
+                        // Anthropic's server-side web_search stands down too.
+                        var wireTools = Self.wireTools(tools)
+                        if !APIKeyStore.exaActive,
+                           case .tool(let searchTool)? = provider.serverSearch {
+                            wireTools.append(searchTool)
+                        }
+                        var body: [String: Any] = [
+                            "model": model,
+                            "system": system,
+                            "messages": Self.wireMessages(messages),
+                            "max_tokens": ReplyTokens.budget(forSystem: system),
+                            "stream": true,
+                        ]
+                        if !wireTools.isEmpty { body["tools"] = wireTools }
+                        req.httpBody = try AgentWire.body(body)
 
-                    let (bytes, response) = try await URLSession.shared.bytes(for: req)
-                    guard let http = response as? HTTPURLResponse else {
-                        throw OpenAICompatAIService.ServiceError.malformedResponse(provider: provider.displayName)
-                    }
-                    guard (200..<300).contains(http.statusCode) else {
-                        let bodyText = await OpenAICompatAIService.drainErrorBody(bytes.lines)
-                        throw OpenAICompatAIService.ServiceError.http(provider: provider.displayName,
-                                                                      status: http.statusCode, body: bodyText)
-                    }
+                        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                        guard let http = response as? HTTPURLResponse else {
+                            throw OpenAICompatAIService.ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+                        guard (200..<300).contains(http.statusCode) else {
+                            let bodyText = await OpenAICompatAIService.drainErrorBody(bytes.lines)
+                            throw OpenAICompatAIService.ServiceError.http(provider: provider.displayName,
+                                                                          status: http.statusCode, body: bodyText)
+                        }
 
-                    // Anthropic streams each content block separately. A `tool_use`
-                    // block opens with `content_block_start` (carrying the block's
-                    // `id` and tool `name`), streams its arguments as
-                    // `input_json_delta` partial-JSON fragments, and closes with
-                    // `content_block_stop`. We track the open block by index and
-                    // accumulate its partial JSON; text blocks stream as
-                    // `text_delta`. The final `message_delta` carries `stop_reason`.
-                    var blocks: [Int: (id: String, name: String, partialJSON: String)] = [:]
-                    var stopReason: String? = nil
+                        // Anthropic streams each content block separately. A `tool_use`
+                        // block opens with `content_block_start` (carrying the block's
+                        // `id` and tool `name`), streams its arguments as
+                        // `input_json_delta` partial-JSON fragments, and closes with
+                        // `content_block_stop`. We track the open block by index and
+                        // accumulate its partial JSON; text blocks stream as
+                        // `text_delta`. The final `message_delta` carries `stop_reason`.
+                        var blocks: [Int: (id: String, name: String, partialJSON: String)] = [:]
+                        var stopReason: String? = nil
 
-                    for try await line in bytes.lines {
-                        if Task.isCancelled { break }
-                        guard line.hasPrefix("data:") else { continue }
-                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                        if payload.isEmpty { continue }
-                        guard let data = payload.data(using: .utf8),
-                              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                              let type = obj["type"] as? String
-                        else { continue }
+                        for try await line in bytes.lines {
+                            if Task.isCancelled { break }
+                            guard line.hasPrefix("data:") else { continue }
+                            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                            if payload.isEmpty { continue }
+                            guard let data = payload.data(using: .utf8),
+                                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                  let type = obj["type"] as? String
+                            else { continue }
 
-                        switch type {
-                        case "content_block_start":
-                            let idx = obj["index"] as? Int ?? 0
-                            if let block = obj["content_block"] as? [String: Any],
-                               block["type"] as? String == "tool_use" {
-                                let id = block["id"] as? String ?? "toolu_\(idx)"
-                                let name = block["name"] as? String ?? ""
-                                blocks[idx] = (id: id, name: name, partialJSON: "")
-                            }
-                        case "content_block_delta":
-                            let idx = obj["index"] as? Int ?? 0
-                            guard let delta = obj["delta"] as? [String: Any] else { break }
-                            switch delta["type"] as? String {
-                            case "text_delta":
-                                if let t = delta["text"] as? String, !t.isEmpty {
-                                    continuation.yield(.text(t))
+                            switch type {
+                            case "content_block_start":
+                                let idx = obj["index"] as? Int ?? 0
+                                if let block = obj["content_block"] as? [String: Any],
+                                   block["type"] as? String == "tool_use" {
+                                    let id = block["id"] as? String ?? "toolu_\(idx)"
+                                    let name = block["name"] as? String ?? ""
+                                    blocks[idx] = (id: id, name: name, partialJSON: "")
                                 }
-                            case "input_json_delta":
-                                if let partial = delta["partial_json"] as? String,
-                                   var entry = blocks[idx] {
-                                    entry.partialJSON += partial
-                                    blocks[idx] = entry
+                            case "content_block_delta":
+                                let idx = obj["index"] as? Int ?? 0
+                                guard let delta = obj["delta"] as? [String: Any] else { break }
+                                switch delta["type"] as? String {
+                                case "text_delta":
+                                    if let t = delta["text"] as? String, !t.isEmpty {
+                                        emittedAny = true
+                                        continuation.yield(.text(t))
+                                    }
+                                case "input_json_delta":
+                                    if let partial = delta["partial_json"] as? String,
+                                       var entry = blocks[idx] {
+                                        entry.partialJSON += partial
+                                        blocks[idx] = entry
+                                    }
+                                default:
+                                    break
                                 }
+                            case "content_block_stop":
+                                let idx = obj["index"] as? Int ?? 0
+                                if let b = blocks[idx], !b.name.isEmpty {
+                                    emittedAny = true
+                                    continuation.yield(.toolCall(id: b.id, name: b.name,
+                                                                 input: AgentWire.decodeArgs(b.partialJSON)))
+                                    blocks[idx] = nil
+                                }
+                            case "message_delta":
+                                if let delta = obj["delta"] as? [String: Any],
+                                   let sr = delta["stop_reason"] as? String {
+                                    stopReason = sr
+                                }
+                            case "message_stop":
+                                break
                             default:
                                 break
                             }
-                        case "content_block_stop":
-                            let idx = obj["index"] as? Int ?? 0
-                            if let b = blocks[idx], !b.name.isEmpty {
-                                continuation.yield(.toolCall(id: b.id, name: b.name,
-                                                             input: AgentWire.decodeArgs(b.partialJSON)))
-                                blocks[idx] = nil
-                            }
-                        case "message_delta":
-                            if let delta = obj["delta"] as? [String: Any],
-                               let sr = delta["stop_reason"] as? String {
-                                stopReason = sr
-                            }
-                        case "message_stop":
-                            break
-                        default:
-                            break
                         }
+                        if Task.isCancelled { continuation.finish(); return }
+
+                        // A turn that produced neither text nor a tool call is an
+                        // empty response — retry like a transient failure while we
+                        // still can, otherwise surface it as an error.
+                        if !emittedAny {
+                            if attempt < StreamRetry.maxRetries {
+                                attempt += 1
+                                try await StreamRetry.waitBeforeRetry(attempt)
+                                continue
+                            }
+                            throw OpenAICompatAIService.ServiceError.malformedResponse(provider: provider.displayName)
+                        }
+                        continuation.yield(.finished(stopReason: stopReason))
+                        continuation.finish()
+                        return
+                    } catch is CancellationError {
+                        continuation.finish()
+                        return
+                    } catch {
+                        if !emittedAny, attempt < StreamRetry.maxRetries,
+                           StreamRetry.isRetryable(error) {
+                            attempt += 1
+                            do { try await StreamRetry.waitBeforeRetry(attempt) }
+                            catch { continuation.finish(); return }
+                            continue
+                        }
+                        continuation.finish(throwing: error)
+                        return
                     }
-                    continuation.yield(.finished(stopReason: stopReason))
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

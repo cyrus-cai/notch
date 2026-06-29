@@ -64,7 +64,28 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
-            version: "1.1.4",
+            version: "0.1.5",
+            date: "2026-06-29",
+            features: [
+                "Guided first-run setup, right in the notch.",
+                "Get notified when an answer finishes after you walk away.",
+                "Privacy link in Settings.",
+            ],
+            improvements: [
+                "Copied text is now available to the model for any question.",
+                "Answers no longer shift when streaming ends.",
+                "Calmer \"thinking\" animation.",
+                "Clipboard preview now leads with a quotation mark.",
+            ],
+            fixes: [
+                "Transient network failures now retry before erroring.",
+                "No more blank frame between rounds.",
+                "Refocusing the prompt no longer selects all text.",
+                "Stray tool-call markup is filtered out of answers.",
+            ]
+        ),
+        Entry(
+            version: "0.1.4",
             date: "2026-06-27",
             improvements: [
                 "Recent's settings and Clear controls now sit in a fixed bar at the bottom-left.",
@@ -72,7 +93,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.1.3",
+            version: "0.1.3",
             date: "2026-06-27",
             features: [
                 "Set your own Exa search key in Settings → Search to power web search for every model.",
@@ -83,7 +104,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.1.2",
+            version: "0.1.2",
             date: "2026-06-25",
             features: [
                 "While thinking, Notch now drifts through evocative mood words — Gazing, Dreaming, Shimmering — that cross-fade one into the next, instead of bare dots.",
@@ -96,7 +117,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.1.1",
+            version: "0.1.1",
             date: "2026-06-24",
             fixes: [
                 "In a conversation, every line you type is now a follow-up question — no more accidental Note/Remind routing mid-chat.",
@@ -104,7 +125,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.1.0",
+            version: "0.1.0",
             date: "2026-06-23",
             features: [
                 "Notch can now search the web to answer — live results, no extra setup.",
@@ -116,7 +137,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.0.8",
+            version: "0.0.8",
             date: "2026-06-22",
             features: [
                 "Translate now flips between your two preferred languages and shows the direction on the chip.",
@@ -127,7 +148,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.0.7",
+            version: "0.0.7",
             date: "2026-06-22",
             features: [
                 "Double-tap ⌥ to summon Notch — the new default shortcut.",
@@ -140,7 +161,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.0.6",
+            version: "0.0.6",
             date: "2026-06-19",
             features: [
                 "Set a global shortcut to summon Notch (default ⌥Space) in Settings → General.",
@@ -155,7 +176,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.0.5",
+            version: "0.0.5",
             date: "2026-06-19",
             features: [
                 "Copied text now previews inside the prompt without collapsing Recent.",
@@ -168,7 +189,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.0.4",
+            version: "0.0.4",
             date: "2026-06-18",
             features: [
                 "After an update, a quiet \"what's new\" hint shows up next to the prompt.",
@@ -176,7 +197,7 @@ final class WhatsNewService: ObservableObject {
             ]
         ),
         Entry(
-            version: "1.0.3",
+            version: "0.0.3",
             date: "2026-06-10",
             features: [
                 "Notch wakes up noticeably faster when you first hover.",

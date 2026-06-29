@@ -163,10 +163,16 @@ struct NotchBody: View {
 
     private var idleView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Settings owns the whole body when open — the "Ask anything" prompt is
-            // hidden, since you're configuring the app, not asking a question. Its
-            // own "‹ SETTINGS" header carries the way back (gear / Esc / chevron).
-            if model.showSettings {
+            // The guided first run leads on a fresh install — it owns the whole body
+            // like settings/What's New, in the same glass and spring, and hands back
+            // to the prompt when finished or skipped (see `OnboardingView`).
+            if model.showOnboarding {
+                OnboardingView(model: model)
+                    .transition(moduleTransition)
+            } else if model.showSettings {
+                // Settings owns the whole body when open — the "Ask anything" prompt is
+                // hidden, since you're configuring the app, not asking a question. Its
+                // own "‹ SETTINGS" header carries the way back (gear / Esc / chevron).
                 InlineSettingsView(model: model)
                     .transition(moduleTransition)
             } else if model.showWhatsNew {
@@ -394,19 +400,14 @@ struct NotchBody: View {
     /// chips that act on this clip live *below* the input, in `clipboardPresetChips`.
     private func clipboardPreviewLine(_ clip: String) -> some View {
         let preview = clip.count > 40 ? String(clip.prefix(40)) + "…" : clip
-        return HStack(alignment: .center, spacing: 8) {
-            // The quote's accent bar — a hair-thin rounded rule with a soft
-            // top-to-bottom fade, the classic blockquote cue that what follows is
-            // lifted, quoted material.
-            Capsule()
-                .fill(
-                    LinearGradient(
-                        colors: [Tokens.text3.opacity(0.55), Tokens.text4.opacity(0.25)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(width: 2)
+        return HStack(alignment: .firstTextBaseline, spacing: 4) {
+            // A leading curly opening quotation mark — the standard typographic cue
+            // that what follows is lifted, quoted material. Sits slightly larger and
+            // baseline-aligned with the preview text.
+            Text("\u{201C}")
+                .font(.system(size: 18, weight: .semibold, design: .serif))
+                .foregroundStyle(Tokens.text3.opacity(0.6))
+                .baselineOffset(-3)
             Text(preview)
                 .font(.sf(11))
                 .tracking(0.2)
@@ -1343,85 +1344,62 @@ struct NotchBody: View {
             VStack(alignment: .leading, spacing: 5) {
                 // Permanent clipboard trace: when this question's message was enriched
                 // with what the user copied, a quiet line says so — sitting right above
-                // the "You" row and staying for the life of the answer (unlike the
-                // load-only "Using clipboard" cue). It lines up under the "You" column
-                // so it reads as a caption on this turn. `paperclip`-free on purpose:
-                // one small grey line, same whisper as the note-save cue.
+                // the question bubble and staying for the life of the answer (unlike the
+                // load-only "Using clipboard" cue). Indented to line up with the bubble's
+                // text inset so it reads as a caption on this turn. `paperclip`-free on
+                // purpose: one small grey line, same whisper as the note-save cue.
                 if turn.usedClipboard {
                     Text(L("result.basedOnCopied"))
                         .font(.sf(11))
                         .tracking(0.2)
                         .foregroundStyle(Tokens.text4)
-                        .padding(.leading, 38)   // 30pt "You" column + 8pt HStack gap
+                        .padding(.leading, 12)   // matches the bubble's horizontal inset
                 }
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(L("result.you"))
-                        .font(.sf(11, weight: .semibold))
-                        .tracking(0.3)
-                        .foregroundStyle(Tokens.text4)
-                        .frame(width: 30, alignment: .leading)
-                    Text(turn.text)
-                        .font(.sf(14.5, weight: .medium))
-                        .tracking(-0.1)
-                        .foregroundStyle(Tokens.text2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        // The question itself is selectable too — drag to highlight and
-                        // copy it, same as the answer below. (It's a settled user turn,
-                        // never streaming, so there's no tail-follow scroll to fight.)
-                        .textSelection(.enabled)
-                }
-            }
-        } else if turn.streaming {
-            // The whole streaming life of the bubble — thinking dots, then the
-            // live answer — lives in one view so the dots → first-token handoff
-            // can cross-fade instead of hard-cutting (see `StreamingTurnContent`).
-            // Selection stays off while it streams: the per-token tail-follow
-            // scroll (onChange → scrollTo(.bottom)) would collapse an in-progress
-            // drag-selection. The settled branch below re-enables it the instant
-            // the stream finishes.
-            // Two mutually-exclusive states, never folded into one `hasText` gate
-            // (that's what blanked the screen mid-search — a leading "\n" looked like
-            // an answer and hid the activity line). While a tool runs, ONLY the
-            // activity row shows ("Searching the web…"), independent of whatever
-            // preface text has landed; the answer view isn't mounted, so a lone "\n"
-            // can't render as a blank block. The instant the tool clears, the activity
-            // row goes and `StreamingTurnContent` takes over — dots+mood-word until the
-            // real answer's first token, then the answer streaming in.
-            VStack(alignment: .leading, spacing: 4) {
-                if let activity = model.currentActivity {
-                    CrossfadeText(text: activity, font: 15, color: Tokens.text2)
-                } else {
-                    StreamingTurnContent(text: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() }, thinkingWord: model.currentThinkingWord)
-                        // No inset here: the settled branch renders `MarkdownBlocks` with
-                        // none, so any padding on the streaming copy would vanish on the
-                        // streaming→settled swap and shift the whole answer by that much
-                        // (the 2pt up-left jump at completion). Keep both paths flush.
-                        .textSelection(.disabled)
-                }
-            }
-            .animation(.easeInOut(duration: 0.12), value: model.currentActivity != nil)
-        } else {
-            // A settled answer carries its own quiet "file this in Notes" button
-            // directly beneath it — one per answer, so a long thread can save any
-            // segment, not just the latest. (It lived in the input row before, where
-            // it read as a property of the field rather than of this answer.) Its
-            // text is fully selectable now that the tail-follow scroll has stopped.
-            VStack(alignment: .leading, spacing: 6) {
-                MarkdownBlocks(source: turn.text, baseFont: 15, color: Tokens.text1, onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() })
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // The user's question rides in a quiet chat bubble — a barely-there
+                // tint with a hairline border — instead of a "You" label. The bubble
+                // itself says "this is what you asked", so no tag is needed and the
+                // thread reads cleaner. It hugs its content (not full width) and
+                // left-aligns with the answer below.
+                Text(turn.text)
+                    .font(.sf(14.5, weight: .medium))
+                    .tracking(-0.1)
+                    .foregroundStyle(Tokens.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    // The question itself is selectable too — drag to highlight and
+                    // copy it, same as the answer below. (It's a settled user turn,
+                    // never streaming, so there's no tail-follow scroll to fight.)
                     .textSelection(.enabled)
-                // Source badge: when this answer was grounded by a web search
-                // (sources came back through the harness), show a compact,
-                // clickable "site + N" badge beneath it (XII-118). Expands to the
-                // full list; each opens the original page.
-                if !turn.sources.isEmpty {
-                    SourceBadge(sources: turn.sources,
-                                hoveredID: $hoveredSourceID,
-                                pendingClose: $sourceCloseWork)
-                        .padding(.top, 2)
-                }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(Tokens.hairline, lineWidth: 1)
+                            )
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+        } else {
+            // Assistant turn — streaming AND settled share ONE view tree, so the
+            // moment the stream ends there's no structural swap to a different
+            // renderer (that swap is what hard-cut the answer ~2pt up-left at
+            // completion — the "突然跳掉位移"). `AssistantTurnView` always lays the
+            // answer out through the same `MarkdownBlocks`, and only fades a
+            // thinking/activity overlay on top while the text is still empty; the
+            // overlay never participates in the answer's layout, so it can't shift
+            // it, and `textSelection` just toggles on the unchanged tree.
+            AssistantTurnView(
+                text: turn.text,
+                streaming: turn.streaming,
+                activity: turn.streaming ? model.currentActivity : nil,
+                thinkingWord: model.currentThinkingWord,
+                sources: turn.sources,
+                hoveredSourceID: $hoveredSourceID,
+                sourceCloseWork: $sourceCloseWork,
+                onInAppCopy: { model.rebaselineClipboardAfterInAppWrite() }
+            )
         }
     }
 

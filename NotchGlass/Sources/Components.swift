@@ -105,6 +105,19 @@ struct PromptField: NSViewRepresentable {
                 DispatchQueue.main.async { [weak field, weak coord] in
                     guard let field, field.currentEditor() == nil else { return }
                     field.window?.makeFirstResponder(field)
+                    // AppKit's default `becomeFirstResponder` on an NSTextField
+                    // SELECTS ALL of the field's contents. When a submit happens to
+                    // coincide with a re-focus (the mode/history/clip `onChange`s fire
+                    // `refocusInput`, and the editor can be momentarily torn down by a
+                    // layout swap so the `currentEditor() == nil` guard above passes
+                    // even though the field is still the visual focus), that select-all
+                    // is exactly the intermittent bug: the prior text shows up fully
+                    // highlighted and the caret reads as "lost" — the next keystroke
+                    // would replace the whole selection. Collapse the selection to a
+                    // caret at the end so a re-focus never highlights existing text.
+                    if let editor = field.currentEditor() {
+                        editor.selectedRange = NSRange(location: editor.string.count, length: 0)
+                    }
                     Self.disableEditorMagic(field.currentEditor())
                     // The editor exists from this moment — hook the caret-width
                     // observers NOW, not at controlTextDidBeginEditing. That delegate
@@ -420,6 +433,10 @@ struct HistorySearchField: NSViewRepresentable {
                     guard let field, field.currentEditor() == nil else { return }
                     field.window?.makeFirstResponder(field)
                     if let editor = field.currentEditor() {
+                        // Collapse the auto-select-all that `becomeFirstResponder`
+                        // does, so a re-focus drops a caret at the end instead of
+                        // highlighting the whole field (see PromptField for why).
+                        editor.selectedRange = NSRange(location: editor.string.count, length: 0)
                         PromptField.disableEditorMagic(editor)
                     }
                 }
@@ -1148,67 +1165,107 @@ struct CrossfadeText: View {
     }
 }
 
-/// The streaming assistant bubble while the answer is still in flight: the
-/// thinking dots until the first token lands, then the live `StreamingMarkdown`.
-/// The point of this wrapper is the *seam* between the two — without it the dots
-/// hard-cut out the instant `text` goes non-empty and the first words snap in.
-/// Here the two share one leading-anchored slot in a `ZStack` and cross-fade on
-/// the first-token edge: the dots ease out (`thinkingToStreamFade`) while the
-/// first words ease in over the same window, so the wait dissolves into the
-/// answer instead of blinking over to it. Subsequent chunks are owned by
-/// `StreamingMarkdown`'s own per-chunk `TailFadeIn`; this view only choreographs
-/// the dots → first-字 handoff and then stays out of the way.
-struct StreamingTurnContent: View {
+/// The whole life of an assistant turn — the pre-stream wait, the answer
+/// streaming in, and the settled answer — in ONE view, so nothing structural
+/// swaps underneath the answer when the stream ends.
+///
+/// Why one view: the answer used to render through `StreamingMarkdown` while
+/// streaming and then get replaced by a plain `MarkdownBlocks` once settled.
+/// That swap re-built the whole subtree from a new identity, and the sub-pixel
+/// difference between the two layouts hard-cut the answer ~2pt up-left at
+/// completion (the "突然跳掉位移"). Here the answer is ALWAYS the same
+/// `MarkdownBlocks` — streaming just keeps feeding it more `text` and it reflows
+/// in place; settling only flips `textSelection` on the unchanged tree, which
+/// causes no rebuild and no jump.
+///
+/// The wait state (mood word / tool-activity line) rides as an `.overlay`, never
+/// a layout sibling: it fades out as the first real text lands and fades back in
+/// between agent rounds, but because it's an overlay it has zero footprint on the
+/// answer's own layout — so it can never push the answer around. The overlay also
+/// keeps a layer mounted across every fade, so there's no frame where the slot is
+/// momentarily empty (the "空白帧" between questions).
+struct AssistantTurnView: View {
     let text: String
+    /// Still in flight. Gates the wait overlay and holds the source badge back
+    /// until the answer settles (so it doesn't jump as rounds add sources).
+    var streaming: Bool = false
+    /// The live tool-activity line ("Searching the web…") when a tool is running,
+    /// else nil — takes the wait slot over the mood word while present.
+    var activity: String? = nil
+    /// The present-progressive mood word for the pre-stream wait (e.g. "Gazing…").
+    var thinkingWord: String = ""
+    var sources: [WebSource] = []
+    @Binding var hoveredSourceID: UUID?
+    @Binding var sourceCloseWork: DispatchWorkItem?
     var baseFont: CGFloat = 15
     var color: Color = Tokens.text1
     var onInAppCopy: (() -> Void)? = nil
-    /// The present-progressive mood word shown beside the dots during the pre-stream
-    /// wait (e.g. "gazing"). Empty hides it, leaving the bare dots.
-    var thinkingWord: String = ""
 
-    /// Duration of the dots-out / first-token-in cross-fade. Matched to the
-    /// 80ms-ish opacity beat the rest of the streaming UI uses so the handoff
-    /// reads as part of the same typewriter rhythm, not a separate flourish.
-    static let fade: Double = 0.12
+    /// One opacity beat, shared by the wait-overlay fade so the handoff reads as
+    /// part of the same calm rhythm rather than a separate flourish.
+    private static let fade: Double = 0.18
 
-    /// Whether the answer area currently has visible text. The dots / answer cross-fade
-    /// keys on this LIVE state, not a one-way latch: the agent harness can emit assistant
-    /// text, then run a tool and sit with an empty visible answer through the next round —
-    /// a latch would hide the dots forever after that first text and leave the tool wait
-    /// blank. Tracking emptiness directly means the dots come back whenever the answer is
-    /// momentarily empty again (between rounds), so the wait is never dotless.
-    ///
-    /// Trimmed, not a bare `!text.isEmpty`: GLM (and Kimi) open an agent turn with a
-    /// lone `"\n"` content chunk *before* requesting a tool, so a raw emptiness check
-    /// flips true on that newline and hides the dots/status while the real answer is
-    /// still a tool-round away — the blank-block bug. Treating whitespace-only as empty
-    /// keeps the wait state lit until genuine answer text lands.
+    /// Whether the answer currently has visible text. Trimmed, not a bare
+    /// `!text.isEmpty`: GLM/Kimi open an agent turn with a lone `"\n"` content
+    /// chunk *before* requesting a tool, so a raw emptiness check flips true on
+    /// that newline and would hide the wait while the real answer is still a
+    /// tool-round away. Treating whitespace-only as empty keeps the wait lit until
+    /// genuine answer text lands. Re-evaluated live (not latched) so the wait
+    /// comes back whenever the answer is momentarily empty again between rounds.
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            // Status word only — no dots. Shown whenever the answer is currently empty.
-            // Kept mounted across the fade so it eases away rather than vanishing;
-            // `allowsHitTesting(false)` and zero opacity make the lit state inert. The
-            // mood word fed here (`currentThinkingWord`) is always non-empty, so the
-            // pre-stream wait is never blank.
-            Group {
-                if !thinkingWord.isEmpty {
-                    // Cross-fades one mood word into the next — no hard cut.
-                    CrossfadeText(text: thinkingWord, font: baseFont, color: Tokens.text2)
-                }
-            }
-            .opacity(hasText ? 0 : 1)
-            .allowsHitTesting(false)
+    /// Show the wait overlay only while streaming with no visible answer yet.
+    private var showWait: Bool { streaming && !hasText }
 
-            // First words: start transparent, ease in as the dots ease out. Once
-            // lit, `StreamingMarkdown` carries every following chunk's own fade.
-            StreamingMarkdown(source: text, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // The answer — the SAME view whether streaming or settled, so the
+            // stream→settle edge never rebuilds it. While streaming it reflows in
+            // place as `text` grows; once settled it's identical but selectable.
+            // Selection stays ENABLED the whole time — including while streaming —
+            // on purpose. Toggling `.textSelection` at stream-end would swap between
+            // its two distinct modifier types (`Enabled`/`Disabled…`), changing the
+            // view's identity and re-introducing exactly the rebuild-jump this unified
+            // view exists to kill. A constant `.enabled` keeps one identity throughout,
+            // so the answer just reflows in place and never jumps. (The earlier reason
+            // to disable mid-stream — the tail-follow `scrollTo` collapsing a drag —
+            // only bites in the long, clipped/scrolling layout; the jump-free guarantee
+            // matters more, and most answers are short and never scroll.)
+            MarkdownBlocks(source: text, baseFont: baseFont, color: color, onInAppCopy: onInAppCopy)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .opacity(hasText ? 1 : 0)
+                .textSelection(.enabled)
+                // Reserve a line's worth of height while the answer is still empty
+                // so the wait overlay has somewhere to sit and the bubble doesn't
+                // pop from zero-height to one-line when the first token lands.
+                .frame(minHeight: showWait ? baseFont * 1.6 : 0, alignment: .leading)
+                // The pre-stream wait: mood word, or the tool-activity line while a
+                // tool runs. An overlay (not a sibling) so it never shifts the
+                // answer; both layers stay mounted and cross-fade on their own
+                // opacity, so the slot is never blank between rounds.
+                .overlay(alignment: .topLeading) {
+                    ZStack(alignment: .topLeading) {
+                        if let activity {
+                            CrossfadeText(text: activity, font: baseFont, color: Tokens.text2)
+                        } else if !thinkingWord.isEmpty {
+                            CrossfadeText(text: thinkingWord, font: baseFont, color: Tokens.text2)
+                        }
+                    }
+                    .opacity(showWait ? 1 : 0)
+                    .allowsHitTesting(false)
+                }
+
+            // Source badge: when this answer was grounded by a web search, show a
+            // compact, clickable "site + N" badge beneath it (XII-118). Only once
+            // settled — a mid-stream badge would jump as rounds add sources.
+            if !streaming && !sources.isEmpty {
+                SourceBadge(sources: sources,
+                            hoveredID: $hoveredSourceID,
+                            pendingClose: $sourceCloseWork)
+                    .padding(.top, 2)
+            }
         }
-        .animation(.easeInOut(duration: Self.fade), value: hasText)
+        .animation(.easeInOut(duration: Self.fade), value: showWait)
+        .animation(.easeInOut(duration: 0.12), value: activity != nil)
     }
 }
 

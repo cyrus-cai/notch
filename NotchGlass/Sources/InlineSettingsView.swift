@@ -1194,35 +1194,41 @@ struct InlineSettingsView: View {
         .animation(.easeOut(duration: 0.2), value: updater.phase)
     }
 
-    /// Quiet text-button links — the release notes, source on GitHub, the
-    /// releases page — in the same understated language as the Model footer's
-    /// signup host. "What's New" lives here as the fixed, always-available way
-    /// into the notes, independent of the once-per-version idle cue.
+    /// Quiet text-button links, grouped two-to-a-row by what they're about:
+    /// the top row is this app's own version trail (What's New / Releases), the
+    /// bottom row points outward (source on GitHub, the privacy policy). Same
+    /// understated language as the Model footer's signup host. "What's New"
+    /// lives here as the fixed, always-available way into the notes, independent
+    /// of the once-per-version idle cue.
     private var aboutLinks: some View {
-        HStack(spacing: 14) {
-            Button(L("about.whatsNew")) {
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
-                    model.openWhatsNew(on: nil)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 14) {
+                aboutLink(L("about.whatsNew")) {
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                        model.openWhatsNew(on: nil)
+                    }
+                }
+                aboutLink(L("about.releases")) {
+                    NSWorkspace.shared.open(UpdaterService.releasesPage)
                 }
             }
-            .buttonStyle(.plain)
-            .font(.sf(11.5, weight: .medium))
-            .foregroundStyle(Tokens.text2)
 
-            Button(L("about.github")) {
-                NSWorkspace.shared.open(URL(string: "https://github.com/\(UpdaterService.repo)")!)
+            HStack(spacing: 14) {
+                aboutLink(L("about.github")) {
+                    NSWorkspace.shared.open(URL(string: "https://github.com/\(UpdaterService.repo)")!)
+                }
+                aboutLink(L("about.privacy")) {
+                    NSWorkspace.shared.open(URL(string: "https://www.notch.website/privacy")!)
+                }
             }
-            .buttonStyle(.plain)
-            .font(.sf(11.5, weight: .medium))
-            .foregroundStyle(Tokens.text2)
-
-            Button(L("about.releases")) {
-                NSWorkspace.shared.open(UpdaterService.releasesPage)
-            }
-            .buttonStyle(.plain)
-            .font(.sf(11.5, weight: .medium))
-            .foregroundStyle(Tokens.text2)
         }
+    }
+
+    private func aboutLink(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.sf(11.5, weight: .medium))
+            .foregroundStyle(Tokens.text2)
     }
 
     private var footer: some View {

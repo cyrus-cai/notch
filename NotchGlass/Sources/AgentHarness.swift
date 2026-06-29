@@ -286,6 +286,11 @@ struct AgentHarness {
             // showing (a "composing…" carried over from the prior tool round):
             // the answer is now arriving, so the cue has done its job.
             var clearedGapLabel = false
+            // Defends against a model that occasionally emits its tool call as
+            // plain text DSL (`<|…|>` markup) instead of a structured tool_call —
+            // an intermittent provider glitch. The filter swallows that markup so
+            // the user never sees raw `<|DSML|invoke …>` soup in the answer.
+            var markupFilter = ToolMarkupFilter()
 
             for try await event in service.streamTurn(system: system,
                                                       messages: convo,
@@ -293,17 +298,25 @@ struct AgentHarness {
                 try Task.checkCancellation()
                 switch event {
                 case .text(let piece):
+                    let visible = markupFilter.feed(piece)
+                    guard !visible.isEmpty else { continue }
                     if !clearedGapLabel {
                         onActivity(nil)
                         clearedGapLabel = true
                     }
-                    assistantText += piece
-                    onText(piece)
+                    assistantText += visible
+                    onText(visible)
                 case .toolCall(let id, let name, let input):
                     pendingCalls.append(ToolInvocation(id: id, name: name, input: input))
                 case .finished(let reason):
                     stopReason = reason
                 }
+            }
+            // Flush any character held back as a possible markup opener: if the
+            // stream ended mid-`<` it was just a stray `<`, so let it through.
+            if let tail = markupFilter.flush(), !tail.isEmpty {
+                assistantText += tail
+                onText(tail)
             }
 
             // No tool calls (or we suppressed them at the cap) → the model is done.
@@ -397,5 +410,61 @@ struct AgentHarness {
             }
         }
         return L("agent.activity.working")
+    }
+}
+
+/// Strips tool-call DSL markup that some models occasionally leak into their
+/// *text* output instead of returning a structured tool_call. The tell-tale is a
+/// `<|…|>` opener (e.g. MiniMax's `<|DSML|tool_calls>` / `<|DSML|invoke name=…>`);
+/// normal answer prose never contains the `<|` sequence, so it's a safe sentinel.
+///
+/// Stateful because text streams in token by token: an opener can be split across
+/// chunks (`<`, then `|DS`…). Once an opener is seen, *everything* from it onward
+/// in the turn is swallowed — the whole leaked tool-call block (tags plus the
+/// query text nested inside) is junk to the user, and a well-behaved turn won't
+/// resume prose after starting one. A lone trailing `<` is held back until the
+/// next chunk (or `flush`) disambiguates whether it began an opener.
+private struct ToolMarkupFilter {
+    private var suppressing = false   // saw `<|` — swallow the rest of the turn
+    private var heldBracket = false   // last char was a bare `<`, decision pending
+
+    /// Feed one streamed chunk; returns the portion safe to show the user.
+    mutating func feed(_ piece: String) -> String {
+        if suppressing { return "" }
+        var out = ""
+        // A `<` carried over from the previous chunk: decide it now.
+        var s = Substring(piece)
+        if heldBracket {
+            heldBracket = false
+            if let first = s.first {
+                if first == "|" { suppressing = true; return out }  // `<|` → leak begins
+                out.append("<")                                     // stray `<`, keep it
+            } else {
+                heldBracket = true                                  // still nothing after `<`
+                return out
+            }
+        }
+        while let lt = s.firstIndex(of: "<") {
+            out += s[s.startIndex..<lt]
+            let after = s.index(after: lt)
+            if after == s.endIndex {        // chunk ends exactly on `<` — hold it
+                heldBracket = true
+                return out
+            }
+            if s[after] == "|" {            // `<|` → start of leaked markup
+                suppressing = true
+                return out
+            }
+            out.append("<")                 // a `<` not followed by `|` is real text
+            s = s[after...]
+        }
+        out += s
+        return out
+    }
+
+    /// Stream ended: release a held bare `<` (it never became an opener).
+    mutating func flush() -> String? {
+        defer { heldBracket = false }
+        return heldBracket ? "<" : nil
     }
 }

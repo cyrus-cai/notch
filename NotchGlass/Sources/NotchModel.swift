@@ -417,7 +417,7 @@ final class NotchModel: ObservableObject {
     /// instead of a fixed "Thinking…". Drawn from the Orange Moon imagery.
     static let thinkingWords = [
         "Gazing...", "Glowing...", "Drifting...", "Imagining...", "Whispering...",
-        "Hoping...", "Dreaming...", "Waiting...", "Wandering...", "Lingering...",
+        "Hoping...", "Waiting...", "Wandering...", "Lingering...",
         "Floating...", "Shimmering...", "Musing...", "Pondering...", "Yearning...",
         "Reminiscing...", "Fading...", "Echoing...", "Searching...", "Wondering...",
     ]
@@ -471,7 +471,7 @@ final class NotchModel: ObservableObject {
 
     /// How long each mood word lingers before rotating to the next. Slow enough to
     /// read as a settling mood, not a ticker.
-    private static let thinkingWordInterval: TimeInterval = 2.4
+    private static let thinkingWordInterval: TimeInterval = 4.0
 
     /// Slowly rotates the mood word while the pre-stream wait is on screen, so a long
     /// search/compose round (10s+ across several tool rounds) breathes instead of
@@ -686,6 +686,11 @@ final class NotchModel: ObservableObject {
     /// Like settings, it owns the whole idle body when true and the back chevron /
     /// Esc returns to the prompt. Mutually exclusive with `showSettings`.
     @Published var showWhatsNew = false
+    /// The guided first-run flow — opens automatically the first time the panel
+    /// opens on a fresh install (see `OnboardingService`). Like settings and What's
+    /// New, it owns the whole idle body while true; `OnboardingService.finishGuide()`
+    /// clears it. Mutually exclusive with the other body modules.
+    @Published var showOnboarding = false
     /// Arms the destructive "Clear recent history?" confirmation. Lives on the
     /// model (not the view) so the Clear pill can raise it while the centered
     /// confirmation card is mounted on the *island* — so it sits in the middle of
@@ -959,6 +964,32 @@ final class NotchModel: ObservableObject {
         showWhatsNew = false
     }
 
+    /// Open the guided first-run flow in place of the prompt — the path the first
+    /// panel-open takes on a fresh install. Mirrors `openWhatsNew`: it folds the
+    /// other body modules away (they share the same slot) and keeps the panel open.
+    func openOnboarding(on display: CGDirectDisplayID? = nil) {
+        entryVelocity = .zero
+        if let display { activeDisplay = display }
+        if !open {
+            pasteboardChangeCountAtOpen = pasteboardChangeCountAtRest
+        }
+        closing = false
+        open = true
+        mode = .idle
+        showOnboarding = true
+        showWhatsNew = false
+        showSettings = false
+        showHistory = false
+        highlightedHistoryIndex = nil
+    }
+
+    /// Leave the guide and return to the idle prompt (panel stays open). Records the
+    /// guide as done so it never leads again.
+    func closeOnboarding() {
+        OnboardingService.shared.finishGuide()
+        showOnboarding = false
+    }
+
     /// Auto-retract once the pointer leaves — but ONLY when nothing has been
     /// asked and nothing is on screen (the rule the user settled on):
     ///   · keep open while an answer is showing (`.result`)
@@ -988,6 +1019,9 @@ final class NotchModel: ObservableObject {
         // Likewise keep the panel open while the user is reading What's New — a
         // cursor that slips off the island shouldn't snatch the notes away.
         if showWhatsNew { return }
+        // And keep it open through the guided first run — the user may be mid-way
+        // through connecting a model; a stray cursor must not fold the guide away.
+        if showOnboarding { return }
         // Hover-leave folds an empty idle prompt — exactly the case that read as a
         // clamp before. Route through the two-beat dissolve so the (admittedly
         // minimal) content fades before the shell retracts, matching Esc/click-out.
@@ -1719,31 +1753,56 @@ final class NotchModel: ObservableObject {
         // wire copy in `context` carries the clipboard. Skipped on follow-ups: a
         // mid-conversation clipboard change is almost never "about" the new turn.
         var system = notchSystemPromptDated()
+        // Clipboard injection — first turn only. We no longer gate on a lexical
+        // "is this referential?" guess: whenever a clip is eligible we hand the model
+        // the FULL copied text and let *it* decide whether the text is relevant to the
+        // question (a model judges relevance far better than a keyword list). The
+        // framing below makes the clip explicitly optional — "use it only if relevant,
+        // otherwise ignore it" — so an incidentally-copied snippet no longer pollutes a
+        // self-contained answer.
+        //
         // A forced (chip-driven) turn falls back to `pendingClipboard` — the exact text
         // the chip previewed — if a re-read comes back stale (e.g. an in-app copy bumped
         // the baseline between render and tap), so the chip always acts on what it showed.
         let clipForTurn = forceClip ? (clipboardContextIfEligible() ?? pendingClipboard)
-                                    : (isReferentialQuery(q) ? clipboardContextIfEligible() : nil)
+                                    : clipboardContextIfEligible()
         if firstTurn, let clip = clipForTurn {
             // The instruction the model acts on: the chip's full wire phrase (e.g. the
             // Translate detect-and-route rule) when one was set, otherwise the visible
             // question. The on-screen bubble keeps `q`; only this wire copy diverges.
             let instruction = wireOverride ?? q
-            context[context.count - 1] = ChatMessage(
-                role: "user",
-                content: "For context, here is what I have copied:\n\n\(clip)\n\nWith that in mind: \(instruction)")
-            // Stamp the on-screen user turn so the result view can show a *permanent*
-            // "based on what you copied" trace above it — not a load-only flash. The
-            // user turn is the second-to-last entry (the empty assistant placeholder
-            // is last). Set before `seedThread = turns` is captured below, so the flag
-            // rides into the saved snapshot and survives reopen from Recent.
-            if turns.count >= 2 { turns[turns.count - 2].usedClipboard = true }
-            // The injected text needs room the 90-word cap can't give. Append the
-            // shared enriched-turn marker so the persona allows 200 words AND the
-            // client raises the wire `max_tokens` to match (XII-91) — at the default
-            // ceiling a long clip + question + 200-word answer was truncated. Single
-            // source for the marker string lives in `ReplyTokens`.
-            system = notchSystemPromptDated() + ReplyTokens.enrichedMarker
+            // A forced/chip turn IS about the clip by construction; a typed turn that
+            // reads as referential ("summarize this") almost certainly is too. Those
+            // get the imperative framing (act on it) and the 200-word enriched budget.
+            // Everything else gets the clip as *optional* background the model may
+            // ignore, on the normal budget — copying something then asking an unrelated
+            // question shouldn't widen the answer or force the clip in.
+            let actsOnClip = forceClip || isReferentialQuery(q)
+            if actsOnClip {
+                context[context.count - 1] = ChatMessage(
+                    role: "user",
+                    content: "For context, here is what I have copied:\n\n\(clip)\n\nWith that in mind: \(instruction)")
+                // Stamp the on-screen user turn so the result view can show a *permanent*
+                // "based on what you copied" trace above it — not a load-only flash. The
+                // user turn is the second-to-last entry (the empty assistant placeholder
+                // is last). Set before `seedThread = turns` is captured below, so the flag
+                // rides into the saved snapshot and survives reopen from Recent.
+                if turns.count >= 2 { turns[turns.count - 2].usedClipboard = true }
+                // The injected text needs room the 90-word cap can't give. Append the
+                // shared enriched-turn marker so the persona allows 200 words AND the
+                // client raises the wire `max_tokens` to match (XII-91) — at the default
+                // ceiling a long clip + question + 200-word answer was truncated. Single
+                // source for the marker string lives in `ReplyTokens`.
+                system = notchSystemPromptDated() + ReplyTokens.enrichedMarker
+            } else {
+                // Optional-context framing: the model gets the full clip but is told to
+                // use it only if it's actually relevant to the question, otherwise to
+                // answer as if it weren't there. No `usedClipboard` stamp (we don't know
+                // the model used it) and no enriched budget.
+                context[context.count - 1] = ChatMessage(
+                    role: "user",
+                    content: "I have the following text on my clipboard — use it only if it's relevant to my question, otherwise ignore it completely:\n\n\(clip)\n\nMy question: \(instruction)")
+            }
         }
 
         // Fresh thinking word for this answer's pre-stream wait, rotating slowly
@@ -1865,8 +1924,16 @@ final class NotchModel: ObservableObject {
                 if let i = thread.firstIndex(where: { $0.id == answerID }) {
                     thread[i].streaming = false
                 }
+                // Captured BEFORE persist: whether this round finished detached —
+                // the user walked away while it streamed, so the panel folded back
+                // to the resting notch (the three dots). When so, fire a native
+                // banner so the finished answer doesn't just quietly go out.
+                let walkedAway = !self.isOnScreen(answerID: answerID)
                 self.markFinished(id: answerID)   // no-op when detached
                 self.persistThread(thread, threadID: threadID, answer: acc)
+                if walkedAway {
+                    self.notifyAnswerReady(threadID: threadID, question: q, answer: acc)
+                }
             } catch is CancellationError {
                 // superseded by a newer round on the same screen; nothing to persist
             } catch {
@@ -1888,12 +1955,17 @@ final class NotchModel: ObservableObject {
                         thread[i].text = saved
                         thread[i].streaming = false
                     }
+                    let walkedAway = !self.isOnScreen(answerID: answerID)
                     self.persistThread(thread, threadID: threadID, answer: saved)
                     // Only touch the screen when this round still owns it.
                     if self.isOnScreen(answerID: answerID) {
                         self.updateAnswer(id: answerID, text: saved)
                         self.markFinished(id: answerID)
                         self.mode = .result
+                    } else if walkedAway {
+                        // Interrupted but salvaged a partial answer, and the user had
+                        // already walked away — still notify, same as a clean finish.
+                        self.notifyAnswerReady(threadID: threadID, question: q, answer: saved)
                     }
                 } else {
                     // Failed before any text arrived (refused connection, bad key): no
@@ -2314,6 +2386,19 @@ final class NotchModel: ObservableObject {
         }
     }
 
+    /// Fire the native "answer ready" banner for a round that finished detached
+    /// (the user walked away — see the `walkedAway` gate at the call sites). Pulls
+    /// whatever title `persistThread` already has for this thread (a follow-up
+    /// carries one; a fresh thread's title is still generating, so it falls back to
+    /// the question inside `NotificationService`). The tap reopens this thread.
+    private func notifyAnswerReady(threadID: UUID, question: String, answer: String) {
+        // Nothing was actually saved (empty answer) → no row to reopen, no banner.
+        guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let title = history.first(where: { $0.id == threadID })?.title
+        NotificationService.shared.postAnswerReady(
+            threadID: threadID, title: title, question: question)
+    }
+
     /// Ask the configured model to summarize the conversation into a short title.
     /// Returns `nil` when offline (stub), unconfigured, or the request fails, so
     /// the UI can always fall back to the first user message.
@@ -2387,6 +2472,16 @@ final class NotchModel: ObservableObject {
     }
 
     // MARK: - History
+
+    /// Reopen a conversation by its history id — the path a tapped answer
+    /// notification takes. Finds the matching (settled) Recent row and routes it
+    /// through `openHistory`, so the panel lands straight on that thread's detail
+    /// view. No-op if the row is gone or still pending. The caller (AppDelegate)
+    /// must already have summoned the panel open on a screen.
+    func openThread(id: UUID) {
+        guard let item = history.first(where: { $0.id == id }), !item.pending else { return }
+        openHistory(item)
+    }
 
     func openHistory(_ item: HistoryItem) {
         // Still answering: this row is a placeholder (no turns, empty answer) whose
@@ -2590,6 +2685,9 @@ final class NotchModel: ObservableObject {
         // What's New is a reading surface — give it the same comfortable column
         // as the result view. Also shows only over idle, so it wins like settings.
         if showWhatsNew { return Tokens.openWidthWhatsNew }
+        // The guided first run is a two-column layout (left controls + right demo
+        // pane), so it gets its own wider width. Shows only over idle.
+        if showOnboarding { return Tokens.openWidthOnboarding }
         switch mode {
         case .result: return Tokens.openWidthResult
         // A follow-up loads with the thread already on screen (shown via the result

@@ -112,6 +112,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] isOpen, active in
                 guard let self else { return }
                 if isOpen {
+                    // First open ever retires the gesture glow (its job — getting the
+                    // user to the panel — is done). A no-op after the first time.
+                    OnboardingService.shared.markPanelOpened()
+                    // …and on a fresh install, the panel opens straight into the
+                    // guided first run. Deferred a runloop turn so it rides the same
+                    // open spring rather than racing the expand's first frame. Guarded
+                    // so it never overrides a panel the user opened INTO settings /
+                    // What's New (e.g. ⌘,) — only a plain idle open leads with the guide.
+                    if OnboardingService.shared.showGuide {
+                        DispatchQueue.main.async {
+                            guard self.model.open,
+                                  !self.model.showSettings,
+                                  !self.model.showWhatsNew,
+                                  OnboardingService.shared.showGuide else { return }
+                            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                                self.model.openOnboarding(on: active)
+                            }
+                        }
+                    }
                     // This fires synchronously inside the hover handler ($open
                     // publishes on willSet) — BEFORE SwiftUI commits the open
                     // animation's first frame. The key-window dance does
@@ -246,6 +265,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // ⌘, can fire from anywhere — open on the screen the user is
                     // actually on (mouse position), not wherever the notch lives.
                     self.model.openSettings(on: self.displayForSummon())
+                }
+            }
+        }
+
+        // Wire the answer-ready notification service: set its delegate so taps
+        // route back here, and observe the tap so we can summon the panel and
+        // reopen the conversation. (The banners themselves are posted from
+        // `NotchModel.submit` when a round finishes after the user walked away.)
+        NotificationService.shared.configure()
+        NotificationCenter.default.addObserver(
+            forName: NotificationService.answerTapped,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            Task { @MainActor in
+                guard let self,
+                      let id = note.userInfo?[NotificationService.threadIDKey] as? UUID
+                else { return }
+                // Bring the app forward so the summoned panel is interactive even
+                // when Notch wasn't frontmost, then open on the screen under the
+                // mouse and route straight to that thread's detail view.
+                NSApp.activate(ignoringOtherApps: true)
+                let display = self.displayForSummon()
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                    if !self.model.open {
+                        self.model.mode = .idle
+                        self.model.openPanel(on: display)
+                    } else if let display {
+                        self.model.activeDisplay = display
+                    }
+                    self.model.openThread(id: id)
                 }
             }
         }
