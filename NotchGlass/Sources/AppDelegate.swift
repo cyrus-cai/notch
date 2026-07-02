@@ -48,7 +48,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.setService(AppDelegate.makeService())
         model.isConfigured = AppDelegate.isConfigured()
     }
-    private var settingsHotKey: HotKey?
+    /// Local key monitor backing ⌘, → Settings. App-scoped (not a global Carbon
+    /// hot key), so ⌘, only opens Settings while Notch is frontmost and stays out
+    /// of every other app's way. Held so it lives for the app's lifetime.
+    private var settingsHotKeyMonitor: Any?
     /// The user-configurable global shortcut that toggles the panel open/closed.
     /// The default is a double-tap of ⌥ (held by `summonDoubleTap`); a recorded
     /// chord uses `summonHotKey` instead. Exactly one is live at a time. Both are
@@ -300,14 +303,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // ⌘, opens Settings. This is a menu-bar-less accessory app, so the
-        // standard menu item that would carry that shortcut doesn't exist — we
-        // register a real system hot key (Carbon `RegisterEventHotKey`, no
-        // accessibility permission required) so ⌘, works from anywhere. It posts
-        // the same request the in-panel gear does, so both share one open path.
-        settingsHotKey = HotKey(keyCode: UInt32(kVK_ANSI_Comma),
-                                modifiers: UInt32(cmdKey)) {
-            NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
+        // ⌘, opens Settings — but ONLY when Notch is frontmost, so it never
+        // steals the standard "Preferences" shortcut from whatever app the user
+        // is actually in. A *local* NSEvent monitor sees only key events
+        // delivered to our own windows (unlike Carbon's process-wide
+        // RegisterEventHotKey, which fired ⌘, from anywhere and shadowed every
+        // other app). It posts the same request the in-panel gear does, so both
+        // share one open path.
+        settingsHotKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == UInt16(kVK_ANSI_Comma),
+               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
+                NotificationCenter.default.post(name: .openSettingsRequested, object: nil)
+                return nil // swallow it so it doesn't also beep / insert a comma
+            }
+            return event
         }
 
         // The configurable global summon shortcut (default: double-tap ⌥). A

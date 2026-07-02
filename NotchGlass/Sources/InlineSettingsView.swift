@@ -57,6 +57,33 @@ struct InlineSettingsView: View {
     /// True while `EXA_API_KEY` forces the Exa key — field is then informational.
     private var exaEnvOverride: Bool { APIKeyStore.hasExaEnvOverride() }
 
+    /// The user's chosen search backend (Keenable / Exa), or nil for the provider's
+    /// native search. Pick one and that's what runs — like the model picker, no
+    /// fallback between backends.
+    @State private var searchBackend: APIKeyStore.SearchBackend? = APIKeyStore.preferredSearchBackend
+
+    /// Keenable search key state — a standalone search backend, keyed (its HTTP API
+    /// requires a key). Same edit/mask/saved lifecycle as the Exa row.
+    @State private var keenableKey: String = APIKeyStore.storedKeenableKey()
+    @State private var editingKeenableKey: Bool =
+        APIKeyStore.storedKeenableKey().isEmpty && !APIKeyStore.hasKeenableEnvOverride()
+    @State private var keenableSaved = false
+    /// True while `KEENABLE_API_KEY` forces the key — field is then informational.
+    private var keenableEnvOverride: Bool { APIKeyStore.hasKeenableEnvOverride() }
+
+    private var canSaveKeenable: Bool {
+        guard !keenableEnvOverride else { return false }
+        return editingKeenableKey
+            && keenableKey != APIKeyStore.storedKeenableKey()
+    }
+
+    /// The stored Keenable key rendered safe for display (same masking as Exa).
+    private var maskedKeenableKey: String {
+        let key = APIKeyStore.currentKeenableKey() ?? APIKeyStore.storedKeenableKey()
+        guard key.count > 12 else { return String(repeating: "•", count: max(key.count, 8)) }
+        return "\(key.prefix(4))••••••••\(key.suffix(4))"
+    }
+
     private var canSaveExa: Bool {
         guard !exaEnvOverride else { return false }
         return editingExaKey
@@ -191,6 +218,8 @@ struct InlineSettingsView: View {
                         modelRow
                         footer
                     case .search:
+                        searchBackendRow
+                        keenableKeyRow
                         exaKeyRow
                     case .translation:
                         translationLanguageRow
@@ -472,6 +501,128 @@ struct InlineSettingsView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+    }
+
+    /// The search-backend picker. Like the model picker: pick one and that's what
+    /// runs. The Default row hands back to the provider's own native search; the two
+    /// concrete picks each run only when keyed (no fallback to the other).
+    private var searchBackendRow: some View {
+        settingRow(label: L("search.backend")) {
+            GlassMenu(title: searchBackendLabel(searchBackend)) {
+                Button(searchBackendLabel(nil)) { selectSearchBackend(nil) }
+                Divider()
+                ForEach(APIKeyStore.SearchBackend.allCases) { b in
+                    Button(searchBackendLabel(b)) { selectSearchBackend(b) }
+                }
+            }
+        }
+    }
+
+    private func searchBackendLabel(_ b: APIKeyStore.SearchBackend?) -> String {
+        switch b {
+        case .keenable: return L("search.backend.keenable")
+        case .exa:      return L("search.backend.exa")
+        case nil:       return L("search.backend.native")
+        }
+    }
+
+    private func selectSearchBackend(_ newValue: APIKeyStore.SearchBackend?) {
+        guard newValue != searchBackend else { return }
+        searchBackend = newValue
+        APIKeyStore.preferredSearchBackend = newValue
+        NotificationCenter.default.post(name: .aiBackendChanged, object: nil)
+    }
+
+    /// The Keenable search-key row — a standalone keyed search backend. Same
+    /// grid/edit/mask lifecycle as the Exa row; the hint says where to get a key.
+    private var keenableKeyRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Text(L("model.keenableApiKey"))
+                    .font(.sf(13, weight: .medium))
+                    .foregroundStyle(Tokens.text2)
+                    .lineLimit(1)
+                    .frame(width: 76, alignment: .leading)
+
+                ZStack(alignment: .leading) {
+                    if editingKeenableKey {
+                        if keenableKey.isEmpty {
+                            Text(L("model.keenablePasteKey"))
+                                .font(.sf(13))
+                                .foregroundStyle(Tokens.text2)
+                                .allowsHitTesting(false)
+                        }
+                        TextField("", text: $keenableKey)
+                            .textFieldStyle(.plain)
+                            .font(.sf(13))
+                            .foregroundStyle(Tokens.text1)
+                            .disabled(keenableEnvOverride)
+                            .onSubmit { saveKeenableKey() }
+                    } else {
+                        Text(maskedKeenableKey)
+                            .font(.sf(13))
+                            .foregroundStyle(Tokens.text2)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.white.opacity(editingKeenableKey ? 0.06 : 0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(.white.opacity(editingKeenableKey ? 0.12 : 0.07), lineWidth: 0.5)
+                )
+                .opacity(keenableEnvOverride ? 0.5 : 1)
+
+                if editingKeenableKey {
+                    if !APIKeyStore.storedKeenableKey().isEmpty {
+                        Button(L("model.cancel")) { stopEditingKeenableKey() }
+                            .buttonStyle(.plain)
+                            .font(.sf(11, weight: .semibold))
+                            .foregroundStyle(Tokens.text2)
+                    }
+                } else if !keenableEnvOverride {
+                    Button(L("model.change")) { editingKeenableKey = true }
+                        .buttonStyle(.plain)
+                        .font(.sf(11, weight: .semibold))
+                        .foregroundStyle(Tokens.text1)
+                }
+                if editingKeenableKey || canSaveKeenable || keenableSaved {
+                    Button(keenableSaved ? L("model.saved") : L("model.save")) { saveKeenableKey() }
+                        .buttonStyle(.plain)
+                        .font(.sf(11, weight: .semibold))
+                        .foregroundStyle(keenableSaved ? Tokens.text2 : (canSaveKeenable ? Tokens.text1 : Tokens.text4))
+                        .disabled(!canSaveKeenable && !keenableSaved)
+                        .animation(.easeOut(duration: 0.2), value: keenableSaved)
+                }
+            }
+
+            Group {
+                if keenableEnvOverride {
+                    Text(L("model.footer.env", "KEENABLE_API_KEY"))
+                } else {
+                    Text(keenableHintText)
+                }
+            }
+            .font(.sf(11))
+            .foregroundStyle(Tokens.text4)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.leading, 88)
+        }
+    }
+
+    /// The Keenable hint with `keenable.ai` as a clickable link.
+    private var keenableHintText: AttributedString {
+        var text = AttributedString(L("model.keenableHint"))
+        var host = AttributedString(L("model.keenableHint.host"))
+        host.link = URL(string: "https://keenable.ai")
+        host.foregroundColor = Tokens.text2
+        text.append(host)
+        return text
     }
 
     /// The Exa search-key row — same grid and edit/mask lifecycle as `keyRow`, but
@@ -781,6 +932,24 @@ struct InlineSettingsView: View {
     private func stopEditingExaKey() {
         exaKey = APIKeyStore.storedExaKey()
         withAnimation(.easeOut(duration: 0.16)) { editingExaKey = false }
+    }
+
+    private func saveKeenableKey() {
+        APIKeyStore.saveKeenableKey(keenableKey)
+        keenableKey = APIKeyStore.storedKeenableKey()
+        NotificationCenter.default.post(name: .aiBackendChanged, object: nil)
+        withAnimation(.easeOut(duration: 0.16)) { editingKeenableKey = false }
+        withAnimation(.easeOut(duration: 0.2)) { keenableSaved = true }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            await MainActor.run { withAnimation(.easeOut(duration: 0.2)) { keenableSaved = false } }
+        }
+    }
+
+    /// Abandon the Keenable edit and fall back to the stored key's masked summary.
+    private func stopEditingKeenableKey() {
+        keenableKey = APIKeyStore.storedKeenableKey()
+        withAnimation(.easeOut(duration: 0.16)) { editingKeenableKey = false }
     }
 
     /// What the model chip shows: the saved id, or the resolved default when the
@@ -1140,10 +1309,6 @@ struct InlineSettingsView: View {
             }
 
             updateRow
-
-            Rectangle()
-                .fill(.white.opacity(0.06))
-                .frame(height: 0.5)
 
             aboutLinks
         }

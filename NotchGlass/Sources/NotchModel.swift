@@ -256,10 +256,23 @@ final class NotchModel: ObservableObject {
                text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 manualPanelOverride = nil
             }
+            // Any real edit ends an ↑/↓ recall session, so the next ↑ starts fresh
+            // from the newest item. `isRecallingText` shields the recall's own
+            // fill from tripping this (it writes `text` too).
+            if !isRecallingText { historyRecallIndex = nil }
             scheduleDueDetection()
             scheduleClassification()
         }
     }
+
+    /// An unsent idle draft parked at the last close so re-opening the notch can
+    /// hand it back instead of dropping what the user was mid-way through typing.
+    /// `fullClose` stashes `text` here (only when it's a non-empty idle draft —
+    /// never a submitted-then-cleared line), and the closed→open edge in
+    /// `openPanel` restores it into a fresh idle prompt. Explicit "start fresh"
+    /// paths (`newChat`) never fill this, so backing out still lands on a blank
+    /// prompt. Consumed on restore so it hands back exactly once.
+    private var savedIdleDraft: String = ""
 
     /// In-flight date detection for the current text — superseded by every
     /// keystroke so only the read of what's actually in the box lands.
@@ -708,6 +721,56 @@ final class NotchModel: ObservableObject {
     @Published var highlightedHistoryIndex: Int? = nil
     @Published private(set) var history: [HistoryItem] = []
 
+    /// Shell-style ↑/↓ history recall cursor for the idle prompt. `nil` means no
+    /// recall session is in flight (the user is editing normally). Once ↑ pulls a
+    /// past question into the box this holds the index into `recallQuestions` (the
+    /// dedup'd list, NOT raw `history`) that's shown, so a further ↑ steps older and
+    /// ↓ steps newer. Any real keystroke resets it to `nil` (see `text.didSet`), so
+    /// recall never fights live editing.
+    private var historyRecallIndex: Int? = nil
+
+    /// The question strings ↑/↓ recall walks, newest first — the raw `history` `q`
+    /// values with **adjacent duplicates collapsed** (bash `ignoredups`). Asking the
+    /// same thing twice in a row leaves one entry here, so ↑ never fills the same
+    /// line twice running and the "x / total" counter counts distinct consecutive
+    /// questions. Non-adjacent repeats (asked A, then B, then A again) are kept —
+    /// only *consecutive* duplicates fold, matching "连续两条相同" exactly.
+    private var recallQuestions: [String] {
+        var out: [String] = []
+        for item in history {           // history is newest-first
+            if out.last != item.q { out.append(item.q) }
+        }
+        return out
+    }
+    /// Set while `recallPreviousQuestion`/`recallNextQuestion` write `text`
+    /// themselves, so the `text.didSet` reset doesn't mistake the recall's own fill
+    /// for the user typing and immediately cancel the session.
+    private var isRecallingText = false
+    /// Whether a ↑/↓ recall session is currently active — the idle prompt's
+    /// `PromptField` uses this to keep routing ↑/↓ to recall even after the box is
+    /// no longer empty (so "press ↑ again to go further back" works).
+    var isRecallingHistory: Bool { historyRecallIndex != nil }
+
+    /// Where the ↑/↓ recall cursor currently sits, for the little "3 / 12" counter
+    /// the idle prompt shows in place of the clipboard quote while recalling.
+    /// `pos` is 1-based (newest = 1); `total` is the history depth, both capped at
+    /// 99 so the readout never overflows its slot. `nil` when no recall is active.
+    var recallPosition: (pos: Int, total: Int)? {
+        guard let i = historyRecallIndex else { return nil }
+        return (min(i + 1, 99), min(recallQuestions.count, 99))
+    }
+
+    /// A tick that bumps on every successful ↑/↓ recall step, carrying the step's
+    /// direction. The idle input row observes it to fire a small directional
+    /// slide-in as the recalled question swaps in: `.older` (↑) slides down from
+    /// above, `.newer` (↓) slides up from below. Purely a view cue — never
+    /// persisted, and it doesn't gate any behaviour.
+    enum RecallDirection { case older, newer }
+    @Published private(set) var recallPulse: (n: Int, dir: RecallDirection) = (0, .older)
+    private func pulseRecall(_ dir: RecallDirection) {
+        recallPulse = (recallPulse.n + 1, dir)
+    }
+
     /// The recent items rendered in the list — now the FULL stored history (up to
     /// the 50-item persistence cap), not a clipped top-8. The list scrolls, and
     /// keyboard nav auto-scrolls the highlight into view, so every captured item
@@ -870,6 +933,16 @@ final class NotchModel: ObservableObject {
         // fresh in `clipboardContextIfEligible`.
         if !open {
             pasteboardChangeCountAtOpen = pasteboardChangeCountAtRest
+            // Hand back an unsent idle draft parked at the last close, so folding
+            // the notch away and re-opening it doesn't drop what the user was
+            // typing. Only into a fresh, empty idle prompt — never clobber a line
+            // already in the box (e.g. one restored with the panel). Consumed here
+            // so it's handed back exactly once. Runs on the closed→open edge only:
+            // hover re-enters and display migrations keep `open` true and skip it.
+            if mode == .idle, !hasText, !savedIdleDraft.isEmpty {
+                text = savedIdleDraft
+            }
+            savedIdleDraft = ""
         }
         // Re-entering during the close dissolve cancels it: clear the flag so the
         // content (held mounted while `open` is true) springs back to full opacity
@@ -1073,6 +1146,12 @@ final class NotchModel: ObservableObject {
         // any in-flight `beginClose` timer — its `guard self.closing` then no-ops.
         closing = false
         activeDisplay = nil
+        // Park an unsent idle draft so the next open can restore it — but only a
+        // genuine idle draft: never a follow-up typed on top of an answer
+        // (`.result`), and never an empty line. A submit already cleared `text`
+        // before any close, so a sent line stashes nothing. `newChat` clears
+        // without routing through here, so "start fresh" still lands blank.
+        savedIdleDraft = (mode == .idle && hasText) ? text : ""
         mode = .idle
         text = ""; turns = []
         showHistory = false
@@ -1541,19 +1620,14 @@ final class NotchModel: ObservableObject {
     }
 
     /// The directional suffix for the Translate chip, resolved against the *pending
-    /// clipboard* — the target language is knowable up front, so the chip names it
-    /// instead of hedging. With a detected source that's one of the two prefs we
-    /// show "src→dst" (e.g. "中→En"); when the source is some other language (or
-    /// undetected) only the target is guaranteed, so we show "→dst". Recomputes
-    /// whenever the clipboard or either pref changes (all are `@Published`).
+    /// clipboard* — only the target language is shown ("→dst", e.g. "→En"); the
+    /// source is omitted so the chip stays compact. Recomputes whenever the
+    /// clipboard or either pref changes (all are `@Published`).
     var translateChipDirection: String {
-        let (source, target) = TranslationLanguage.resolveDirection(
+        let (_, target) = TranslationLanguage.resolveDirection(
             clip: pendingClipboard,
             pref1: translationPref1,
             pref2: translationPref2)
-        if let source {
-            return "\(source.chipLabel)→\(target.chipLabel)"
-        }
         return "→\(target.chipLabel)"
     }
 
@@ -2560,6 +2634,72 @@ final class NotchModel: ObservableObject {
     private func openApp(bundleID: String) {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+    }
+
+    // MARK: - Shell-style history recall (↑/↓ fill the input)
+
+    /// ↑ on the idle prompt: pull the previous question straight into the input,
+    /// the way a shell's up-arrow recalls the last command. The first press (from
+    /// an empty box) fills the most recent question; each further ↑ steps one item
+    /// older, clamping at the oldest. Returns `true` when it filled the box, so the
+    /// field swallows the key; `false` (no history, or already at the oldest) lets
+    /// ↑ do its usual thing.
+    @discardableResult
+    func recallPreviousQuestion() -> Bool {
+        let questions = recallQuestions
+        guard !questions.isEmpty else { return false }
+        // Clamp the resume point in case `history` shrank since the last step, then
+        // advance one older. `guard` catches "already at the oldest" (no-op).
+        let current = min(historyRecallIndex ?? -1, questions.count - 1)
+        let next = current + 1
+        guard next < questions.count else { return false }   // already at the oldest
+        fillRecall(at: next, in: questions)
+        pulseRecall(.older)
+        return true
+    }
+
+    /// ↓ while recalling: step back toward the newest question. Stepping past the
+    /// newest clears the box (back to where the user started), ending the session.
+    /// Returns `true` while a recall session is live so ↓ stays owned by recall;
+    /// `false` when there's nothing being recalled, so ↓ falls through to its
+    /// normal duty (opening / stepping the recent list).
+    @discardableResult
+    func recallNextQuestion() -> Bool {
+        guard let current = historyRecallIndex else { return false }
+        if current <= 0 {
+            // Past the newest — clear back to an empty box and end recall.
+            historyRecallIndex = nil
+            setRecallText("")
+        } else {
+            let questions = recallQuestions
+            guard !questions.isEmpty else {
+                // History emptied out from under us mid-recall — end the session.
+                historyRecallIndex = nil
+                setRecallText("")
+                pulseRecall(.newer)
+                return true
+            }
+            // Clamp defensively: `history` can shrink mid-recall (a row deleted),
+            // so the cursor might now point past the end.
+            fillRecall(at: min(current - 1, questions.count - 1), in: questions)
+        }
+        pulseRecall(.newer)
+        return true
+    }
+
+    /// Move the recall cursor to `index` in the dedup'd `questions` and drop that
+    /// question into the box.
+    private func fillRecall(at index: Int, in questions: [String]) {
+        historyRecallIndex = index
+        setRecallText(questions[index])
+    }
+
+    /// Write `text` as part of a recall step — flagged so `text.didSet` doesn't
+    /// read the fill as the user typing and cancel the session.
+    private func setRecallText(_ value: String) {
+        isRecallingText = true
+        text = value
+        isRecallingText = false
     }
 
     // MARK: - History keyboard navigation

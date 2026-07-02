@@ -50,6 +50,10 @@ struct NotchBody: View {
     /// anything — including pinyin that hasn't committed to `model.text` yet, which
     /// is exactly when the native placeholder would disappear.
     @State private var followUpCaretWidth: CGFloat = 0
+    /// Small directional slide-in for the idle prompt as ↑/↓ recall swaps a past
+    /// question in: set to a nonzero offset (with the step's direction) the instant
+    /// a recall fires, then animated back to rest. See `model.recallPulse`.
+    @State private var recallSlide: CGFloat = 0
     /// Drives the compact history filter field's first-responder. Set when the
     /// filter icon is tapped so the caret lands in the expanded field without a
     /// second click; reset when the filter collapses so it can re-arm next time.
@@ -75,6 +79,10 @@ struct NotchBody: View {
     /// it shut before the cursor can cross the gap to the panel. Cancelled when the
     /// cursor reaches the panel (or re-enters the pill).
     @State private var sourceCloseWork: DispatchWorkItem? = nil
+    /// Whether the manage bar's secondary controls (Settings + Clear) are revealed.
+    /// The first level is a single ⋯ chip; tapping it unfurls the two actions to its
+    /// right. Local presentational state — collapses on selection or a second tap.
+    @State private var manageExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -190,7 +198,14 @@ struct NotchBody: View {
                 // a short list keeps the calm compact layout below.
                 immersiveHistoryView
             } else {
-                if let clip = model.pendingClipboard {
+                // While ↑/↓ recall is walking the history, the slot above the input
+                // shows a "which of how many" counter instead of the clipboard quote
+                // — the quote is irrelevant to a recalled question, and the counter
+                // tells you how far back you've stepped.
+                if let recall = model.recallPosition {
+                    recallCounterLine(recall)
+                        .transition(moduleTransition)
+                } else if let clip = model.pendingClipboard {
                     clipboardPreviewLine(clip)
                         .transition(moduleTransition)
                 }
@@ -207,7 +222,11 @@ struct NotchBody: View {
                 // ("Saving…" / "Added to Notes" / error): the save just consumed the
                 // clipboard, so the action row is stale — fold it away and let the calm
                 // confirmation stand alone rather than crowding it with shortcuts.
-                if model.pendingClipboard != nil && !model.showHistory && noteFeedbackContent == nil {
+                // Also folded away during ↑/↓ recall: the box now holds a recalled
+                // question, not the copied text, so "summarize this"-style chips would
+                // act on the wrong thing.
+                if model.pendingClipboard != nil && !model.showHistory
+                    && noteFeedbackContent == nil && model.recallPosition == nil {
                     clipboardPresetChips()
                         .transition(moduleTransition)
                 }
@@ -419,6 +438,28 @@ struct NotchBody: View {
         .padding(.bottom, 8)
     }
 
+    /// The ↑/↓ recall counter that takes the clipboard quote's slot while walking
+    /// history: a small clock glyph + "pos / total" (newest = 1), so you can see
+    /// how far back the current recalled question sits. Same slot metrics as
+    /// `clipboardPreviewLine` so swapping one for the other doesn't jump the input.
+    private func recallCounterLine(_ recall: (pos: Int, total: Int)) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Tokens.text4)
+                .baselineOffset(-1)
+            Text("\(recall.pos) / \(recall.total)")
+                .font(.sf(11, weight: .medium))
+                .monospacedDigit()
+                .tracking(0.3)
+                .foregroundStyle(Tokens.text4)
+                .lineLimit(1)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 8)
+    }
+
     /// A *short* row of one-tap preset actions for the pending clipboard, sitting just
     /// beneath the prompt. Deliberately auxiliary — the prompt above is the focus — so
     /// by default only the few most-common actions (Summarize / Proofread / Translate)
@@ -502,12 +543,10 @@ struct NotchBody: View {
     @ViewBuilder
     private func translateChip(_ preset: NotchModel.ClipboardPreset) -> some View {
         if preset == .translate {
-            // Chip label: "译 中→En" — preset label + the resolved direction for the
-            // pending clip. The target language isn't a mystery: we detect the source
-            // locally and route it the same way the prompt does, so the chip names the
-            // actual direction ("中→En" / "En→中" / "→En" when the source is neither
-            // pref) instead of hedging with a slash or swap arrow. See
-            // `NotchModel.translateChipDirection`.
+            // Chip label: "译 →En" — preset label + the resolved target for the
+            // pending clip. We route the clip the same way the prompt does and name
+            // only the target language ("→En"), dropping the source to keep the chip
+            // compact. See `NotchModel.translateChipDirection`.
             let chipTitle: String = "\(preset.label) \(model.translateChipDirection)"
             ClipboardPresetChip(title: chipTitle) {
                 model.runClipboardPreset(preset)
@@ -584,18 +623,89 @@ struct NotchBody: View {
 
     /// The gear entry that swaps the recent list for the inline settings panel
     /// (same view ⌘, opens). Rendered as a Liquid Glass chip so it reads as part
-    /// of the glass island. Only shown alongside the expanded history (the settings
-    /// affordance lives in the same "manage" row as Clear).
+    /// of the glass island. Lives one level in — revealed from the ⋯ chip alongside
+    /// Clear. (The passive update dot rides on ⋯ itself, not on this gear.)
     private var settingsEntry: some View {
         GlassIconButton(systemName: "gearshape", help: L("recent.settings"), size: 30) {
             withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                manageExpanded = false
                 model.toggleSettings()
             }
         }
-        // The whole passive update cue: a 5pt neutral dot on the gear when a
-        // newer release is known. Clicking through to settings shows the update
-        // action — the dot itself never interrupts anything, and never shouts in
-        // colour.
+        // Slides in from the ⋯ chip on its left, matching the Clear pill's reveal.
+        .transition(
+            .move(edge: .leading)
+                .combined(with: .opacity)
+                .combined(with: .scale(scale: 0.9, anchor: .leading))
+        )
+    }
+
+    /// The manage bar, pinned to the BOTTOM-LEFT of the recent panel in both the
+    /// compact and immersive layouts. The first level is a single ⋯ (more) chip,
+    /// a touch larger than the secondary chips; tapping it unfurls the two actions
+    /// — Settings then Clear — to its right. Tapping ⋯ again, or selecting either
+    /// action, collapses the row back to just the ⋯. Always visible — no scroll-state
+    /// gate; it's fixed chrome below the list, not part of the floating header.
+    ///
+    /// Used by `historySection` (compact) as a VStack sibling below the list, and by
+    /// `immersiveHistoryView` as an overlay over the bottom-left of the scroll frame.
+    private var manageBar: some View {
+        HStack(spacing: 6) {
+            // First level: a single, slightly larger ⋯ chip. It toggles the secondary
+            // controls rather than doing anything itself. The passive update dot rides
+            // on it (the update action lives behind Settings, one level down).
+            moreEntry
+
+            // Second level: Settings + Clear, revealed to the RIGHT of ⋯ on tap. They
+            // slide in from the left edge (anchored at ⋯) and fade, so the row reads as
+            // unfurling out of the ⋯ chip rather than popping in place.
+            if manageExpanded {
+                settingsEntry
+                // Clear is destructive, so it arms a confirmation rather than wiping
+                // history on first tap. The card itself is rendered centered over the
+                // whole island (see NotchIsland) — not anchored here — so it lands in
+                // the middle of the panel instead of down by the pill.
+                GlassTextButton(title: L("recent.clear"), fontSize: 12) {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                        manageExpanded = false
+                        model.confirmingClear = true
+                    }
+                }
+                .transition(
+                    .move(edge: .leading)
+                        .combined(with: .opacity)
+                        .combined(with: .scale(scale: 0.9, anchor: .leading))
+                )
+            }
+            Spacer()   // push the controls to the LEFT; Spacer sits at the trailing end
+        }
+        // Collapse the secondary controls whenever the panel itself closes, so the
+        // next open starts back at the bare ⋯ rather than a stale expanded row.
+        .onChange(of: model.showHistory) { _, showing in
+            if !showing { manageExpanded = false }
+        }
+        // Leading inset trimmed (the outer body already pads 20pt) so the bar tucks
+        // further into the bottom-left corner; the trailing 8 just keeps the Spacer
+        // honest. Bottom-left placement is finished by the call-site bottom padding.
+        .padding(.leading, 2)
+        .padding(.trailing, 8)
+    }
+
+    /// The first-level ⋯ entry: a single Liquid Glass chip, a touch larger than the
+    /// secondary chips, that toggles the Settings/Clear row. Carries the passive
+    /// update dot (the update action itself sits behind Settings, one level in).
+    private var moreEntry: some View {
+        // ⋯ when collapsed; a left chevron (back) once the actions are unfurled, so
+        // the chip reads as "go back / close" rather than "open" while expanded.
+        GlassIconButton(
+            systemName: manageExpanded ? "chevron.left" : "ellipsis",
+            help: L(manageExpanded ? "recent.collapse" : "recent.manage"),
+            size: 34
+        ) {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                manageExpanded.toggle()
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if case .available = updater.phase {
                 Circle()
@@ -604,36 +714,6 @@ struct NotchBody: View {
                     .offset(x: -1, y: 1)
             }
         }
-    }
-
-    /// The manage bar: gear (settings) then Clear, pinned to the BOTTOM-LEFT of the
-    /// recent panel in both the compact and immersive layouts. Controls are
-    /// left-aligned (Spacer at the trailing end). Always visible — no scroll-state
-    /// gate; it's fixed chrome below the list, not part of the floating header.
-    ///
-    /// Used by `historySection` (compact) as a VStack sibling below the list, and by
-    /// `immersiveHistoryView` as a VStack sibling below the scroll frame.
-    private var manageBar: some View {
-        HStack(spacing: 6) {
-            // The filter has no chip of its own — it's summoned with ⌘F (handled in
-            // ContentView's key catcher) and unfurls the field below the header.
-            settingsEntry
-            // Clear is destructive, so it arms a confirmation rather than wiping
-            // history on first tap. The card itself is rendered centered over the
-            // whole island (see NotchIsland) — not anchored here — so it lands in
-            // the middle of the panel instead of down by the pill.
-            GlassTextButton(title: L("recent.clear"), fontSize: 12) {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                    model.confirmingClear = true
-                }
-            }
-            Spacer()   // push the controls to the LEFT; Spacer sits at the trailing end
-        }
-        // Leading inset trimmed (the outer body already pads 20pt) so the bar tucks
-        // further into the bottom-left corner; the trailing 8 just keeps the Spacer
-        // honest. Bottom-left placement is finished by the call-site bottom padding.
-        .padding(.leading, 2)
-        .padding(.trailing, 8)
     }
 
     /// The compact recent list (≤6 visible rows) with the manage bar (gear + Clear)
@@ -1360,26 +1440,7 @@ struct NotchBody: View {
                 // itself says "this is what you asked", so no tag is needed and the
                 // thread reads cleaner. It hugs its content (not full width) and
                 // left-aligns with the answer below.
-                Text(turn.text)
-                    .font(.sf(14.5, weight: .medium))
-                    .tracking(-0.1)
-                    .foregroundStyle(Tokens.text2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    // The question itself is selectable too — drag to highlight and
-                    // copy it, same as the answer below. (It's a settled user turn,
-                    // never streaming, so there's no tail-follow scroll to fight.)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .strokeBorder(Tokens.hairline, lineWidth: 1)
-                            )
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                UserQuestionBubble(text: turn.text)
             }
         } else {
             // Assistant turn — streaming AND settled share ONE view tree, so the
@@ -1468,19 +1529,26 @@ struct NotchBody: View {
                     // defensive path if `inputRow` is ever reused with `followUp: true`,
                     // and it keeps the plain-ask behaviour for that unused case.
                     onSubmit: { followUp ? model.submit() : model.submitCurrent() },
-                    // Idle prompt only: ↓/↑ open and step the recent list, and Enter
-                    // opens a keyboard-highlighted row instead of submitting. The
-                    // follow-up field leaves these at their no-op defaults.
+                    // Idle prompt only: ↑ recalls the previous question straight into
+                    // the box (shell-style; press again to step older). ↓ first steps
+                    // that recall back toward the newest (clearing past the newest),
+                    // and only when no recall is in flight does it open/step the recent
+                    // list. Enter opens a keyboard-highlighted row instead of
+                    // submitting. The follow-up field leaves these at their no-op
+                    // defaults.
                     onDown: followUp ? { false } : {
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
+                        if model.recallNextQuestion() { return true }
+                        return withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
                             model.historyNavigateDown()
                         }
                     },
                     onUp: followUp ? { false } : {
-                        withAnimation(.spring(response: 0.42, dampingFraction: 0.78)) {
-                            model.historyNavigateUp()
-                        }
+                        model.recallPreviousQuestion()
                     },
+                    // Keep ↑/↓ routed to recall even after the box fills with a
+                    // recalled question, so pressing ↑ again steps further back
+                    // instead of moving the caret.
+                    isRecalling: followUp ? { false } : { model.isRecallingHistory },
                     onSubmitNav: followUp ? { false } : {
                         // Enter first confirms a keyboard-highlighted Recent row; failing
                         // that, on an empty prompt it fires the leading capture chip
@@ -1508,6 +1576,20 @@ struct NotchBody: View {
                 // waste space; the ZStack animation keeps the resize smooth.
                 .padding(.trailing, followUp ? 0 : InlineSendHint.reservedTrailingWidth(label: model.submitLabel, fontSize: fontSize))
                 .animation(.smooth(duration: 0.25), value: model.submitLabel)
+            }
+            // ↑/↓ history recall: as each recalled question swaps in, slide the text
+            // in from the step's direction (↑ from above, ↓ from below) and fade it
+            // up. Idle prompt only. We snap `recallSlide` to the start offset the
+            // instant the pulse ticks (no animation on that set), then spring it home
+            // — so the eye reads the swap as a small physical push, not a hard cut.
+            // `caretWidth`-driven hint rides along because it's inside this ZStack.
+            .modifier(RecallSlide(offset: recallSlide, active: !followUp))
+            .onChange(of: model.recallPulse.n) { _ in
+                guard !followUp else { return }
+                recallSlide = model.recallPulse.dir == .older ? -7 : 7
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.72)) {
+                    recallSlide = 0
+                }
             }
 
             // With the destination now spelled out inline beside the caret, the
@@ -1837,6 +1919,25 @@ struct HistoryRowStyle: ButtonStyle {
     }
 }
 
+/// The directional slide-in applied to the idle prompt while ↑/↓ recall swaps a
+/// past question in. `offset` is the live vertical displacement (driven from a
+/// spring back to 0); opacity is derived from it so the text fades up as it
+/// settles — full at rest, dipping to ~0.4 at the 7pt extreme. A no-op when
+/// `active` is false (the follow-up field), so it never touches that path.
+private struct RecallSlide: ViewModifier {
+    var offset: CGFloat
+    var active: Bool
+    func body(content: Content) -> some View {
+        if active {
+            content
+                .offset(y: offset)
+                .opacity(1 - min(abs(offset) / 7, 1) * 0.6)
+        } else {
+            content
+        }
+    }
+}
+
 /// A compact three-dot wave for a Recent row whose answer is still streaming —
 /// the same calm cadence as `ThinkingDots`, sized down to sit in the trailing
 /// slot where the timestamp lands once the answer settles. Sits in the row at
@@ -1934,5 +2035,69 @@ struct RecentEntryStyle: ButtonStyle {
             .opacity(configuration.isPressed ? 0.5 : (hovering ? 1 : 0.85))
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.15), value: hovering)
+    }
+}
+
+/// The user's question, shown in a quiet chat bubble. The bubble's corner radius
+/// adapts to how tall the text is: a single line stays a full pill (radius = half
+/// the height, exactly like the old `Capsule`), but once the text wraps to two or
+/// more lines the radius drops to a fixed, smaller value. A capsule at multi-line
+/// height rounds its corners by half the *tall* box — a bloated, over-round blob;
+/// the smaller radius keeps a multi-line quote reading as a tidy card.
+/// `style: .continuous` matches the panel's other rounded shapes.
+private struct UserQuestionBubble: View {
+    let text: String
+
+    /// Measured height of the bubble, so the corner radius can follow it. Seeded to
+    /// the single-line height so the first frame (before the measurement lands) is
+    /// already a proper pill, not a hard-cornered box that then rounds in.
+    @State private var height: CGFloat = 33
+
+    /// Above this height the bubble is multi-line (a single line is ~33pt; a second
+    /// line adds ~17pt, so ~42 sits safely between one and two lines).
+    private let singleLineCeiling: CGFloat = 42
+
+    /// Corner radius for the multi-line state — a modest rounded card instead of the
+    /// half-height pill a tall box would otherwise round to.
+    private let multiLineRadius: CGFloat = 16
+
+    /// Single line → a true pill (radius = half the height, exactly the old
+    /// `Capsule`). Multi-line → pull the radius back to a fixed, smaller value so a
+    /// tall quote reads as a tidy card rather than a bloated, over-round blob.
+    private var radius: CGFloat {
+        height <= singleLineCeiling ? height / 2 : multiLineRadius
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.sf(14.5, weight: .medium))
+            .tracking(-0.1)
+            .foregroundStyle(Tokens.text2)
+            .fixedSize(horizontal: false, vertical: true)
+            // The question itself is selectable too — drag to highlight and
+            // copy it, same as the answer below. (It's a settled user turn,
+            // never streaming, so there's no tail-follow scroll to fight.)
+            .textSelection(.enabled)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .strokeBorder(Tokens.hairline, lineWidth: 1)
+                    )
+                    // Read the rendered bubble height and feed it back so `radius`
+                    // tracks single- vs multi-line without a fixed guess.
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear
+                                .onAppear { height = geo.size.height }
+                                .onChange(of: geo.size.height) { _, h in height = h }
+                        }
+                    )
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .animation(.easeOut(duration: 0.15), value: radius)
     }
 }

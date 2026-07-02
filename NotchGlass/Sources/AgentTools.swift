@@ -74,6 +74,240 @@ struct ReadClipboardTool: NotchTool {
     }
 }
 
+/// Exact arithmetic. LLMs reliably mangle multi-step or large-number math
+/// (carry errors, dropped digits), so any numeric computation the user asks for
+/// should run through a deterministic evaluator rather than the model's "head".
+/// The evaluator is a small hand-written recursive-descent parser (see
+/// `ArithmeticParser`) — deliberately NOT `NSExpression`, whose `format:`
+/// initializer throws *ObjC* exceptions on malformed input (uncatchable by Swift
+/// `try`, so a crash) and exposes a far wider surface (keypaths, `FUNCTION()`,
+/// casts) than a calculator needs. The parser only understands `+ - * / ^`,
+/// parentheses, unary minus, `%` (as ÷100), and a fixed whitelist of functions;
+/// anything else is a thrown Swift error, never a crash.
+struct CalculateTool: NotchTool {
+    let name = "calculate"
+    let description = """
+    Evaluates an arithmetic expression exactly and returns the numeric result. \
+    Call this for ANY calculation — arithmetic, percentages, tips, unit math, \
+    multi-step sums — instead of computing in your head; models make silent \
+    mistakes on large or chained numbers. Supports + - * / ^ (power), parentheses, \
+    unary minus, a trailing or inline % (e.g. "18% of 240" → "0.18 * 240"), and \
+    the functions sqrt, abs, ln, log, exp, sin, cos, tan, round, floor, ceil. \
+    Pass the expression as a plain math string in `expression`.
+    """
+    let schema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "expression": [
+                "type": "string",
+                "description": "The arithmetic expression to evaluate, e.g. \"1234 * 5.6 + sqrt(81)\" or \"18% * 240\".",
+            ],
+        ],
+        "required": ["expression"],
+    ]
+
+    func execute(_ input: [String: Any]) async throws -> String {
+        guard let expr = (input["expression"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !expr.isEmpty else {
+            return "Error: no expression given."
+        }
+        do {
+            var parser = ArithmeticParser(expr)
+            let value = try parser.evaluate()
+            return Self.format(value)
+        } catch let e as ArithmeticParser.ParseError {
+            // A readable message the model can relay or recover from, not a crash.
+            return "Error: \(e.message)"
+        }
+    }
+
+    /// Render a `Double` without a trailing `.0` for whole numbers, and without
+    /// floating-point noise (`0.1 + 0.2` → `0.3`, not `0.30000000000000004`).
+    static func format(_ v: Double) -> String {
+        guard v.isFinite else { return v.isNaN ? "not a number" : (v < 0 ? "-∞" : "∞") }
+        if v == v.rounded() && abs(v) < 1e15 {
+            return String(Int64(v))
+        }
+        // Up to 10 significant decimals, then strip trailing zeros.
+        var s = String(format: "%.10g", v)
+        if s.contains(".") {
+            while s.hasSuffix("0") { s.removeLast() }
+            if s.hasSuffix(".") { s.removeLast() }
+        }
+        return s
+    }
+}
+
+/// A minimal recursive-descent arithmetic evaluator. Grammar (lowest→highest
+/// precedence): `expr = term (('+'|'-') term)*`, `term = factor (('*'|'/') factor)*`,
+/// `factor = power ('^' factor)?` (right-assoc), `power = ('-')? primary`,
+/// `primary = number | '(' expr ')' | func '(' expr ')'`. A trailing/inline `%`
+/// on a number means ÷100. Every failure is a thrown `ParseError` — nothing here
+/// can throw an ObjC exception, so it cannot crash the app on bad input.
+struct ArithmeticParser {
+    struct ParseError: Error { let message: String }
+
+    private let chars: [Character]
+    private var pos = 0
+
+    init(_ input: String) {
+        // Normalize a few common unicode operators the model (or a paste) might emit.
+        let normalized = input
+            .replacingOccurrences(of: "×", with: "*")
+            .replacingOccurrences(of: "÷", with: "/")
+            .replacingOccurrences(of: "−", with: "-") // U+2212 minus
+            .replacingOccurrences(of: ",", with: "")  // thousands separators
+        self.chars = Array(normalized)
+    }
+
+    mutating func evaluate() throws -> Double {
+        let v = try parseExpr()
+        skipSpaces()
+        guard pos == chars.count else {
+            throw ParseError(message: "unexpected '\(chars[pos])' in expression.")
+        }
+        return v
+    }
+
+    // MARK: grammar
+
+    private mutating func parseExpr() throws -> Double {
+        var value = try parseTerm()
+        while true {
+            skipSpaces()
+            guard let op = peek(), op == "+" || op == "-" else { break }
+            advance()
+            let rhs = try parseTerm()
+            value = (op == "+") ? value + rhs : value - rhs
+        }
+        return value
+    }
+
+    private mutating func parseTerm() throws -> Double {
+        var value = try parseFactor()
+        while true {
+            skipSpaces()
+            guard let op = peek(), op == "*" || op == "/" else { break }
+            advance()
+            let rhs = try parseFactor()
+            if op == "/" {
+                guard rhs != 0 else { throw ParseError(message: "division by zero.") }
+                value /= rhs
+            } else {
+                value *= rhs
+            }
+        }
+        return value
+    }
+
+    private mutating func parseFactor() throws -> Double {
+        let base = try parseUnary()
+        skipSpaces()
+        if peek() == "^" {
+            advance()
+            let exp = try parseFactor() // right-associative
+            return pow(base, exp)
+        }
+        return base
+    }
+
+    private mutating func parseUnary() throws -> Double {
+        skipSpaces()
+        if peek() == "-" { advance(); return -(try parseUnary()) }
+        if peek() == "+" { advance(); return try parseUnary() }
+        return try parsePrimary()
+    }
+
+    private mutating func parsePrimary() throws -> Double {
+        skipSpaces()
+        guard let c = peek() else { throw ParseError(message: "expression ended unexpectedly.") }
+
+        if c == "(" {
+            advance()
+            let v = try parseExpr()
+            skipSpaces()
+            guard peek() == ")" else { throw ParseError(message: "missing closing parenthesis.") }
+            advance()
+            return try applyPercent(to: v)
+        }
+
+        if c.isLetter {
+            let fn = readIdentifier()
+            skipSpaces()
+            guard peek() == "(" else { throw ParseError(message: "unknown name '\(fn)'.") }
+            advance()
+            let arg = try parseExpr()
+            skipSpaces()
+            guard peek() == ")" else { throw ParseError(message: "missing ')' after \(fn)().") }
+            advance()
+            return try applyPercent(to: try apply(function: fn, to: arg))
+        }
+
+        if c.isNumber || c == "." {
+            let n = try readNumber()
+            return try applyPercent(to: n)
+        }
+
+        throw ParseError(message: "unexpected '\(c)'.")
+    }
+
+    /// A trailing `%` after a value means "÷100" (so `18%` → 0.18, `50% * 200` → 100).
+    private mutating func applyPercent(to v: Double) throws -> Double {
+        skipSpaces()
+        if peek() == "%" { advance(); return v / 100 }
+        return v
+    }
+
+    private func apply(function fn: String, to x: Double) throws -> Double {
+        switch fn {
+        case "sqrt":
+            guard x >= 0 else { throw ParseError(message: "sqrt of a negative number.") }
+            return x.squareRoot()
+        case "abs":   return abs(x)
+        case "ln":    return Foundation.log(x)
+        case "log":   return Foundation.log10(x)
+        case "exp":   return Foundation.exp(x)
+        case "sin":   return Foundation.sin(x)
+        case "cos":   return Foundation.cos(x)
+        case "tan":   return Foundation.tan(x)
+        case "round": return x.rounded()
+        case "floor": return x.rounded(.down)
+        case "ceil":  return x.rounded(.up)
+        default:      throw ParseError(message: "unknown function '\(fn)'.")
+        }
+    }
+
+    // MARK: lexing
+
+    private mutating func readNumber() throws -> Double {
+        let start = pos
+        var seenDot = false
+        while let c = peek(), c.isNumber || (c == "." && !seenDot) {
+            if c == "." { seenDot = true }
+            advance()
+        }
+        // Optional exponent: 1e3, 2.5E-4
+        if let c = peek(), c == "e" || c == "E" {
+            advance()
+            if let s = peek(), s == "+" || s == "-" { advance() }
+            while let d = peek(), d.isNumber { advance() }
+        }
+        let text = String(chars[start..<pos])
+        guard let value = Double(text) else { throw ParseError(message: "bad number '\(text)'.") }
+        return value
+    }
+
+    private mutating func readIdentifier() -> String {
+        let start = pos
+        while let c = peek(), c.isLetter { advance() }
+        return String(chars[start..<pos]).lowercased()
+    }
+
+    private func peek() -> Character? { pos < chars.count ? chars[pos] : nil }
+    private mutating func advance() { pos += 1 }
+    private mutating func skipSpaces() { while let c = peek(), c == " " || c == "\t" { advance() } }
+}
+
 /// Kimi's `$web_search` is a *builtin* server tool with an unusual contract
 /// (XII-118): the model emits a tool call, and the client must echo the call's
 /// arguments back **unchanged** for Moonshot to actually run the search
@@ -343,6 +577,153 @@ struct ExaWebSearchTool: SourcedTool {
     }
 }
 
+/// Web search via **Keenable** (`https://api.keenable.ai/v1/search`). A standalone
+/// search backend keyed by `APIKeyStore.currentKeenableKey()` / `KEENABLE_API_KEY`.
+/// NOTE: despite Keenable's "no API key required" marketing (which applies only to
+/// its CLI/MCP, not the raw HTTP API), the `/v1/search` endpoint *always* requires
+/// an `X-API-Key` header — a keyless call returns 401. So this tool is only
+/// registered when a Keenable key is configured.
+///
+/// Precedence: Exa wins when its key is set; else Keenable when *its* key is set
+/// (`ToolRegistry.standard(for:)`). Like the other client search tools it is a
+/// `SourcedTool`: one call yields both the model-facing grounded text and the
+/// `[WebSource]` badge data.
+///
+/// Request: `POST /v1/search` with `{ "query": ... }`. Response: `results[]` each
+/// carrying `title`, `url`, `snippet` (query-relevant highlights, falling back to
+/// `description`), and `published_at` (ISO 8601).
+struct KeenableWebSearchTool: SourcedTool {
+    let name = "keenable_search"
+    let description = """
+    Searches the web for current, real-time information and returns the top \
+    results with sources and dates. Call this whenever the answer depends on \
+    information that may have changed or is past your knowledge cutoff — news, \
+    current events, today's prices or rates, the latest version of something, or \
+    anything time-sensitive. Prefer a focused query. If the results don't contain \
+    the answer, say so rather than guessing.
+    """
+    let schema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "query": ["type": "string", "description": "The search query."]
+        ],
+        "required": ["query"],
+    ]
+
+    private static let endpoint = URL(string: "https://api.keenable.ai/v1/search")!
+    private static let timeout: TimeInterval = 15
+    // Keenable always returns ~10 results and ignores any count param (sending one
+    // makes it return 0). Empirically its relevance ranking is solid for the first
+    // few and then pads the tail with off-topic filler, so we keep only the top
+    // (post-filtering) handful rather than feeding the model the noisy tail.
+    private static let maxResults = 4
+
+    func execute(_ input: [String: Any]) async throws -> String {
+        try await runSourced(input).text
+    }
+
+    func runSourced(_ input: [String: Any]) async throws -> (text: String, sources: [WebSource]) {
+        guard let query = (input["query"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else {
+            return ("Error: empty search query.", [])
+        }
+        guard let key = APIKeyStore.currentKeenableKey() else {
+            return ("Error: no Keenable API key configured, can't search.", [])
+        }
+
+        var req = URLRequest(url: Self.endpoint)
+        req.httpMethod = "POST"
+        req.timeoutInterval = Self.timeout
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // The HTTP API mandates `X-API-Key` (a keyless call 401s, despite the
+        // "no key" CLI/MCP marketing).
+        req.setValue(key, forHTTPHeaderField: "X-API-Key")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["query": query])
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                return ("Search failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).", [])
+            }
+            return Self.parse(data, query: query)
+        } catch {
+            return ("Search failed: \(error.localizedDescription)", [])
+        }
+    }
+
+    /// Parse Keenable's `{ results: [{title, url, snippet, description,
+    /// published_at}] }` once into BOTH the model-facing text (a compact, dated,
+    /// sourced block it grounds on — with an explicit "no results" so it never
+    /// invents an answer) and the structured `[WebSource]` for the UI badge. The
+    /// snippet is `snippet`, falling back to `description` when a result has none.
+    private static func parse(_ data: Data, query: String) -> (text: String, sources: [WebSource]) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = obj["results"] as? [[String: Any]] else {
+            let miss = "The search returned no results for \"\(query)\". Do not fabricate "
+                     + "an answer — tell the user the search found nothing on this."
+            return (miss, [])
+        }
+        // Drop empty-shell results (no usable excerpt — Keenable's tail padding is
+        // often a bare title with no snippet/description, e.g. "- YouTube"), THEN
+        // take the top few. Filtering before the cap keeps the kept count honest.
+        let usable = results.filter { !snippetText(from: $0).isEmpty }
+        guard !usable.isEmpty else {
+            let miss = "The search returned no results for \"\(query)\". Do not fabricate "
+                     + "an answer — tell the user the search found nothing on this."
+            return (miss, [])
+        }
+        let top = usable.prefix(maxResults)
+        let blocks = top.enumerated().map { (i, r) -> String in
+            let title = (r["title"] as? String) ?? "(untitled)"
+            let date = (r["published_at"] as? String).flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+            let link = (r["url"] as? String).flatMap { $0.isEmpty ? nil : "\n   \($0)" } ?? ""
+            var snippet = snippetText(from: r, title: title)
+            if snippet.count > 280 { snippet = String(snippet.prefix(280)) + "…" }
+            return "[\(i + 1)] \(title)\(date)\n   \(snippet)\(link)"
+        }
+        let text = "Web search results for \"\(query)\":\n\n" + blocks.joined(separator: "\n\n")
+
+        var seen = Set<String>()
+        let sources: [WebSource] = top.compactMap { r in
+            guard let link = r["url"] as? String,
+                  let scheme = URL(string: link)?.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  !seen.contains(link) else { return nil }
+            seen.insert(link)
+            let title = (r["title"] as? String) ?? link
+            let date = (r["published_at"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return WebSource(title: title, url: link, date: date)
+        }
+        return (text, sources)
+    }
+
+    /// The result's query-relevant excerpt: `snippet`, falling back to the meta
+    /// `description` when a result carries no snippet. Keenable often prefixes the
+    /// snippet with the page title (and sometimes a date) — redundant once we print
+    /// the title on its own line — so when a `title` is given we strip that leading
+    /// echo. Called with no title from the empty-shell filter (pure presence check).
+    private static func snippetText(from r: [String: Any], title: String? = nil) -> String {
+        var text = (r["snippet"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if text.isEmpty {
+            text = ((r["description"] as? String) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let title, !title.isEmpty, text.hasPrefix(title) else { return text }
+        // Strip the echoed title and any immediately-following date (e.g.
+        // "Title 2025-09-13 actual summary…") plus leading separators.
+        var rest = Substring(text.dropFirst(title.count))
+        rest = rest.drop { " \t\n-–—:|·•".contains($0) }
+        if let m = rest.range(of: #"^\d{4}-\d{2}-\d{2}\s*"#, options: .regularExpression) {
+            rest = rest[m.upperBound...]
+        }
+        let cleaned = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only use the stripped version if something substantive remains.
+        return cleaned.isEmpty ? text : cleaned
+    }
+}
+
 // MARK: - Default registry
 
 extension ToolRegistry {
@@ -361,22 +742,28 @@ extension ToolRegistry {
     ///    `$web_search` passthrough is added so the harness can echo the call back.
     /// (The defunct DuckDuckGo `WebSearchTool` was removed — see XII-116/XII-118.)
     ///
-    /// **Exa override:** when the user has configured an Exa key
-    /// (`APIKeyStore.exaActive`), Exa replaces search for *every* provider — the
-    /// `ExaWebSearchTool` is registered here and each provider's own native search
-    /// is suppressed (the server-search gate in `streamTurn` and the GLM/Kimi
-    /// client tools below all defer to Exa). One fresher/cheaper searcher for all
-    /// backends, instead of each vendor's built-in.
+    /// **Unified searcher (optional, keyed, user-chosen).** A single client-side
+    /// search tool can replace every provider's native search — the server-search
+    /// gate in `streamTurn` and the GLM/Kimi client tools below all defer to it.
+    /// Which one is the user's choice, not a hard-coded vendor preference:
+    /// `APIKeyStore.resolvedSearchBackend()` maps their picked search backend
+    /// (Keenable / Exa) plus whether it's keyed to the tool that runs. When it
+    /// returns `nil` (nothing picked, or the pick has no key), the provider's own
+    /// native search (GLM client tool / Kimi echo / server-side search) stays in play.
     static func standard(for provider: Provider) -> ToolRegistry {
         var tools: [NotchTool] = [
             DateTimeTool(),
             ReadClipboardTool(),
+            CalculateTool(),
         ]
-        if APIKeyStore.exaActive {
-            // Exa is the single searcher for all providers; the providers' own
-            // search (GLM client tool, Kimi echo, native server search) stands down.
+        switch APIKeyStore.resolvedSearchBackend() {
+        case .exa:
             tools.append(ExaWebSearchTool())
-        } else {
+        case .keenable:
+            tools.append(KeenableWebSearchTool())
+        // No client searcher picked (or the pick has no key) — the provider's own
+        // native search stays in play.
+        case nil:
             if provider == .glm {
                 tools.append(GLMWebSearchTool())
             }
@@ -390,6 +777,6 @@ extension ToolRegistry {
     /// Provider-agnostic default, kept for call sites that don't yet thread a
     /// provider through (it omits any provider-specific builtin like Kimi's echo).
     static var standard: ToolRegistry { ToolRegistry([
-        DateTimeTool(), ReadClipboardTool(),
+        DateTimeTool(), ReadClipboardTool(), CalculateTool(),
     ]) }
 }

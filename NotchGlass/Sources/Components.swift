@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// A borderless prompt field styled to the design tokens.
 ///
@@ -29,6 +30,11 @@ struct PromptField: NSViewRepresentable {
     /// highlight back up (and folds it away past the top). Same return contract as
     /// `onDown`.
     var onUp: () -> Bool = { false }
+    /// Whether an ↑/↓ history-recall session is live. When `true`, ↑/↓ keep going
+    /// to `onUp`/`onDown` even though the box now holds a recalled question (so the
+    /// user can press ↑ again to step further back), instead of moving the caret.
+    /// Default `false`: ↑/↓ only fire the callbacks on an empty field.
+    var isRecalling: () -> Bool = { false }
     /// Invoked on Enter *before* `onSubmit` — lets the idle prompt open a
     /// keyboard-highlighted recent row instead of submitting. Returns `true` when
     /// it handled the key (a row was open); `false` falls through to `onSubmit`.
@@ -355,16 +361,20 @@ struct PromptField: NSViewRepresentable {
                 parent.onBack()
                 return true
             }
-            // ↓ / ↑ on an empty field drive the recent-history list (open + step the
-            // highlight). Only when empty — with text present the arrows move the
-            // caret as usual. `onDown`/`onUp` return whether they consumed it, so a
-            // ↓ with no history at all still falls through to default behaviour.
-            if commandSelector == #selector(NSResponder.moveDown(_:)),
-               parent.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // ↓ / ↑ drive history recall / the recent list. They fire on an empty
+            // field, and *also* while a recall session is live (`isRecalling`) — so
+            // once ↑ has pulled a past question into the box, pressing ↑/↓ again
+            // steps through history instead of moving the caret. Otherwise (text
+            // present, no recall) the arrows move the caret as usual. `onDown`/`onUp`
+            // return whether they consumed the key, so ↓ with no history at all still
+            // falls through to default behaviour.
+            let emptyOrRecalling =
+                parent.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || parent.isRecalling()
+            if commandSelector == #selector(NSResponder.moveDown(_:)), emptyOrRecalling {
                 return parent.onDown()
             }
-            if commandSelector == #selector(NSResponder.moveUp(_:)),
-               parent.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if commandSelector == #selector(NSResponder.moveUp(_:)), emptyOrRecalling {
                 return parent.onUp()
             }
             return false
@@ -735,6 +745,10 @@ struct GlassIconButton: View {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .regular))
                 .foregroundStyle(hovering ? Tokens.text1 : Tokens.text3)
+                // Cross-fade the glyph when `systemName` flips (e.g. ⋯ ⇄ back chevron
+                // on the manage chip). No-op for the static-icon callers since their
+                // symbol never changes.
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: size, height: size)
                 .glassCapsule(in: Circle(), brighter: hovering)
                 .contentShape(Circle())
@@ -1205,6 +1219,44 @@ struct AssistantTurnView: View {
     /// part of the same calm rhythm rather than a separate flourish.
     private static let fade: Double = 0.18
 
+    /// While the "Reading the results…" cue is up, the page titles are walked one
+    /// at a time on a timer rather than snapping to the latest. A search round
+    /// hands back all its sources at once, so without a paced walk the line would
+    /// jump straight to the last title and every page before it would flash past
+    /// unread. `readingIndex` is which source is currently shown; the timer below
+    /// advances it, holding each title for `readingDwell` before the next.
+    @State private var readingIndex = 0
+    /// True once the host currently on the line has been shown for a full
+    /// `readingDwell` (one clock tick). Until then the read cue is *held* even if
+    /// the answer has begun streaming, so a host never gets cut off mid-glance: the
+    /// answer waits for the current address to finish its dwell before it takes the
+    /// slot. Reset to false whenever the line advances to a new host.
+    @State private var currentHostShown = false
+
+    /// The rotation clock. A Combine timer publisher (not a hand-rolled `Timer` +
+    /// `RunLoop.add`): `.onReceive` runs its closure in the *current* view context,
+    /// so bumping `readingIndex` re-renders correctly. The earlier hand-rolled
+    /// `Timer` captured a stale `self`, so its `readingIndex += 1` wrote to an
+    /// orphaned `@State` box that never drove a re-render — the line looked frozen
+    /// on the first host. `.autoconnect()` starts it on subscribe; we gate the tick
+    /// on `isReading` so it only advances while the read cue is actually up.
+    private let readingClock = Timer.publish(every: Self.readingDwell, on: .main, in: .common)
+        .autoconnect()
+
+    /// How long each host stays on the line before rotating to the next. Kept
+    /// unhurried on purpose: each address should sit long enough to actually read,
+    /// not flick past. The trade-off is that the post-search "reading" window is
+    /// short (the model often starts answering within a beat, which clears the cue),
+    /// so a long dwell means only the first host or two are seen before the answer
+    /// takes over — but a readable pace matters more than walking the whole list.
+    private static let readingDwell: TimeInterval = 1.2
+
+    /// True exactly while the post-search read cue is on screen — the window in
+    /// which page titles should rotate. Drives both `waitLine` and the timer.
+    private var isReading: Bool {
+        streaming && activity == L("agent.activity.composing") && !sources.isEmpty
+    }
+
     /// Whether the answer currently has visible text. Trimmed, not a bare
     /// `!text.isEmpty`: GLM/Kimi open an agent turn with a lone `"\n"` content
     /// chunk *before* requesting a tool, so a raw emptiness check flips true on
@@ -1214,8 +1266,57 @@ struct AssistantTurnView: View {
     /// comes back whenever the answer is momentarily empty again between rounds.
     private var hasText: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-    /// Show the wait overlay only while streaming with no visible answer yet.
-    private var showWait: Bool { streaming && !hasText }
+    /// Hold the read cue on screen even after the answer starts, while a host is
+    /// still finishing its dwell — so the answer doesn't snatch the slot before the
+    /// current address has been shown long enough to read. Only applies once there
+    /// are hosts to read (a search happened) and streaming is live; `hasText`-only
+    /// waits (no search) are unaffected.
+    private var readingHold: Bool {
+        streaming && !readingHosts.isEmpty && !currentHostShown
+    }
+
+    /// Show the wait overlay while streaming with no visible answer yet — or while
+    /// holding the read cue for the current host to finish its dwell.
+    private var showWait: Bool { streaming && (!hasText || readingHold) }
+
+    /// The distinct hosts to walk through, in first-seen order. `sources` is the
+    /// URL-deduped list accumulated across *all* search rounds, so a later round
+    /// that pulls a different page of a site already shown (a fresh URL, same host)
+    /// would otherwise make the line read out that host a second time. Collapsing
+    /// to distinct hosts here means each site is walked once no matter how many of
+    /// its pages land across rounds — the line only ever advances to a genuinely
+    /// new address. If every result is the same host, this is just that one host
+    /// (nothing to switch to), which is the intended "unless they're all the same"
+    /// fallback.
+    private var readingHosts: [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for s in sources where seen.insert(s.host).inserted { out.append(s.host) }
+        return out
+    }
+
+    /// The single string the wait line shows, so the slot is always ONE line that
+    /// crossfades in place — never a label stacked over a sub-line. While the
+    /// post-search "Reading the results…" cue is up and we have a source, the line
+    /// *becomes* the page being read right now ("Reading tmtpost.com" — the page's
+    /// host, not its title or snippet) rather than the generic cue — naming the
+    /// address it's reading, in the same slot. Otherwise it's the live activity
+    /// line, or the mood word. nil = nothing to show.
+    private var waitLine: String? {
+        // Show the current host while actively reading, OR while holding it on
+        // screen for its dwell to complete after the answer began (`readingHold` —
+        // the activity label has been cleared by then, so `isReading` is false, but
+        // the address must stay put until it's been shown long enough).
+        if (isReading || readingHold), !readingHosts.isEmpty {
+            // Walk the DISTINCT hosts. The clock bumps `readingIndex` unbounded;
+            // the modulo maps it onto the live distinct-host list (read fresh every
+            // render, so hosts from a newer round are included), wrapping back to
+            // the first once it has walked them all.
+            return L("agent.activity.readingPage", readingHosts[readingIndex % readingHosts.count])
+        }
+        if let activity { return activity }
+        return thinkingWord.isEmpty ? nil : thinkingWord
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1243,11 +1344,15 @@ struct AssistantTurnView: View {
                 // answer; both layers stay mounted and cross-fade on their own
                 // opacity, so the slot is never blank between rounds.
                 .overlay(alignment: .topLeading) {
-                    ZStack(alignment: .topLeading) {
-                        if let activity {
-                            CrossfadeText(text: activity, font: baseFont, color: Tokens.text2)
-                        } else if !thinkingWord.isEmpty {
-                            CrossfadeText(text: thinkingWord, font: baseFont, color: Tokens.text2)
+                    // ONE line, crossfading in place: mood word → "Searching…" →
+                    // the page title it's reading → next page. Never two stacked
+                    // layers — `waitLine` folds all of those into a single string
+                    // so the slot just dissolves from one to the next.
+                    Group {
+                        if let waitLine {
+                            CrossfadeText(text: waitLine, font: baseFont, color: Tokens.text2)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                         }
                     }
                     .opacity(showWait ? 1 : 0)
@@ -1266,6 +1371,29 @@ struct AssistantTurnView: View {
         }
         .animation(.easeInOut(duration: Self.fade), value: showWait)
         .animation(.easeInOut(duration: 0.12), value: activity != nil)
+        // A clock tick means the host on the line has had its full dwell. Mark it
+        // shown (this lifts any `readingHold`, letting the answer take the slot);
+        // and if the cue is still up because the answer hasn't started, advance to
+        // the next host in the same tick so each host occupies exactly one dwell.
+        .onReceive(readingClock) { _ in
+            guard isReading || readingHold else { return }
+            if isReading {
+                // Answer not started yet → walk to the next host, which re-earns its
+                // own full dwell (so if the answer arrives during it, it's held too).
+                readingIndex += 1
+                currentHostShown = false
+            } else {
+                // Answer already streaming and we were holding: the current host has
+                // now had its dwell — release the hold so the answer takes the slot.
+                currentHostShown = true
+            }
+        }
+        // Each time the read cue opens, restart the walk from the first host so a
+        // new search begins fresh rather than continuing a stale offset. The first
+        // host starts its dwell now (not yet "shown").
+        .onChange(of: isReading) { _, reading in
+            if reading { readingIndex = 0; currentHostShown = false }
+        }
     }
 }
 

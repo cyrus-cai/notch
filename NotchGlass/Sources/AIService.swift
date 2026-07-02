@@ -1157,14 +1157,14 @@ extension OpenAICompatAIService: AgentCapableService {
                         // back by the harness; `.chatModelSwap` (OpenAI) swaps the model
                         // and adds a parameter. Resolve the effective model + any extra
                         // search tool/body up front, then build the request once.
-                        // When the user has configured Exa, it replaces every
-                        // provider's native search (it rides as a client-side tool in
-                        // `tools` instead — see `ToolRegistry.standard(for:)`), so the
-                        // vendor's own server search stands down.
+                        // A unified client-side searcher (Keenable by default, Exa
+                        // when keyed) replaces every provider's native search — it
+                        // rides in `tools` instead (see `ToolRegistry.standard(for:)`),
+                        // so the vendor's own server search stands down.
                         var effectiveModel = model
                         var searchTool: [String: Any]? = nil
                         var bodyExtras: [String: Any] = [:]
-                        switch (APIKeyStore.exaActive ? nil : provider.serverSearch) {
+                        switch (APIKeyStore.unifiedSearchActive ? nil : provider.serverSearch) {
                         case .tool(let t):
                             searchTool = t
                         case .builtin(let t, let extras):
@@ -1385,11 +1385,12 @@ extension AnthropicAIService: AgentCapableService {
                         // in the Anthropic Console; if not, the API returns a
                         // `web_search_tool_result_error` block and the model answers
                         // without it.
-                        // Exa, when configured, replaces native search for every
-                        // provider (it rides as a client-side tool instead), so
-                        // Anthropic's server-side web_search stands down too.
+                        // The unified client-side searcher (Keenable by default, Exa
+                        // when keyed) replaces native search for every provider (it
+                        // rides as a client-side tool instead), so Anthropic's
+                        // server-side web_search stands down too.
                         var wireTools = Self.wireTools(tools)
-                        if !APIKeyStore.exaActive,
+                        if !APIKeyStore.unifiedSearchActive,
                            case .tool(let searchTool)? = provider.serverSearch {
                             wireTools.append(searchTool)
                         }

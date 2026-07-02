@@ -43,6 +43,17 @@ struct WebSource: Codable, Equatable, Sendable, Identifiable {
     /// The publication date as the provider reported it, if any (e.g. "2026-06-23").
     var date: String?
 
+    /// The page's host with any leading `www.` dropped — "www.tmtpost.com" →
+    /// "tmtpost.com", "finance.sina.com.cn" → "finance.sina.com.cn". This is the
+    /// "web address" the search activity line reads out ("Reading tmtpost.com"),
+    /// deliberately the whole host (not the short `site` label) so it reads as an
+    /// address. Falls back to the short `site` when the URL has no host.
+    var host: String {
+        guard var host = URL(string: url)?.host else { return site }
+        if host.hasPrefix("www.") { host.removeFirst(4) }
+        return host
+    }
+
     /// The short site name shown on the badge — the registrable domain's main
     /// label, so "www.tmtpost.com" → "tmtpost", "finance.sina.com.cn" → "sina",
     /// "so.com" → "so". We take the second-to-last label *unless* the host ends in
@@ -272,6 +283,12 @@ struct AgentHarness {
         // back to generic dots (the empty state Cyrus flagged). It also tells a
         // second-or-later tool round to say "refining" rather than "searching".
         var didTool = false
+        // How many *search* rounds (not generic tool rounds) have completed. Drives
+        // the escalating "stop searching, answer now" nudge that breaks the runaway
+        // re-search loop on queries the web can't cleanly answer — see
+        // `searchStopNudge`. Counts only search rounds because only search is prone
+        // to the loop; a clipboard/time read never spirals.
+        var searchRounds = 0
 
         while true {
             try Task.checkCancellation()
@@ -363,9 +380,26 @@ struct AgentHarness {
             }
             try Task.checkCancellation()
 
+            // If this round searched, escalate the pressure to answer rather than
+            // search yet again: append a round-scaled "stop searching" note to each
+            // search result's text. Keyed off how many search rounds already
+            // finished (`searchRounds`), so the first search runs clean and the nudge
+            // hardens each subsequent round until the cap. This is what stops a model
+            // from re-wording the same fruitless query forever (the "南昌一月气温" loop).
+            var resultsToSend = completed
+            let didSearchThisRound = pendingCalls.contains { Self.isSearchTool($0.name) }
+            if didSearchThisRound,
+               let nudge = Self.searchStopNudge(priorSearchRounds: searchRounds,
+                                                cap: maxIterations) {
+                for i in resultsToSend.indices where Self.isSearchTool(resultsToSend[i].name) {
+                    resultsToSend[i].result += nudge
+                }
+            }
+
             convo.append(AgentMessage(kind: .assistantToolCalls(text: assistantText,
                                                                 calls: pendingCalls)))
-            convo.append(AgentMessage(kind: .toolResults(completed)))
+            convo.append(AgentMessage(kind: .toolResults(resultsToSend)))
+            if didSearchThisRound { searchRounds += 1 }
             didTool = true
             iteration += 1
             _ = stopReason  // reason is informational; presence of calls drives the loop
@@ -390,9 +424,57 @@ struct AgentHarness {
     /// follow-up "reading the results" gap is worth narrating with a "composing…"
     /// cue. `lookup_web` is GLM's client search tool (deliberately not named
     /// `web_search` to avoid colliding with GLM's builtin); `$web_search` is Kimi's
-    /// builtin echo.
+    /// builtin echo; `keenable_search` / `exa_search` are the unified client searchers.
     private static func isSearchTool(_ name: String) -> Bool {
-        name == "lookup_web" || name == "$web_search" || name == "exa_search"
+        name == "lookup_web" || name == "$web_search"
+            || name == "exa_search" || name == "keenable_search"
+    }
+
+    /// An escalating "stop searching, answer now" nudge appended to each search
+    /// result's text, keyed by how many search rounds have already happened. This is
+    /// the cure for the runaway-search loop: when a query has no clean answer on the
+    /// web (e.g. "南昌一月气温", where every result is near-miss climate filler with no
+    /// hard number), a model left to its own devices keeps *rewording and re-searching*
+    /// forever — each round it sees fresh-but-still-inconclusive results and optimistically
+    /// tries again, burning every iteration until the cap forces an empty close. The fix
+    /// is to gently raise the pressure to answer from what's in hand, so the model
+    /// *chooses* to stop (and say "I couldn't find it" if need be) instead of being
+    /// hard-cut. Pressure ramps with the round count rather than slamming a wall, so a
+    /// genuinely multi-step query that legitimately needs 3–4 searches isn't strangled.
+    ///
+    /// Returned text is the instruction the *model* reads, so it is deliberately
+    /// English (and not run through `L()`): every provider — domestic CJK models
+    /// included — follows an English system-style directive most reliably, exactly as
+    /// the tool descriptions are English. `priorSearchRounds` is the number of search
+    /// rounds already completed *before* this one (0 on the first search → no nudge).
+    ///
+    /// `cap` is the harness's `maxIterations`; the final-warning tier keys off "this is
+    /// the last round before tools are withdrawn" so the wording matches reality.
+    private static func searchStopNudge(priorSearchRounds: Int, cap: Int) -> String? {
+        // The round about to be appended is search #(priorSearchRounds + 1). The harness
+        // withdraws tools entirely once `iteration >= cap`, so the last round in which a
+        // search can still be issued is round `cap`. One short blank line separates the
+        // nudge from the results so it reads as a distinct instruction, not result text.
+        let thisRound = priorSearchRounds + 1
+        let nudge: String
+        if thisRound < 2 {
+            return nil  // first search: let it run clean, no pressure yet
+        } else if thisRound >= cap {
+            // Last round a search can still be issued — after this the harness withdraws
+            // tools, so make the deadline explicit.
+            nudge = "This is your last chance to search. On the next turn you must give "
+                  + "the user an answer — even if that answer is that you could not find "
+                  + "reliable information on this. Do not search again."
+        } else if thisRound == 2 {
+            nudge = "You have already searched once. Prefer answering from the results "
+                  + "you now have; search again only if a specific, essential fact is "
+                  + "still missing."
+        } else {
+            nudge = "You have searched \(priorSearchRounds) times. Do not search again "
+                  + "unless it is truly unavoidable — answer from what you already have, "
+                  + "or tell the user plainly that the search did not turn up an answer."
+        }
+        return "\n\n[System note] " + nudge
     }
 
     /// A short, human-readable progress label for the running calls, e.g.
@@ -402,10 +484,11 @@ struct AgentHarness {
     private func activityLabel(for calls: [ToolInvocation], isRepeatRound: Bool) -> String {
         if let first = calls.first, calls.count == 1 {
             switch first.name {
-            case "lookup_web", "$web_search", "exa_search":
+            case "lookup_web", "$web_search", "exa_search", "keenable_search":
                 return L(isRepeatRound ? "agent.activity.refining" : "agent.activity.search")
             case "read_clipboard": return L("agent.activity.clipboard")
             case "current_datetime": return L("agent.activity.time")
+            case "calculate": return L("agent.activity.calc")
             default: break
             }
         }
@@ -416,7 +499,13 @@ struct AgentHarness {
 /// Strips tool-call DSL markup that some models occasionally leak into their
 /// *text* output instead of returning a structured tool_call. The tell-tale is a
 /// `<|…|>` opener (e.g. MiniMax's `<|DSML|tool_calls>` / `<|DSML|invoke name=…>`);
-/// normal answer prose never contains the `<|` sequence, so it's a safe sentinel.
+/// normal answer prose never contains the `<` + pipe sequence, so it's a safe
+/// sentinel. The pipe comes in two flavors: the ASCII `|` (U+007C) and the
+/// **fullwidth** `｜` (U+FF5C). Chinese-trained tokenizers (MiniMax, DeepSeek,
+/// GLM, Kimi, Qwen) emit their special control tokens with the fullwidth bar —
+/// the real leaked token is `<｜tool▁calls｜>`, not `<|...|>` — so both must be
+/// treated as the opener, or the markup sails straight through (the bug Cyrus
+/// kept seeing after the half-width-only first fix).
 ///
 /// Stateful because text streams in token by token: an opener can be split across
 /// chunks (`<`, then `|DS`…). Once an opener is seen, *everything* from it onward
@@ -428,6 +517,11 @@ private struct ToolMarkupFilter {
     private var suppressing = false   // saw `<|` — swallow the rest of the turn
     private var heldBracket = false   // last char was a bare `<`, decision pending
 
+    /// The opener's second character: the ASCII vertical bar or its fullwidth
+    /// twin. Matching both is what makes the filter catch the Chinese-tokenizer
+    /// markup (`<｜…｜>`) and not just the half-width `<|…|>`.
+    private static func isPipe(_ c: Character) -> Bool { c == "|" || c == "\u{FF5C}" }
+
     /// Feed one streamed chunk; returns the portion safe to show the user.
     mutating func feed(_ piece: String) -> String {
         if suppressing { return "" }
@@ -437,8 +531,8 @@ private struct ToolMarkupFilter {
         if heldBracket {
             heldBracket = false
             if let first = s.first {
-                if first == "|" { suppressing = true; return out }  // `<|` → leak begins
-                out.append("<")                                     // stray `<`, keep it
+                if Self.isPipe(first) { suppressing = true; return out }  // `<|` → leak begins
+                out.append("<")                                          // stray `<`, keep it
             } else {
                 heldBracket = true                                  // still nothing after `<`
                 return out
@@ -451,7 +545,7 @@ private struct ToolMarkupFilter {
                 heldBracket = true
                 return out
             }
-            if s[after] == "|" {            // `<|` → start of leaked markup
+            if Self.isPipe(s[after]) {      // `<|` → start of leaked markup
                 suppressing = true
                 return out
             }

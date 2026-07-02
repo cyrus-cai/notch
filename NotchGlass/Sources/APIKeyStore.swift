@@ -142,6 +142,94 @@ enum APIKeyStore {
         }
     }
 
+    // Keenable is an optional standalone search backend (`KeenableWebSearchTool`).
+    // Its HTTP API REQUIRES a key (a keyless `/v1/search` call 401s — the "no key"
+    // claim applies only to Keenable's CLI/MCP, not the raw API), so like Exa it's
+    // only the active searcher when a key is configured.
+    private static let keenableDefaultsKey = "aux_key.keenable"
+    private static let keenableEnvVar = "KEENABLE_API_KEY"
+
+    /// The effective Keenable key right now: `KEENABLE_API_KEY` env var → stored
+    /// entry. `nil` when neither is set — then Keenable runs on its key-free tier.
+    static func currentKeenableKey() -> String? {
+        if let env = ProcessInfo.processInfo.environment[keenableEnvVar],
+           !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return env
+        }
+        let stored = storedKeenableKey()
+        return stored.isEmpty ? nil : stored
+    }
+
+    /// The Keenable key the user saved in Settings (ignores the env override), so
+    /// the field shows what's actually stored.
+    static func storedKeenableKey() -> String {
+        UserDefaults.standard.string(forKey: keenableDefaultsKey) ?? ""
+    }
+
+    /// True when `KEENABLE_API_KEY` is forcing a key — then the Settings field is
+    /// informational only, since the env override wins.
+    static func hasKeenableEnvOverride() -> Bool {
+        let env = ProcessInfo.processInfo.environment[keenableEnvVar]
+        return env?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    /// Save (or clear, when empty) the user's Keenable key in `UserDefaults`.
+    static func saveKeenableKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: keenableDefaultsKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: keenableDefaultsKey)
+        }
+    }
+
+    /// Whether Keenable search is active (a key is available from env or Settings).
+    static var keenableActive: Bool { currentKeenableKey() != nil }
+
+    /// Which web-search backend the user picks. Just the two keyed backends — like
+    /// the model picker, you choose one and that's the one that runs (no fallback
+    /// to the other, no auto-tiebreaker). `nil` (no pick) means "use the provider's
+    /// own native search", the search-side analogue of the model row's Default.
+    enum SearchBackend: String, CaseIterable, Identifiable {
+        case keenable
+        case exa
+        var id: String { rawValue }
+    }
+
+    private static let searchBackendKey = "searchBackend"
+
+    /// The user's chosen search backend, or `nil` for the provider's native search
+    /// (the default — nothing stored, or a stale value that no longer parses).
+    static var preferredSearchBackend: SearchBackend? {
+        get {
+            UserDefaults.standard.string(forKey: searchBackendKey)
+                .flatMap(SearchBackend.init)
+        }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue.rawValue, forKey: searchBackendKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: searchBackendKey)
+            }
+        }
+    }
+
+    /// The backend that actually runs: the user's pick when it has a key, else `nil`
+    /// — there's no cross-backend fallback, a keyless pick simply hands back to the
+    /// provider's own native search. `nil` also when nothing is picked.
+    static func resolvedSearchBackend() -> SearchBackend? {
+        switch preferredSearchBackend {
+        case .exa:      return exaActive ? .exa : nil
+        case .keenable: return keenableActive ? .keenable : nil
+        case nil:       return nil
+        }
+    }
+
+    /// Whether a unified client-side searcher (Exa or Keenable) is standing in for
+    /// every provider's native search. Gates the server-search suppression in
+    /// `streamTurn`: when false, the provider's own native search stays in play.
+    static var unifiedSearchActive: Bool { resolvedSearchBackend() != nil }
+
     // MARK: - Optional per-provider model override
 
     /// The model id the user typed in Settings for `provider` (empty when none),

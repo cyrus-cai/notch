@@ -64,6 +64,27 @@ final class WhatsNewService: ObservableObject {
     /// version first. Each string is one bullet; no leading `•`.
     private static let bundled: [Entry] = [
         Entry(
+            version: "0.1.6",
+            date: "2026-07-02",
+            features: [
+                "Math is now computed with an exact calculator, so answers to arithmetic, percentages, tips, and conversions are always right.",
+                "Web search now supports Keenable as a backend — add your key in Settings → Search.",
+                "Pick which engine powers web search with the new Search backend picker in Settings.",
+                "Press ↑ / ↓ in the prompt to recall your previous questions, like a terminal.",
+                "Search status now names the page it's reading (e.g. \"Reading tmtpost.com\").",
+            ],
+            improvements: [
+                "Your half-typed question is now restored when you reopen the notch.",
+                "⌘, opens Settings only when Notch is the active app.",
+                "The AI stops re-searching and answers instead of looping on unanswerable queries.",
+                "Translate chip shows just the destination language (e.g. \"→En\").",
+                "Multi-line question bubbles use a cleaner rounded card.",
+            ],
+            fixes: [
+                "Stray tool-call markup from MiniMax/DeepSeek/GLM/Kimi/Qwen no longer leaks into answers.",
+            ]
+        ),
+        Entry(
             version: "0.1.5",
             date: "2026-06-29",
             features: [
